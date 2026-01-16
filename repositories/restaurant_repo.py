@@ -64,3 +64,17 @@ class RestaurantRepository:
         db.commit()
         db.refresh(db_product)
         return db_product
+
+    @staticmethod
+    def check_credentials(db: Session, login: str, plain_password: str):
+        # 1. Busca o usuário pelo login
+        user = db.query(RestaurantDB).filter(RestaurantDB.login == login).first()
+
+        if not user:
+            return None  # Usuário não existe
+
+        # 2. Verifica se a senha bate com o hash
+        if not pwd_context.verify(plain_password, user.password):
+            return None  # Senha incorreta
+
+        return user
