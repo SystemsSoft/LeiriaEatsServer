@@ -15,8 +15,18 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     user = RestaurantRepository.check_credentials(db, request.login, request.password)
 
     if not user:
-        # Retorna erro 401 (Não Autorizado) se falhar
         raise HTTPException(status_code=401, detail="Login ou senha incorretos")
+
+
+    if user.license is None or user.license.upper() != "ATIVO":
+        print(f"🚫 Acesso negado para {user.name}: Licença '{user.license}'")
+
+        return {
+            "authenticated": False,
+            "restaurant_id": 0,
+            "name": "",
+            "message": "Sua licença não está ATIVA. Contate o suporte."
+        }
 
     print(f"✅ Acesso permitido para: {user.name}")
     return {
