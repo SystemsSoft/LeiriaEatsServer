@@ -2,31 +2,34 @@
 from pydantic import BaseModel
 from typing import Optional
 
-# --- MODELO BASE (Dados comuns) ---
-class CompanyBase(BaseModel):
+
+# REQUEST: O que o app envia para criar a empresa
+class CompanyCreateRequest(BaseModel):
     name: str
+    category: str
     phone: str
     address: str
+    image_url: Optional[str] = None
 
-# --- MODELO PARA RECEBER DADOS (Input / Create) ---
-# Esse é exatamente o formato que o Flutter está enviando agora.
-class CompanyCreateRequest(CompanyBase):
-    # Como o Flutter de gestão não manda categoria nem imagem por enquanto,
-    # vamos definir valores padrão aqui para o banco não reclamar.
-    category: str = "Geral"
-    # Uma imagem placeholder de restaurante
-    image_url: str = "https://placehold.co/600x400/e94560/ffffff?text=Leiria+Eats"
-    rating: float = 5.0
+    login: str
+    password: str
+    license: str
 
-# --- MODELO PARA DEVOLVER DADOS (Output / Response) ---
-# Usado quando a API devolve os dados da empresa para o front
-class CompanyResponse(CompanyBase):
+
+# RESPONSE: O que o app recebe de volta
+class CompanyResponse(BaseModel):
     id: int
+    name: str
     category: str
-    image_url: str
-    rating: float
+    phone: str
+    address: str
+    image_url: Optional[str]
 
-    # Isso permite que o Pydantic converta automaticamente o objeto do SQLAlchemy (RestaurantDB)
-    # para este formato JSON.
+    # --- NOVOS CAMPOS ---
+    login: str
+    license: str
+
+    # OBS: NUNCA retornamos o campo 'password' aqui por segurança
+
     class Config:
         from_attributes = True

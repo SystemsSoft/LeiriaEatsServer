@@ -17,6 +17,10 @@ class RestaurantDB(Base):
     rating = Column(Float)
     image_url = Column(String(500))
 
+    login = Column(String(50), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+    license = Column(String(100), nullable=True)
+
     # RELACIONAMENTO (Simplificado):
     # Dizemos apenas: "Meu filho é ProductDB, e ele me conhece como 'restaurant'"
     products = relationship("ProductDB", back_populates="restaurant")
