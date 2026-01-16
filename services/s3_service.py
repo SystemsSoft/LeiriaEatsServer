@@ -19,15 +19,16 @@ def upload_file_to_s3(file_obj, filename: str, folder: str = "Restaurants") -> s
     )
 
     try:
-        # Usa a pasta que foi passada como argumento
         key = f"{folder}/{filename}"
+
 
         s3_client.upload_fileobj(
             file_obj,
             BUCKET_NAME,
             key,
-            ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
+            ExtraArgs={'ContentType': 'image/jpeg'}
         )
+        # -------------------------------------
 
         url = f"https://{BUCKET_NAME}.s3.amazonaws.com/{key}"
         return url
