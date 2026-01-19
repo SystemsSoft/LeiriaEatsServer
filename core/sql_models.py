@@ -3,30 +3,24 @@ from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from core.database import Base
 
-# --- MODELO DO RESTAURANTE/EMPRESA ---
+
 class RestaurantDB(Base):
     __tablename__ = "restaurants"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255))
-    # Campos novos que adicionamos recentemente
     phone = Column(String(50), nullable=True)
     address = Column(Text, nullable=True)
-    # Campos antigos
     category = Column(String(100))
     rating = Column(Float)
     image_url = Column(String(500))
-
     login = Column(String(50), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
     license = Column(String(100), nullable=True)
 
-    # RELACIONAMENTO (Simplificado):
-    # Dizemos apenas: "Meu filho é ProductDB, e ele me conhece como 'restaurant'"
     products = relationship("ProductDB", back_populates="restaurant")
 
 
-# --- MODELO DO PRODUTO ---
 class ProductDB(Base):
     __tablename__ = "products"
 
@@ -37,10 +31,7 @@ class ProductDB(Base):
     image_url = Column(String(500))
     category = Column(String, default="Geral")
 
-    # CHAVE ESTRANGEIRA (O ponto crucial do erro):
-    # Esta linha diz explicitamente: "Esta coluna guarda o ID da tabela 'restaurants'"
+    # ForeignKey aponta para a tabela 'restaurants', coluna 'id'
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
 
-    # RELACIONAMENTO INVERSO:
-    # Dizemos: "Meu pai é RestaurantDB, e ele me conhece como 'products'"
     restaurant = relationship("RestaurantDB", back_populates="products")
