@@ -7,6 +7,7 @@ class ProductCreateRequest(BaseModel):
     price: float
     image_url: Optional[str] = None
     restaurant_id: int
+    category: str
 
 class ProductResponse(BaseModel):
     id: int
@@ -15,6 +16,7 @@ class ProductResponse(BaseModel):
     price: float
     image_url: Optional[str]
     restaurant_id: int
+    category: str
 
     class Config:
         from_attributes = True

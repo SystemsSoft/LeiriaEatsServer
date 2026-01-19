@@ -35,6 +35,7 @@ class ProductDB(Base):
     description = Column(Text)
     price = Column(Float)
     image_url = Column(String(500))
+    category = Column(String, default="Geral")
 
     # CHAVE ESTRANGEIRA (O ponto crucial do erro):
     # Esta linha diz explicitamente: "Esta coluna guarda o ID da tabela 'restaurants'"
