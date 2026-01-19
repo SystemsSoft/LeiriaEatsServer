@@ -15,6 +15,12 @@ class CompanyCreateRequest(BaseModel):
     password: str
     license: str
 
+class CompanyUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    image_url: Optional[str] = None
 
 # RESPONSE: O que o app recebe de volta
 class CompanyResponse(BaseModel):
