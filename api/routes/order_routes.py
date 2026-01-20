@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from core.database import get_db
 from core.sql_models import OrderDB, OrderItemDB, ProductDB
-from schemas.models import OrderCreate, OrderResponse
+from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate
 
 router = APIRouter()
 
@@ -71,4 +71,29 @@ def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
         OrderDB.restaurant_id == restaurant_id
     ).order_by(OrderDB.id.desc()).all()
 
+    return orders
+
+
+@router.put("/orders/{order_id}/status")
+def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
+    print(f"🔄 Atualizando pedido #{order_id} para: {status_data.status}")
+
+    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    order.status = status_data.status
+    db.commit()
+
+    return {"message": "Status atualizado com sucesso", "status": order.status}
+
+
+# Rota para o CLIENTE buscar seus pedidos pelo nome
+@router.get("/orders/customer/{customer_name}", response_model=List[OrderResponse])
+def get_customer_orders(customer_name: str, db: Session = Depends(get_db)):
+    print(f"👤 Buscando histórico de: {customer_name}")
+    orders = db.query(OrderDB).filter(
+        OrderDB.customer_name == customer_name
+    ).order_by(OrderDB.id.desc()).all()
     return orders

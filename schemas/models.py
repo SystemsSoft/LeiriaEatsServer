@@ -77,6 +77,8 @@ class OrderResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class OrderStatusUpdate(BaseModel):
+    status: str
 
 class LoginRequest(BaseModel):
         username: str  # Pode ser o email ou login
