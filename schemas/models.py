@@ -57,6 +57,27 @@ class OrderCreate(BaseModel):
     items: List[OrderItemCreate]
 
 
+class OrderItemResponse(BaseModel):
+    product_name: str
+    quantity: int
+    observation: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class OrderResponse(BaseModel):
+    id: int
+    customer_name: str
+    delivery_address: str
+    total: float
+    status: str
+    items: List[OrderItemResponse]
+
+    class Config:
+        from_attributes = True
+
+
 class LoginRequest(BaseModel):
         username: str  # Pode ser o email ou login
         password: str

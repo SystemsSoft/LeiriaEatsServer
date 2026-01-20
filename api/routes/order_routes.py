@@ -1,9 +1,11 @@
 # Arquivo: api/routes/order_routes.py
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from core.database import get_db
 from core.sql_models import OrderDB, OrderItemDB, ProductDB
-from schemas.models import OrderCreate
+from schemas.models import OrderCreate, OrderResponse
 
 router = APIRouter()
 
@@ -58,3 +60,15 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Pedido realizado com sucesso!", "order_id": new_order.id}
+
+
+@router.get("/orders/{restaurant_id}", response_model=List[OrderResponse])
+def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
+    print(f"🔎 Buscando pedidos para o Restaurante ID {restaurant_id}")
+
+    # Busca no banco filtrando pelo ID do restaurante
+    orders = db.query(OrderDB).filter(
+        OrderDB.restaurant_id == restaurant_id
+    ).order_by(OrderDB.id.desc()).all()
+
+    return orders
