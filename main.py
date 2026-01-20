@@ -8,7 +8,7 @@ import os
 
 # --- IMPORTANTE: Importe as rotas específicas ---
 # Certifique-se que product_routes e search_routes estão na pasta api/routes
-from api.routes import product_routes, search_routes, chat_routes
+from api.routes import product_routes, search_routes, chat_routes, order_routes
 
 # Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
@@ -29,10 +29,10 @@ if not os.path.exists("static/images"):
     os.makedirs("static/images")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --- REGISTRO DAS ROTAS (O PULO DO GATO) ---
 app.include_router(product_routes.router)
-app.include_router(search_routes.router) # <--- ESSA LINHA FALTAVA!
+app.include_router(search_routes.router)
 app.include_router(chat_routes.router)
+app.include_router(order_routes.router)
 
 @app.on_event("startup")
 async def startup_event():

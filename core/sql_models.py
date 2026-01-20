@@ -35,3 +35,32 @@ class ProductDB(Base):
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
 
     restaurant = relationship("RestaurantDB", back_populates="products")
+
+
+class OrderDB(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    customer_name = Column(String)
+    delivery_address = Column(String)
+    status = Column(String, default="Pendente")
+    total = Column(Float)
+
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"))
+
+    restaurant = relationship("RestaurantDB")
+    items = relationship("OrderItemDB", back_populates="order")
+
+
+class OrderItemDB(Base):
+    __tablename__ = "order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"))
+
+    observation = Column(String, nullable=True)
+    product_name = Column(String)
+    price = Column(Float)
+    quantity = Column(Integer)
+
+    order = relationship("OrderDB", back_populates="items")

@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
-
+# --- MODELO DO PRODUTO ---
 class Product(BaseModel):
     id: int
     name: str
@@ -12,8 +12,7 @@ class Product(BaseModel):
     class Config:
         from_attributes = True
 
-
-
+# --- MODELO DO RESTAURANTE ---
 class Restaurant(BaseModel):
     id: int
     name: str
@@ -21,25 +20,38 @@ class Restaurant(BaseModel):
     rating: Optional[float] = None
     image_url: Optional[str] = None
 
+    # O nome aqui deve ser 'products' para bater com o banco de dados
     products: List[Product] = []
 
     class Config:
         from_attributes = True
 
-
-
+# --- MODELOS DE INTERAÇÃO (CHAT/BUSCA) ---
 class UserRequest(BaseModel):
     text: str
     user_id: str = "mobile_user"
-
 
 class SearchResponse(BaseModel):
     reply: str
     intent: str
     results: List[Restaurant]
 
+# --- MODELOS DE GESTÃO ---
 class RestaurantCreate(BaseModel):
     name: str
     category: str
     image_url: str = "https://i.imgur.com/9i6w0X8.png"
     rating: float = 5.0
+
+# --- MODELOS DE PEDIDO (ORDER) ---
+class OrderItemCreate(BaseModel):
+    product_id: int
+    quantity: int
+    observation: Optional[str] = None
+
+class OrderCreate(BaseModel):
+    user_name: str
+    user_address: str
+    user_phone: str
+    restaurant_id: int # Campo novo para identificar o restaurante
+    items: List[OrderItemCreate]
