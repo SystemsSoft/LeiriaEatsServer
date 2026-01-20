@@ -8,7 +8,7 @@ import os
 
 # --- IMPORTANTE: Importe as rotas específicas ---
 # Certifique-se que product_routes e search_routes estão na pasta api/routes
-from api.routes import product_routes, search_routes, chat_routes, order_routes
+from api.routes import product_routes, search_routes, chat_routes, order_routes, auth_routes, upload_routes
 
 # Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
@@ -33,6 +33,8 @@ app.include_router(product_routes.router)
 app.include_router(search_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(order_routes.router)
+app.include_router(auth_routes.router)
+app.include_router(upload_routes.router)
 
 @app.on_event("startup")
 async def startup_event():

@@ -55,3 +55,13 @@ class OrderCreate(BaseModel):
     user_phone: str
     restaurant_id: int # Campo novo para identificar o restaurante
     items: List[OrderItemCreate]
+
+
+class LoginRequest(BaseModel):
+        username: str  # Pode ser o email ou login
+        password: str
+
+class LoginResponse(BaseModel):
+        id: int
+        name: str
+        message: str
