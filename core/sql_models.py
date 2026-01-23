@@ -30,6 +30,7 @@ class ProductDB(Base):
     price = Column(Float)
     image_url = Column(String(500))
     category = Column(String, default="Geral")
+    preparation_time = Column(String(100), nullable=True)
 
     # ForeignKey aponta para a tabela 'restaurants', coluna 'id'
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)

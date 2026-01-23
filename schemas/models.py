@@ -8,6 +8,7 @@ class Product(BaseModel):
     price: float
     description: str
     image_url: Optional[str] = None
+    preparation_time: Optional[str] = "20-30 min"
 
     class Config:
         from_attributes = True

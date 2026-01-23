@@ -29,7 +29,8 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
         price=product_data.price,
         image_url=product_data.image_url,
         restaurant_id=product_data.restaurant_id,
-        category=product_data.category
+        category=product_data.category,
+       preparation_time = product_data.preparation_time
     )
 
     db.add(new_product)
@@ -59,6 +60,7 @@ def update_product(product_id: int, product_data: ProductCreateRequest, db: Sess
     db_product.description = product_data.description
     db_product.price = product_data.price
     db_product.category = product_data.category
+    db_product.preparation_time = product_data.preparation_time
 
     if product_data.image_url:
         db_product.image_url = product_data.image_url
