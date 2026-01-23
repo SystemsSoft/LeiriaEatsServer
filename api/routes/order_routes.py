@@ -63,6 +63,18 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db)):
 
     return {"message": "Pedido realizado com sucesso!", "order_id": new_order.id}
 
+# Rota para o CLIENTE buscar seus pedidos pelo nome
+@router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
+def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
+    print(f"👤 Buscando histórico de: {user_id}")
+
+    # Use filter_by para evitar o erro de tipo e simplificar a sintaxe
+    orders = db.query(OrderDB).filter_by(
+        user_id=user_id
+    ).order_by(OrderDB.id.desc()).all()
+
+    return orders
+
 
 @router.get("/orders/{restaurant_id}", response_model=List[OrderResponse])
 def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
@@ -90,15 +102,3 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
 
     return {"message": "Status atualizado com sucesso", "status": order.status}
 
-
-# Rota para o CLIENTE buscar seus pedidos pelo nome
-@router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
-def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
-    print(f"👤 Buscando histórico de: {user_id}")
-
-    # Use filter_by para evitar o erro de tipo e simplificar a sintaxe
-    orders = db.query(OrderDB).filter_by(
-        user_id=user_id
-    ).order_by(OrderDB.id.desc()).all()
-
-    return orders
