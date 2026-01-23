@@ -2,6 +2,8 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import FileResponse
+
 from core.database import Base, engine, SessionLocal
 from services.ai_service import AIService
 import os
@@ -50,9 +52,13 @@ async def startup_event():
     finally:
         db.close()
 
-@app.get("/")
-def health_check():
-    return {
-        "status": "online",
-        "message": "Sistema de Gestão Leria Eats rodando! 🚀"
-    }
+app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+# 3. Rota de fallback para o Flutter (Deep Linking)
+@app.get("/{catchall:path}")
+async def catch_all(catchall: str):
+    if catchall.startswith("api"):
+        return {"detail": "Not Found"}
+    # Sempre retorna o index se não for API, para o Flutter gerenciar a rota
+    return FileResponse("static/index.html")
