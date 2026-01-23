@@ -39,7 +39,9 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db)):
         delivery_address=order.user_address,
         status="Pendente",
         total=total_price,
-        restaurant_id=order.restaurant_id
+        restaurant_id=order.restaurant_id,
+         user_id = order.user_id,
+
     )
     db.add(new_order)
     db.commit()
@@ -90,10 +92,13 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
 
 
 # Rota para o CLIENTE buscar seus pedidos pelo nome
-@router.get("/orders/customer/{customer_name}", response_model=List[OrderResponse])
-def get_customer_orders(customer_name: str, db: Session = Depends(get_db)):
-    print(f"👤 Buscando histórico de: {customer_name}")
-    orders = db.query(OrderDB).filter(
-        OrderDB.customer_name == customer_name
+@router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
+def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
+    print(f"👤 Buscando histórico de: {user_id}")
+
+    # Use filter_by para evitar o erro de tipo e simplificar a sintaxe
+    orders = db.query(OrderDB).filter_by(
+        user_id=user_id
     ).order_by(OrderDB.id.desc()).all()
+
     return orders

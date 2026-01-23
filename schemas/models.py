@@ -51,10 +51,11 @@ class OrderItemCreate(BaseModel):
     observation: Optional[str] = None
 
 class OrderCreate(BaseModel):
+    user_id: str
     user_name: str
     user_address: str
     user_phone: str
-    restaurant_id: int # Campo novo para identificar o restaurante
+    restaurant_id: int
     items: List[OrderItemCreate]
 
 
