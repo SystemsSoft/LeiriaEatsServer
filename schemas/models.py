@@ -7,6 +7,7 @@ class Product(BaseModel):
     name: str
     price: float
     description: str
+    category: str
     image_url: Optional[str] = None
     preparation_time: Optional[str] = "20-30 min"
 
