@@ -1,12 +1,22 @@
+# --- Repositório extra para baixar a versão leve (CPU) do Torch ---
+--find-links https://download.pytorch.org/whl/cpu/torch_stable.html
+
+# Servidor e Framework
 fastapi
 uvicorn
+python-dotenv
+
+# Banco de Dados
 sqlalchemy
 psycopg2-binary
-python-dotenv
+pymysql
+
+# Validação e Dados
 pydantic
-sentence-transformers
-torch
-transformers
 numpy
 scikit-learn
-pymysql
+
+# Inteligência Artificial (Versões otimizadas)
+torch==2.1.2+cpu
+sentence-transformers
+transformers
