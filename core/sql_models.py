@@ -49,6 +49,7 @@ class OrderDB(Base):
 
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"))
     user_id = Column(String)
+    restaurant_name = Column(String)
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")

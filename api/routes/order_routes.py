@@ -41,6 +41,7 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db)):
         total=total_price,
         restaurant_id=order.restaurant_id,
          user_id = order.user_id,
+         restaurant_name = order.restaurant_name,
 
     )
     db.add(new_order)
@@ -67,6 +68,7 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db)):
 @router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     print(f"👤 Buscando histórico de: {user_id}")
+
 
     # Use filter_by para evitar o erro de tipo e simplificar a sintaxe
     orders = db.query(OrderDB).filter_by(

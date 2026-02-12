@@ -8,9 +8,16 @@ import torch
 
 class AIService:
     _model = None
+
+    # Índices Globais (Restaurantes)
     _embeddings_names = None
     _embeddings_categories = None
-    _embeddings_menus = None
+
+    # Índice Granular (Produtos Individuais)
+    _embeddings_products = None
+    _product_owner_map = []  # Lista para saber de qual restaurante é cada produto
+    _product_data_cache = []  # Lista com os nomes dos produtos para mostrar qual foi achado
+
     _intent_embeddings = None
     _data_cache = None
 
@@ -19,7 +26,6 @@ class AIService:
 
     @classmethod
     def get_model(cls):
-        # Garante que o modelo pesado só carrega uma vez
         if cls._model is None:
             print("⏳ AI: Carregando modelo SentenceTransformer...")
             cls._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
@@ -28,100 +34,133 @@ class AIService:
 
     @classmethod
     def reload_data(cls, db: Session):
-        """Força a I.A a ler o banco de dados novamente (útil após cadastro de produtos)"""
         print("🔄 AI: Atualizando índice de busca com dados do banco...")
         data = RestaurantRepository.get_all(db)
 
         if not data:
-            print("⚠️ AVISO: Banco vazio.")
             cls._data_cache = []
             return
 
         cls._data_cache = data
         cls._index_data(data)
-        print(f"✅ AI: Índice atualizado com {len(data)} restaurantes.")
+        print(f"✅ AI: Índice atualizado com {len(data)} restaurantes e {len(cls._product_owner_map)} produtos.")
 
     @classmethod
     def _index_data(cls, restaurants: list[Restaurant]):
-        model = cls.get_model()  # Garante que modelo existe
+        model = cls.get_model()
 
+        # 1. Indexação Nível Restaurante (Nome e Categoria)
         names_list = [r.name for r in restaurants]
         categories_list = [r.category for r in restaurants]
 
-        menus_list = []
-        for r in restaurants:
-            items = ", ".join([f"{p.name} ({p.description})" for p in r.products])
-            menus_list.append(items if items else "Sem cardápio")
-
         cls._embeddings_names = model.encode(names_list, convert_to_tensor=True)
         cls._embeddings_categories = model.encode(categories_list, convert_to_tensor=True)
-        cls._embeddings_menus = model.encode(menus_list, convert_to_tensor=True)
+
+        # 2. Indexação Nível PRODUTO (A Grande Mudança)
+        # Em vez de juntar tudo, criamos uma lista gigante com TODOS os produtos de TODOS os restaurantes
+        product_texts = []
+        cls._product_owner_map = []  # Guarda o índice do restaurante dono do produto
+        cls._product_data_cache = []  # Guarda o nome do produto
+
+        for r_index, r in enumerate(restaurants):
+            if not r.products:
+                continue
+
+            for p in r.products:
+                # Texto rico para busca: "X-Bacon (Pão, carne, queijo e bacon)"
+                text = f"{p.name} ({p.description})"
+                product_texts.append(text)
+
+                # Mapeia: O produto da posição X pertence ao restaurante r_index
+                cls._product_owner_map.append(r_index)
+                cls._product_data_cache.append(p.name)
+
+        if product_texts:
+            cls._embeddings_products = model.encode(product_texts, convert_to_tensor=True)
+        else:
+            cls._embeddings_products = None
 
     @classmethod
     def process_search(cls, user_query: str, db: Session) -> SearchResponse:
-        # Se for a primeira vez ou se o cache estiver vazio, carrega os dados
         if cls._data_cache is None:
             cls.reload_data(db)
 
-        # Se mesmo recarregando não tiver dados, retorna vazio
         if not cls._data_cache:
-            return SearchResponse(reply="Ainda não temos restaurantes cadastrados.", intent="empty", results=[])
+            return SearchResponse(reply="Sem dados.", intent="empty", results=[])
 
         model = cls.get_model()
 
-        # 0. Comandos Exatos (Atalho)
-        comandos_exatos = ["ver todos", "ver tudo", "listar", "all", "restaurantes"]
-        if user_query.lower() in comandos_exatos:
+        # 0. Atalhos
+        if user_query.lower() in ["ver todos", "tudo", "restaurantes"]:
             return SearchResponse(reply="Aqui estão todas as opções:", intent="show_all", results=cls._data_cache)
 
-        # 1. Roteamento de Intenção (O usuário quer buscar ou ver tudo?)
+        # 1. Intenção
         user_embedding = model.encode(user_query, convert_to_tensor=True)
-
-        # Comparação segura de intenção
         if cls._intent_embeddings is not None:
             intent_scores = util.cos_sim(user_embedding, cls._intent_embeddings)[0]
-            # Se a intenção 0 (Show All) for maior que a 1 (Search)
             if intent_scores[0] > intent_scores[1] and intent_scores[0] > 0.5:
                 return SearchResponse(reply="Listando tudo:", intent="show_all", results=cls._data_cache)
 
-        # 2. Busca Ponderada (O "Coração" da busca)
+        # 2. Busca Híbrida Otimizada
+
+        # A. Scores dos Restaurantes (Nome e Categoria)
         scores_name = util.cos_sim(user_embedding, cls._embeddings_names)[0]
         scores_category = util.cos_sim(user_embedding, cls._embeddings_categories)[0]
-        scores_menu = util.cos_sim(user_embedding, cls._embeddings_menus)[0]
 
-        final_scores = []
+        # B. Score dos PRODUTOS (Busca Profunda)
+        # Cria uma lista de "Melhor Nota de Produto" para cada restaurante, iniciando em 0
+        best_product_scores = [0.0] * len(cls._data_cache)
+        best_product_names = [""] * len(cls._data_cache)  # Para saber qual prato ganhou
+
+        if cls._embeddings_products is not None:
+            # Compara a query contra TODOS os produtos de uma vez
+            all_product_scores = util.cos_sim(user_embedding, cls._embeddings_products)[0]
+
+            # Agora varremos os scores dos produtos e atribuímos ao dono
+            for i, score in enumerate(all_product_scores):
+                r_idx = cls._product_owner_map[i]  # De quem é esse produto?
+                val = score.item()
+
+                # Se esse produto tem uma nota maior que a nota atual do restaurante, atualiza
+                if val > best_product_scores[r_idx]:
+                    best_product_scores[r_idx] = val
+                    best_product_names[r_idx] = cls._product_data_cache[i]  # Guarda o nome do prato campeão
+
+        # 3. Cálculo Final
+        final_results = []
         for i in range(len(cls._data_cache)):
             s_name = scores_name[i].item()
             s_cat = scores_category[i].item()
-            s_menu = scores_menu[i].item()
+            s_prod = best_product_scores[i]  # A nota do MELHOR prato que esse restaurante tem
 
-            # PESOS:
-            # Nome do Restaurante vale muito (2.0)
-            # Categoria vale médio (1.5) -> ex: "Italiana"
-            # Item do Menu vale (1.2) -> ex: "Quero comer Lasanha" (agora o produto importa!)
-            weighted_score = (s_name * 2.0) + (s_cat * 1.5) + (s_menu * 1.2)
-            weighted_score = weighted_score / 4.7  # Normalização básica
+            # Pesos Ajustados: O Produto agora tem muito peso
+            # Se o usuário digita "Hamburguer", e o restaurante chama "Sushi House" mas tem um hamburguer, ele deve aparecer.
+            weighted_score = (s_name + s_cat + s_prod) / 3.0
 
-            final_scores.append((weighted_score, cls._data_cache[i]))
+            if weighted_score > 0.28:  # Limiar de corte
+                final_results.append({
+                    "score": weighted_score,
+                    "restaurant": cls._data_cache[i],
+                    "highlight": best_product_names[i] if s_prod > 0.4 else None
+                    # Só destaca se o produto for relevante mesmo
+                })
 
-        # Ordena do maior score para o menor
-        final_scores.sort(key=lambda x: x[0], reverse=True)
+        # Ordena
+        final_results.sort(key=lambda x: x["score"], reverse=True)
 
-        # Filtra apenas resultados relevantes (score > 0.25)
-        good_matches = [item[1] for item in final_scores if item[0] > 0.25]
+        # Limpa para retorno
+        clean_results = [item["restaurant"] for item in final_results]
 
-        if good_matches:
-            top_match = good_matches[0]
-            return SearchResponse(
-                reply=f"Encontrei {top_match.name} e outras opções para você.",
-                intent="search_result",
-                results=good_matches
-            )
+        if clean_results:
+            top_item = final_results[0]
+            # Resposta dinâmica: Se achou por causa de um prato, cita o prato
+            if top_item["highlight"]:
+                reply = f"Encontrei '{top_item['highlight']}' no {top_item['restaurant'].name} e outras opções."
+            else:
+                reply = f"Encontrei {top_item['restaurant'].name} e similares."
+
+            return SearchResponse(reply=reply, intent="search_result", results=clean_results)
+
         else:
-            # Fallback: Se não achar nada parecido, mostra os top 3 gerais ou aleatórios
-            fallback = cls._data_cache[:3]
-            return SearchResponse(
-                reply="Não encontrei exatamente isso, mas veja estas opções populares:",
-                intent="no_match",
-                results=fallback
-            )
+            return SearchResponse(reply="Não encontrei nada específico, mas veja estes:", intent="no_match",
+                                  results=cls._data_cache[:3])

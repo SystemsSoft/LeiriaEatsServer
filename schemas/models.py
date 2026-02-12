@@ -57,6 +57,7 @@ class OrderCreate(BaseModel):
     user_address: str
     user_phone: str
     restaurant_id: int
+    restaurant_name: str
     items: List[OrderItemCreate]
 
 
@@ -75,6 +76,7 @@ class OrderResponse(BaseModel):
     delivery_address: str
     total: float
     status: str
+    restaurant_name: str
     items: List[OrderItemResponse]
 
     class Config:
