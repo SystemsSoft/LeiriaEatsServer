@@ -10,3 +10,6 @@ transformers
 numpy
 scikit-learn
 pymysql
+python-dotenv
+passlib
+bcrypt
