@@ -1,15 +1,12 @@
 # Arquivo: repositories/restaurant_repo.py
 from sqlalchemy.orm import Session, joinedload
 from typing import List
-from core.sql_models import RestaurantDB, ProductDB  # Certifique-se de importar ProductDB se for usar
+from core.sql_models import RestaurantDB, ProductDB
 from schemas.company import CompanyCreateRequest
 from schemas.product import ProductCreateRequest
 
-# --- CORREÇÃO: Importações necessárias para a criptografia ---
 from passlib.context import CryptContext
 
-# --- CORREÇÃO: Inicialização do contexto de criptografia ---
-# Isso cria o objeto que sabe como fazer o hash (embaralhar) a senha
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
