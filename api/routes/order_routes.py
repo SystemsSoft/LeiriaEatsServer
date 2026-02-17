@@ -12,7 +12,6 @@ router = APIRouter()
 
 @router.post("/orders")
 def create_order(order: OrderCreate, db: Session = Depends(get_db)):
-    print(f"📦 Recebendo pedido de {order.user_name} para {order.user_address}")
 
     # 1. Calcular o total e validar produtos
     total_price = 0.0
