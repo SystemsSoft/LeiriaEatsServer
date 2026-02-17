@@ -1,6 +1,7 @@
 # Arquivo: api/routes/company_routes.py
 import stripe
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 # Importações do seu projeto
@@ -9,6 +10,7 @@ from core.config import settings
 from core.sql_models import RestaurantDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest
+from schemas.payment import PaymentIntentRequest
 
 # --- CONFIGURAÇÃO INICIAL ---
 # 1. Cria o Router UMA VEZ SÓ
@@ -113,42 +115,49 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ==========================================
-# 💸 ROTAS DE PAGAMENTO (CHECKOUT)
-# ==========================================
+@router.post("/checkout/create-session")
+def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends(get_db)):
 
-@router.post("/checkout/create-intent")
-def create_payment_intent(amount_euros: float, restaurant_id: int, db: Session = Depends(get_db)):
-    """
-    Cria a intenção de pagamento dividindo o dinheiro:
-    - 80% para o Restaurante
-    - 20% para o Leiria Eats (Platform Fee)
-    """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == request.restaurant_id).first()
 
     if not restaurant or not restaurant.stripe_account_id:
         raise HTTPException(status_code=400, detail="Restaurante não configurou pagamentos.")
 
-    # Converte para Centavos
-    amount_cents = int(amount_euros * 100)
-
-    # Calcula comissão (20%)
+    amount_cents = int(request.amount_euros * 100)
     platform_fee = int(amount_cents * 0.20)
 
     try:
-        intent = stripe.PaymentIntent.create(
-            amount=amount_cents,
-            currency="eur",
-            payment_method_types=["card"],
+        # A MÁGICA ACONTECE AQUI
+        checkout_session = stripe.checkout.Session.create(
+            line_items=[{
+                'price_data': {
+                    'currency': 'eur',
+                    'product_data': {
+                        'name': f'Pedido para {restaurant.name}',
+                    },
+                    'unit_amount': amount_cents,
+                },
+                'quantity': 1,
+            }],
+            mode='payment',
+            # URLs para as quais o WebView será redirecionado
+            success_url='http://localhost/success',
+            # Pode ser qualquer URL, o app só vai detectar a palavra "success"
+            cancel_url='http://localhost/cancel',
+            # Pode ser qualquer URL, o app só vai detectar a palavra "cancel"
 
-            # SPLIT AUTOMÁTICO
-            application_fee_amount=platform_fee,
-            transfer_data={
-                "destination": restaurant.stripe_account_id,
+            # A mesma lógica de divisão do pagamento que você já tinha
+            payment_intent_data={
+                'application_fee_amount': platform_fee,
+                'transfer_data': {
+                    'destination': restaurant.stripe_account_id,
+                },
             },
         )
 
-        return {"client_secret": intent.client_secret, "id": intent.id}
+        # RETORNA A URL DA PÁGINA DE PAGAMENTO GERADA PELO STRIPE
+        return {"url": checkout_session.url}
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
