@@ -82,6 +82,7 @@ class OrderResponse(BaseModel):
     delivery_address: str
     total: float
     status: str
+    delivery_address: str
     restaurant_name: str
     restaurant_category: str
     restaurant_image_url: str
