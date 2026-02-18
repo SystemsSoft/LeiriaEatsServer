@@ -19,9 +19,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     Passo 1: Recebe os dados do carrinho, cria um pedido com status PENDENTE
     e gera a URL de pagamento do Stripe.
     """
-
-    # --- Parte da Lógica do 'create_order' ---
-    # 1. Validar produtos e calcular o total
+    valid_items = []
     total_price = 0.0
     for item in order_data.items:
         product = db.query(ProductDB).filter(ProductDB.id == item.product_id).first()
@@ -29,6 +27,9 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
             total_price += product.price * item.quantity
         else:
             raise HTTPException(status_code=404, detail=f"Produto com id {item.product_id} não encontrado")
+
+        valid_items.append((product, item))
+
 
     # 2. Criar o Pedido no Banco com status PENDENTE
     new_order = OrderDB(
@@ -38,12 +39,28 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
         total=total_price,
         restaurant_id=order_data.restaurant_id,
         user_id=order_data.user_id,
-        restaurant_name=order_data.restaurant_name
+        restaurant_name=order_data.restaurant_name,
+        restaurant_category=order_data.restaurant_category,
+        restaurant_image_url=order_data.restaurant_image_url
     )
+
     db.add(new_order)
     db.commit()
     db.refresh(new_order)
 
+    for product, item_data in valid_items:
+        db_item = OrderItemDB(
+            order_id=new_order.id,
+            product_name=product.name,
+            price=product.price,
+            quantity=item_data.quantity,
+            observation=item_data.observation,
+            image_url=product.image_url,
+            description=product.description
+        )
+
+        db.add(db_item)
+    db.commit()
 
     restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order_data.restaurant_id).first()
     if not restaurant or not restaurant.stripe_account_id:
@@ -87,8 +104,6 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     print(f"👤 Buscando histórico de: {user_id}")
 
-
-    # Use filter_by para evitar o erro de tipo e simplificar a sintaxe
     orders = db.query(OrderDB).filter_by(
         user_id=user_id
     ).order_by(OrderDB.id.desc()).all()

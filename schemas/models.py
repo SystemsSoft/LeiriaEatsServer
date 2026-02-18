@@ -58,6 +58,8 @@ class OrderCreate(BaseModel):
     user_phone: str
     restaurant_id: int
     restaurant_name: str
+    restaurant_category: str
+    restaurant_image_url: str
     payment_intent_id: Optional[str] = None
     items: List[OrderItemCreate]
 
@@ -65,6 +67,9 @@ class OrderCreate(BaseModel):
 class OrderItemResponse(BaseModel):
     product_name: str
     quantity: int
+    description: str
+    image_url: str
+    price: float
     observation: Optional[str] = None
 
     class Config:
@@ -78,6 +83,8 @@ class OrderResponse(BaseModel):
     total: float
     status: str
     restaurant_name: str
+    restaurant_category: str
+    restaurant_image_url: str
     items: List[OrderItemResponse]
 
     class Config:
