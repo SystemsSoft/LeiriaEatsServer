@@ -48,10 +48,10 @@ class OrderDB(Base):
     delivery_address = Column(String)
     status = Column(String, default="Pendente")
     total = Column(Float)
-
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"))
     user_id = Column(String)
     restaurant_name = Column(String)
+    payment_intent_id = Column(String)
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")

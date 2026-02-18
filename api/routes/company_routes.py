@@ -127,7 +127,6 @@ def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends
     platform_fee = int(amount_cents * 0.20)
 
     try:
-        # A MÁGICA ACONTECE AQUI
         checkout_session = stripe.checkout.Session.create(
             line_items=[{
                 'price_data': {
@@ -155,8 +154,10 @@ def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends
             },
         )
 
-        # RETORNA A URL DA PÁGINA DE PAGAMENTO GERADA PELO STRIPE
-        return {"url": checkout_session.url}
+        return {
+            "url": checkout_session.url,
+            "payment_intent_id": checkout_session.payment_intent
+        }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
