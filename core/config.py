@@ -7,7 +7,7 @@ load_dotenv()
 
 
 class Settings:
-    PROJECT_NAME: str = "Leiria Eats"
+    PROJECT_NAME: str = "KOMA AI"
 
     # Busca as chaves no arquivo .env
     STRIPE_API_KEY: str = os.getenv("STRIPE_SECRET_KEY")
@@ -19,5 +19,4 @@ class Settings:
             print("⚠️ AVISO: STRIPE_SECRET_KEY não encontrada no arquivo .env")
 
 
-# Cria uma instância única para ser importada
 settings = Settings()

@@ -58,6 +58,7 @@ class OrderCreate(BaseModel):
     user_phone: str
     restaurant_id: int
     restaurant_name: str
+    payment_intent_id: Optional[str] = None
     items: List[OrderItemCreate]
 
 
