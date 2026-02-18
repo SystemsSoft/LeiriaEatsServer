@@ -52,6 +52,8 @@ class OrderDB(Base):
     user_id = Column(String)
     restaurant_name = Column(String)
     payment_intent_id = Column(String)
+    restaurant_category = Column(String)
+    restaurant_image_url = Column(String)
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
@@ -67,5 +69,7 @@ class OrderItemDB(Base):
     product_name = Column(String)
     price = Column(Float)
     quantity = Column(Integer)
+    description = Column(String)
+    image_url = Column(String)
 
     order = relationship("OrderDB", back_populates="items")
