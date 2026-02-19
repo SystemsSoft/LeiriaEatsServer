@@ -2,6 +2,9 @@
 from pydantic import BaseModel
 from typing import Optional
 
+from schemas.models import Product
+from schemas.product import ProductCreateRequest
+
 
 # REQUEST: O que o app envia para criar a empresa
 class CompanyCreateRequest(BaseModel):
@@ -30,6 +33,7 @@ class CompanyResponse(BaseModel):
     phone: str
     address: str
     image_url: Optional[str]
+    products: list[Product]
 
     # --- NOVOS CAMPOS ---
     login: str
