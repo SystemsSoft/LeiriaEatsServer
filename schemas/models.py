@@ -4,6 +4,7 @@ from typing import List, Optional
 # --- MODELO DO PRODUTO ---
 class Product(BaseModel):
     id: int
+    restaurant_id: int
     name: str
     price: float
     description: str
@@ -36,7 +37,8 @@ class UserRequest(BaseModel):
 class SearchResponse(BaseModel):
     reply: str
     intent: str
-    results: List[Restaurant]
+    restaurantResults: List[Restaurant]
+    productResults: List[Product]
 
 # --- MODELOS DE GESTÃO ---
 class RestaurantCreate(BaseModel):
