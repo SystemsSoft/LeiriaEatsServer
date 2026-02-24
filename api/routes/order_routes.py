@@ -194,4 +194,58 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
     return {"status": "success"}
 
 
+@router.get("/restaurant/{restaurant_id}/finance-summary")
+def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get_db)):
+    print(f"💰 Buscando resumo financeiro para o Restaurante ID: {restaurant_id}")
+
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+
+    if not restaurant or not restaurant.stripe_account_id:
+        raise HTTPException(status_code=404, detail="Restaurante não configurado para pagamentos.")
+
+    try:
+        # 1. Busca os saldos atuais
+        balance = stripe.Balance.retrieve(stripe_account=restaurant.stripe_account_id)
+
+        # 2. Busca os repasses futuros/pendentes (limitamos a 3 para mostrar na lista)
+        upcoming_payouts = stripe.Payout.list(
+            limit=3,
+            status="pending",  # Traz apenas os que ainda vão cair
+            stripe_account=restaurant.stripe_account_id
+        )
+
+        # 3. NOVO: Busca os repasses que JÁ FORAM PAGOS (Já caíram no banco)
+        paid_payouts = stripe.Payout.list(
+            limit=100,  # Puxa até os últimos 100 repasses realizados
+            status="paid",
+            stripe_account=restaurant.stripe_account_id
+        )
+
+        # 4. Faz as somas convertendo de centavos para Euros
+        available = sum(b.amount for b in balance.available) / 100.0
+        pending = sum(b.amount for b in balance.pending) / 100.0
+
+        # Faz a soma de todo o dinheiro que já foi transferido para o banco
+        total_ja_repassado = sum(p.amount for p in paid_payouts.data) / 100.0
+
+        # Formata a lista dos próximos repasses para o Flutter
+        upcoming_list = [
+            {
+                "amount": p.amount / 100.0,
+                "status": p.status,
+                "expected_arrival_date": p.arrival_date
+            } for p in upcoming_payouts.data
+        ]
+
+        return {
+            "saldo_disponivel_eur": available,
+            "saldo_pendente_eur": pending,
+            "total_ja_repassado_eur": total_ja_repassado,  # <--- NOVO CAMPO AQUI
+            "proximos_repasses": upcoming_list
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 
