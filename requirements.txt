@@ -13,3 +13,7 @@ pymysql
 python-dotenv
 passlib
 bcrypt
+stripe
+boto3
+botocore
+starlette
