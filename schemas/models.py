@@ -11,6 +11,7 @@ class Product(BaseModel):
     category: str
     image_url: Optional[str] = None
     preparation_time: Optional[str] = "20-30 min"
+    quantity: Optional[int] = 1  # Quantidade detectada pela IA (padrão: 1)
 
     class Config:
         from_attributes = True
