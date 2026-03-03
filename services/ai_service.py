@@ -131,6 +131,221 @@ class AIService:
         # Sem quantidade especificada
         return 1
 
+    @classmethod
+    def _parse_multiple_products(cls, user_query: str):
+        """
+        Detecta se há múltiplos produtos na query e os separa.
+        Suporta qualquer quantidade de produtos.
+
+        Args:
+            user_query: A consulta do usuário
+
+        Returns:
+            Lista de dicionários com 'text' e 'quantity' para cada produto, ou None se não detectar múltiplos
+        """
+        q = user_query.lower().strip()
+        connectors = [" e ", " com ", " mais ", ", "]
+
+        # Verificar se há algum conector
+        has_connector = any(conn in q for conn in connectors)
+        if not has_connector:
+            return None
+
+        # Remover palavras de comando no início
+        remove_patterns = [
+            r'^quero\s+', r'^preciso\s+', r'^queria\s+', r'^gostaria\s+',
+            r'^me\s+traz\s+', r'^pode\s+trazer\s+', r'^vou\s+querer\s+'
+        ]
+        for pattern in remove_patterns:
+            q = re.sub(pattern, '', q, flags=re.IGNORECASE)
+
+        # Dividir por conectores (incluindo vírgula)
+        parts = re.split(r'\s+e\s+|\s+com\s+|\s+mais\s+|,\s*', q)
+
+        if len(parts) < 2:
+            return None
+
+        products = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Extrair quantidade do fragmento
+            quantity = 1
+            word_numbers = {
+                "um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "tres": 3,
+                "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9,
+                "dez": 10
+            }
+
+            # Procurar números por extenso
+            for word, num in word_numbers.items():
+                if part.startswith(word + " "):
+                    quantity = num
+                    part = part[len(word):].strip()
+                    break
+
+            # Procurar números digitados
+            match = re.match(r'^(\d+)\s+', part)
+            if match:
+                quantity = int(match.group(1))
+                part = part[match.end():].strip()
+
+            products.append({
+                "text": part,
+                "quantity": quantity
+            })
+
+        return products if len(products) >= 2 else None
+
+    @classmethod
+    def _search_product_in_restaurant(cls, product_query: str, restaurant_id: int, model) -> Optional[Product]:
+        """
+        Busca um produto específico dentro de um restaurante.
+
+        Args:
+            product_query: Nome/descrição do produto a buscar
+            restaurant_id: ID do restaurante onde buscar
+            model: Modelo de embeddings
+
+        Returns:
+            Produto encontrado ou None
+        """
+        # Encontrar o restaurante no cache
+        target_restaurant = None
+        for restaurant in cls._data_cache:
+            if restaurant.id == restaurant_id:
+                target_restaurant = restaurant
+                break
+
+        if not target_restaurant or not target_restaurant.products:
+            return None
+
+        # Criar embeddings dos produtos deste restaurante
+        product_texts = []
+        products = []
+        for p in target_restaurant.products:
+            text = f"passage: {p.name} {p.description if p.description else ''}"
+            product_texts.append(text)
+            products.append(p)
+
+        if not product_texts:
+            return None
+
+        # Fazer embedding da query
+        query_embedding = model.encode(f"query: {product_query}", convert_to_tensor=True)
+        product_embeddings = model.encode(product_texts, convert_to_tensor=True)
+
+        # Calcular similaridades
+        scores = util.cos_sim(query_embedding, product_embeddings)[0]
+
+        # Encontrar o produto com maior score
+        best_idx = scores.argmax().item()
+        best_score = scores[best_idx].item()
+
+        # Retornar apenas se score for suficiente (threshold 0.60 para busca interna)
+        if best_score > 0.60:
+            return products[best_idx]
+
+        return None
+
+    @classmethod
+    def _process_multiple_products_search(cls, products_list: list, db: Session, model) -> SearchResponse:
+        """
+        Processa busca de múltiplos produtos (2 ou mais), validando se todos existem no mesmo restaurante.
+
+        Args:
+            products_list: Lista de dicionários com 'text' e 'quantity'
+            db: Sessão do banco de dados
+            model: Modelo de embeddings
+
+        Returns:
+            SearchResponse com produtos encontrados ou mensagem de erro
+        """
+        if not products_list or len(products_list) < 2:
+            return SearchResponse(
+                reply="Não consegui identificar os produtos da sua pesquisa.",
+                intent="no_match",
+                restaurantResults=[],
+                productResults=[]
+            )
+
+        # 1. Buscar o primeiro produto globalmente
+        first_product_query = products_list[0]["text"]
+        first_quantity = products_list[0]["quantity"]
+
+        query_embedding = model.encode(f"query: {first_product_query}", convert_to_tensor=True)
+
+        # Buscar nos produtos indexados
+        if cls._embeddings_products is None:
+            return SearchResponse(
+                reply="Não há produtos disponíveis no momento.",
+                intent="no_match",
+                restaurantResults=[],
+                productResults=[]
+            )
+
+        scores_prod = util.cos_sim(query_embedding, cls._embeddings_products)[0]
+        best_idx = scores_prod.argmax().item()
+        best_score = scores_prod[best_idx].item()
+
+        if best_score <= 0.65:
+            return SearchResponse(
+                reply=f"Não encontrei '{first_product_query}' no cardápio.",
+                intent="no_match",
+                restaurantResults=[],
+                productResults=[]
+            )
+
+        # Primeiro produto encontrado
+        first_product = cls._product_obj_cache[best_idx]
+        restaurant_id = first_product.restaurant_id
+        restaurant_name = cls._product_owner_name[best_idx]
+
+        # Copiar o produto para não modificar o cache
+        from copy import copy
+        first_product = copy(first_product)
+        first_product.quantity = first_quantity
+
+        found_products = [first_product]
+
+        # 2. Buscar TODOS os demais produtos no mesmo restaurante (loop genérico)
+        for i in range(1, len(products_list)):
+            product_query = products_list[i]["text"]
+            product_quantity = products_list[i]["quantity"]
+
+            # Buscar o produto no restaurante específico
+            found_product = cls._search_product_in_restaurant(product_query, restaurant_id, model)
+
+            if found_product is None:
+                # Produto não encontrado - retornar todos os produtos encontrados até agora
+                found_info = ", ".join([f"{p.quantity}x {p.name}" for p in found_products])
+                return SearchResponse(
+                    reply=f"O restaurante {restaurant_name} não tem '{product_query}' disponível no momento. Encontrei apenas: {found_info}.",
+                    intent="product_not_available",
+                    restaurantResults=[],
+                    productResults=found_products  # Retorna todos os produtos encontrados até agora
+                )
+
+            # Copiar o produto e adicionar quantidade
+            found_product = copy(found_product)
+            found_product.quantity = product_quantity
+            found_products.append(found_product)
+
+        # 3. Todos os produtos foram encontrados no mesmo restaurante
+        products_info = ", ".join([f"{p.quantity}x {p.name}" for p in found_products])
+        total_price = sum(p.price * p.quantity for p in found_products)
+
+        reply = f"Encontrei no {restaurant_name}: {products_info} (Total: R$ {total_price:.2f})."
+
+        return SearchResponse(
+            reply=reply,
+            intent="multiple_products_found",
+            restaurantResults=[],
+            productResults=found_products
+        )
+
 
     @classmethod
     def reload_data(cls, db: Session):
@@ -210,6 +425,13 @@ class AIService:
         price_intent = cls._detect_price_intent(user_query)  # Detectar intenção de preço
         suggestion_mode = "sugestão" in user_query.lower()  # Detectar se é uma busca de sugestões
         quantity = cls._detect_quantity(user_query)  # Detectar quantidade solicitada
+
+        # --- 1.5. DETECÇÃO DE MÚLTIPLOS PRODUTOS ---
+        multiple_products = cls._parse_multiple_products(user_query)
+        if multiple_products:
+            # Processar busca de múltiplos produtos
+            return cls._process_multiple_products_search(multiple_products, db, model)
+
         user_embedding = model.encode(f"query: {user_query}", convert_to_tensor=True)
 
         # --- 2. BUSCA DE RESTAURANTES (apenas para intenção explícita) ---
