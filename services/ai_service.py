@@ -4,6 +4,8 @@ from schemas.models import SearchResponse, Restaurant, Product
 from sqlalchemy.orm import Session
 from typing import Optional
 import torch
+import re
+
 
 
 class AIService:
@@ -95,6 +97,40 @@ class AIService:
         # Sem intenção de preço
         return None
 
+    @classmethod
+    def _detect_quantity(cls, user_query: str) -> int:
+        """
+        Detecta se há quantidade numérica na pesquisa (ex: "2 pizzas", "três refrigerantes").
+
+        Args:
+            user_query: A consulta do usuário
+
+        Returns:
+            Quantidade encontrada ou 1 (padrão)
+        """
+        q = user_query.lower().strip()
+
+        # Dicionário de números por extenso
+        word_numbers = {
+            "um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "tres": 3,
+            "quatro": 4, "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9,
+            "dez": 10, "onze": 11, "doze": 12, "treze": 13, "quatorze": 14,
+            "quinze": 15, "vinte": 20, "trinta": 30, "quarenta": 40, "cinquenta": 50
+        }
+
+        # Procurar por números escritos por extenso
+        for word, num in word_numbers.items():
+            if word in q:
+                return num
+
+        # Procurar por números digitados (ex: "2 pizzas", "3 refrigerantes")
+        match = re.search(r'\b(\d+)\b', q)
+        if match:
+            return int(match.group(1))
+
+        # Sem quantidade especificada
+        return 1
+
 
     @classmethod
     def reload_data(cls, db: Session):
@@ -173,6 +209,7 @@ class AIService:
         intent_mode = cls._detect_intent(user_query, scope)
         price_intent = cls._detect_price_intent(user_query)  # Detectar intenção de preço
         suggestion_mode = "sugestão" in user_query.lower()  # Detectar se é uma busca de sugestões
+        quantity = cls._detect_quantity(user_query)  # Detectar quantidade solicitada
         user_embedding = model.encode(f"query: {user_query}", convert_to_tensor=True)
 
         # --- 2. BUSCA DE RESTAURANTES (apenas para intenção explícita) ---
@@ -266,6 +303,14 @@ class AIService:
                 # Caso contrário, retornar apenas 1
                 final_products = [item["obj"] for item in prod_results[:1]]
 
+            # Adicionar quantidade ao produto(s)
+            if final_products and not suggestion_mode:
+                # Para busca normal, adicionar quantidade ao produto único
+                final_products[0].quantity = quantity
+            elif final_products and suggestion_mode:
+                # Para sugestões, adicionar quantidade ao primeiro sugerido
+                final_products[0].quantity = quantity
+
             if final_products:
                 # Criar reply mais específico baseado na intenção de preço e modo
                 if suggestion_mode:
@@ -274,12 +319,12 @@ class AIService:
                     reply = f"Aqui estão sugestões de pratos: {produtos_info}."
                 elif price_intent == "cheap":
                     # Mostrar apenas o 1 prato mais barato
-                    reply = f"Encontrei o prato mais barato: {final_products[0].name} (R$ {final_products[0].price:.2f})."
+                    reply = f"Encontrei o prato mais barato: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
                 elif price_intent == "expensive":
                     # Mostrar apenas o 1 prato mais caro
-                    reply = f"Encontrei o prato premium: {final_products[0].name} (R$ {final_products[0].price:.2f})."
+                    reply = f"Encontrei o prato premium: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
                 else:
-                    reply = f"Encontrei o prato: {final_products[0].name}."
+                    reply = f"Encontrei o prato: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
                 intent = "product_search"
             else:
                 reply = "Não encontrei pratos relevantes para essa busca."
