@@ -12,6 +12,7 @@ class Settings:
     # Busca as chaves no arquivo .env
     STRIPE_API_KEY: str = os.getenv("STRIPE_SECRET_KEY")
     STRIPE_PUBLIC_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
 
     def __init__(self):
         # Aviso de segurança no terminal se a chave não for achada

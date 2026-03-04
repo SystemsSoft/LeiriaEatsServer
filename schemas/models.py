@@ -64,6 +64,7 @@ class OrderCreate(BaseModel):
     restaurant_category: str
     restaurant_image_url: str
     payment_intent_id: Optional[str] = None
+    save_payment_method: bool = False
     items: List[OrderItemCreate]
 
 
