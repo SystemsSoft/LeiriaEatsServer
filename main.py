@@ -8,8 +8,7 @@ from core.database import Base, engine, SessionLocal
 from services.ai_service import AIService
 import os
 
-# --- IMPORTANTE: Importe as rotas específicas ---
-# Certifique-se que product_routes e search_routes estão na pasta api/routes
+
 from api.routes import product_routes, search_routes, chat_routes, order_routes, auth_routes, upload_routes, \
     company_routes
 

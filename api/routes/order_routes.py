@@ -2,12 +2,12 @@
 from typing import List
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from sqlalchemy.orm import Session
 
 from core import config
-from core.database import get_db
-from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB
+from core.database import get_db, SessionLocal
+from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB
 from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate
 
 router = APIRouter()
@@ -30,6 +30,24 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 
         valid_items.append((product, item))
 
+    stripe_customer_id = None
+    if order_data.save_payment_method:
+        existing_saved_method = db.query(SavedPaymentMethodDB).filter(
+            SavedPaymentMethodDB.user_id == order_data.user_id
+        ).order_by(SavedPaymentMethodDB.id.desc()).first()
+
+        if existing_saved_method:
+            stripe_customer_id = existing_saved_method.stripe_customer_id
+        else:
+            try:
+                customer = stripe.Customer.create(
+                    name=order_data.user_name,
+                    phone=order_data.user_phone,
+                    metadata={"user_id": order_data.user_id}
+                )
+                stripe_customer_id = customer.id
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
     # 2. Criar o Pedido no Banco com status PENDENTE
     new_order = OrderDB(
@@ -41,7 +59,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
         user_id=order_data.user_id,
         restaurant_name=order_data.restaurant_name,
         restaurant_category=order_data.restaurant_category,
-        restaurant_image_url=order_data.restaurant_image_url
+        restaurant_image_url=order_data.restaurant_image_url,
+        stripe_customer_id=stripe_customer_id
     )
 
     db.add(new_order)
@@ -70,8 +89,16 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     platform_fee = int(amount_cents * 0.20)
 
     try:
-        checkout_session = stripe.checkout.Session.create(
-            line_items=[{
+        payment_intent_data = {
+            'application_fee_amount': platform_fee,
+            'transfer_data': {'destination': restaurant.stripe_account_id},
+        }
+
+        if order_data.save_payment_method:
+            payment_intent_data['setup_future_usage'] = 'off_session'
+
+        checkout_payload = {
+            'line_items': [{
                 'price_data': {
                     'currency': 'eur',
                     'product_data': {'name': f'Pedido para {restaurant.name}'},
@@ -79,17 +106,21 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
                 },
                 'quantity': 1,
             }],
-            mode='payment',
-            # CRUCIAL: Passamos o ID do nosso pedido para a URL de sucesso
-            success_url=f'http://localhost/success?order_id={new_order.id}',
-            cancel_url='http://localhost/cancel',
-            payment_intent_data={
-                'application_fee_amount': platform_fee,
-                'transfer_data': {'destination': restaurant.stripe_account_id},
-            },
-            # Opcional, mas bom para referência:
-            metadata={'order_id': new_order.id}
-        )
+            'mode': 'payment',
+            'success_url': f'http://localhost/success?order_id={new_order.id}',
+            'cancel_url': 'http://localhost/cancel',
+            'payment_intent_data': payment_intent_data,
+            'metadata': {
+                'order_id': str(new_order.id),
+                'user_id': order_data.user_id,
+                'save_payment_method': str(order_data.save_payment_method).lower(),
+            }
+        }
+
+        if stripe_customer_id:
+            checkout_payload['customer'] = stripe_customer_id
+
+        checkout_session = stripe.checkout.Session.create(**checkout_payload)
 
         # Retorna apenas a URL para o app
         return {"url": checkout_session.url}
@@ -149,18 +180,21 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
     return {"message": "Status atualizado", "status": order.status}
 
 
-from fastapi import Request, Header
-
-
 @router.post("/stripe-webhook")
 async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
     payload = await request.body()
 
+    webhook_secret = config.Settings.STRIPE_WEBHOOK_SECRET or config.Settings.STRIPE_API_KEY
+
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Cabeçalho Stripe-Signature ausente")
 
     try:
         # Verifica se o evento veio realmente do Stripe
         event = stripe.Webhook.construct_event(
-            payload=payload, sig_header=stripe_signature, secret=config.Settings.STRIPE_API_KEY
+            payload=payload,
+            sig_header=stripe_signature,
+            secret=webhook_secret
         )
     except ValueError as e:
         # Payload inválido
@@ -173,22 +207,62 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
 
-        # 1. CAPTURA O ID DO PAGAMENTO
         payment_intent_id = session.get('payment_intent')
+        metadata = session.get('metadata', {}) or {}
+        order_id = metadata.get('order_id')
+        user_id = metadata.get('user_id')
+        should_save_payment_method = str(metadata.get('save_payment_method', 'false')).lower() == 'true'
 
-        # 2. CAPTURA O ID DO NOSSO PEDIDO QUE GUARDAMOS NO METADATA
-        order_id = session.get('metadata', {}).get('order_id')
+        db = SessionLocal()
+        try:
+            if order_id and payment_intent_id:
+                db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+                if db_order:
+                    db_order.payment_intent_id = payment_intent_id
+                    if session.get('customer'):
+                        db_order.stripe_customer_id = session.get('customer')
 
-        if order_id and payment_intent_id:
-            db = next(get_db())  # Obtém uma sessão do banco
-            db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+                    if db_order.status == "PENDING_PAYMENT":
+                        db_order.status = "Pendente"
 
-            if db_order and db_order.status == "PENDING_PAYMENT":
-                # 3. ATUALIZA O PEDIDO NO BANCO
-                db_order.status = "Pendente"  # Ou "Pago"
-                db_order.payment_intent_id = payment_intent_id
-                db.commit()
-                print(f"Pedido {order_id} atualizado com sucesso para pago!")
+            if should_save_payment_method and user_id and payment_intent_id:
+                payment_intent = stripe.PaymentIntent.retrieve(
+                    payment_intent_id,
+                    expand=['payment_method']
+                )
+                payment_method = payment_intent.get('payment_method')
+
+                if payment_method and payment_method.get('type') == 'card':
+                    card_data = payment_method.get('card', {}) or {}
+                    payment_method_id = payment_method.get('id')
+                    stripe_customer_id = session.get('customer') or payment_intent.get('customer')
+
+                    if payment_method_id and stripe_customer_id:
+                        existing_method = db.query(SavedPaymentMethodDB).filter(
+                            SavedPaymentMethodDB.stripe_payment_method_id == payment_method_id
+                        ).first()
+
+                        if existing_method:
+                            existing_method.user_id = user_id
+                            existing_method.stripe_customer_id = stripe_customer_id
+                            existing_method.card_brand = card_data.get('brand')
+                            existing_method.card_last4 = card_data.get('last4')
+                            existing_method.card_exp_month = card_data.get('exp_month')
+                            existing_method.card_exp_year = card_data.get('exp_year')
+                        else:
+                            db.add(SavedPaymentMethodDB(
+                                user_id=user_id,
+                                stripe_customer_id=stripe_customer_id,
+                                stripe_payment_method_id=payment_method_id,
+                                card_brand=card_data.get('brand'),
+                                card_last4=card_data.get('last4'),
+                                card_exp_month=card_data.get('exp_month'),
+                                card_exp_year=card_data.get('exp_year')
+                            ))
+
+            db.commit()
+        finally:
+            db.close()
 
     # Avisa ao Stripe que recebemos o evento com sucesso
     return {"status": "success"}
@@ -246,6 +320,4 @@ def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
 

@@ -17,7 +17,7 @@ class RestaurantDB(Base):
     login = Column(String(50), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
     license = Column(String(100), nullable=True)
-    stripe_account_id = Column(String, nullable=False)
+    stripe_account_id = Column(String(255), nullable=False)
     stripe_onboarding_completed = Column(Boolean, default=False)
 
     products = relationship("ProductDB", back_populates="restaurant")
@@ -31,7 +31,7 @@ class ProductDB(Base):
     description = Column(Text)
     price = Column(Float)
     image_url = Column(String(500))
-    category = Column(String, default="Geral")
+    category = Column(String(100), default="Geral")
     preparation_time = Column(String(100), nullable=True)
 
     # ForeignKey aponta para a tabela 'restaurants', coluna 'id'
@@ -44,16 +44,17 @@ class OrderDB(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
-    customer_name = Column(String)
-    delivery_address = Column(String)
-    status = Column(String, default="Pendente")
+    customer_name = Column(String(255))
+    delivery_address = Column(String(500))
+    status = Column(String(50), default="Pendente")
     total = Column(Float)
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"))
-    user_id = Column(String)
-    restaurant_name = Column(String)
-    payment_intent_id = Column(String)
-    restaurant_category = Column(String)
-    restaurant_image_url = Column(String)
+    user_id = Column(String(255))
+    restaurant_name = Column(String(255))
+    payment_intent_id = Column(String(255))
+    stripe_customer_id = Column(String(255), nullable=True)
+    restaurant_category = Column(String(100))
+    restaurant_image_url = Column(String(500))
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
@@ -65,11 +66,24 @@ class OrderItemDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("orders.id"))
 
-    observation = Column(String, nullable=True)
-    product_name = Column(String)
+    observation = Column(String(500), nullable=True)
+    product_name = Column(String(255))
     price = Column(Float)
     quantity = Column(Integer)
-    description = Column(String)
-    image_url = Column(String)
+    description = Column(Text)
+    image_url = Column(String(500))
 
     order = relationship("OrderDB", back_populates="items")
+
+
+class SavedPaymentMethodDB(Base):
+    __tablename__ = "saved_payment_methods"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), index=True, nullable=False)
+    stripe_customer_id = Column(String(255), nullable=False)
+    stripe_payment_method_id = Column(String(255), unique=True, nullable=False)
+    card_brand = Column(String(50), nullable=True)
+    card_last4 = Column(String(4), nullable=True)
+    card_exp_month = Column(Integer, nullable=True)
+    card_exp_year = Column(Integer, nullable=True)
