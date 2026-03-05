@@ -376,6 +376,71 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
     return {"status": "success"}
 
 
+@router.get("/users/{user_id}/saved-payment-methods")
+def get_user_saved_payment_methods(user_id: str, db: Session = Depends(get_db)):
+    """
+    Retorna todos os métodos de pagamento salvos do usuário.
+    Útil para o app verificar antes de tentar pagamento automático.
+    """
+    print(f"💳 Buscando métodos de pagamento salvos para user: {user_id}")
+
+    saved_methods = db.query(SavedPaymentMethodDB).filter(
+        SavedPaymentMethodDB.user_id == user_id
+    ).all()
+
+    if not saved_methods:
+        return {
+            "has_saved_methods": False,
+            "methods": []
+        }
+
+    methods_data = [
+        {
+            "id": method.id,
+            "brand": method.card_brand,
+            "last4": method.card_last4,
+            "exp_month": method.card_exp_month,
+            "exp_year": method.card_exp_year,
+            "stripe_payment_method_id": method.stripe_payment_method_id,
+        }
+        for method in saved_methods
+    ]
+
+    return {
+        "has_saved_methods": True,
+        "methods": methods_data
+    }
+
+
+@router.delete("/users/{user_id}/saved-payment-methods/{method_id}")
+def delete_saved_payment_method(user_id: str, method_id: int, db: Session = Depends(get_db)):
+    """
+    Deleta um método de pagamento salvo do usuário.
+    """
+    print(f"🗑️ Deletando método {method_id} do user: {user_id}")
+
+    saved_method = db.query(SavedPaymentMethodDB).filter(
+        SavedPaymentMethodDB.id == method_id,
+        SavedPaymentMethodDB.user_id == user_id
+    ).first()
+
+    if not saved_method:
+        raise HTTPException(status_code=404, detail="Método de pagamento não encontrado")
+
+    try:
+        # Detacha o método de pagamento do Stripe
+        stripe.PaymentMethod.detach(saved_method.stripe_payment_method_id)
+        print(f"✅ PaymentMethod {saved_method.stripe_payment_method_id} desanexado do Stripe")
+    except stripe.error.StripeError as e:
+        print(f"⚠️ Aviso ao desanexar no Stripe: {str(e)}")
+        # Continua mesmo se falhar no Stripe, pois pode já estar deletado
+
+    db.delete(saved_method)
+    db.commit()
+
+    return {"message": "Método de pagamento deletado com sucesso"}
+
+
 @router.get("/restaurant/{restaurant_id}/finance-summary")
 def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get_db)):
     print(f"💰 Buscando resumo financeiro para o Restaurante ID: {restaurant_id}")
