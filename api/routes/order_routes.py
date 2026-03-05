@@ -1,5 +1,5 @@
 # Arquivo: api/routes/order_routes.py
-from typing import List
+from typing import List, Dict, Any
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
@@ -12,12 +12,84 @@ from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate
 
 router = APIRouter()
 
+# Garante que chamadas Stripe nesse módulo usem a chave secreta do backend
+stripe.api_key = config.settings.STRIPE_API_KEY
+
+
+def _try_automatic_payment_with_saved_card(
+    *,
+    db: Session,
+    new_order: OrderDB,
+    saved_method: SavedPaymentMethodDB,
+    restaurant: RestaurantDB,
+    amount_cents: int,
+    platform_fee: int,
+):
+    """
+    Tenta cobrar off-session usando o último cartão salvo do usuário.
+    Retorna um dict com dados do pagamento quando sucesso, ou None para fallback em Checkout.
+    """
+    if not saved_method:
+        return None
+
+    if not saved_method.stripe_customer_id or not saved_method.stripe_payment_method_id:
+        return None
+
+    try:
+        # Garantir que o payment_method está anexado ao customer antes de cobrar
+        try:
+            stripe.PaymentMethod.attach(
+                saved_method.stripe_payment_method_id,
+                customer=saved_method.stripe_customer_id
+            )
+        except stripe.error.StripeError:
+            # Já está anexado, ignora silenciosamente
+            pass
+
+        payment_intent = stripe.PaymentIntent.create(
+            amount=amount_cents,
+            currency="eur",
+            customer=saved_method.stripe_customer_id,
+            payment_method=saved_method.stripe_payment_method_id,
+            off_session=True,
+            confirm=True,
+            application_fee_amount=platform_fee,
+            transfer_data={"destination": restaurant.stripe_account_id},
+            metadata={
+                "order_id": str(new_order.id),
+                "user_id": new_order.user_id,
+                "payment_flow": "off_session_saved_card",
+            },
+        )
+
+        new_order.payment_intent_id = payment_intent.id
+        new_order.stripe_customer_id = saved_method.stripe_customer_id
+        new_order.status = "Pendente"
+        db.commit()
+
+        return {
+            "url": None,
+            "auto_paid": True,
+            "order_id": new_order.id,
+            "payment_intent_id": payment_intent.id,
+            "status": new_order.status,
+        }
+
+    except stripe.error.CardError as e:
+        # Falhas de autenticação/recusa caem para fluxo de Checkout com UI.
+        print(f"⚠️ Falha no pagamento automático para pedido {new_order.id}: {str(e)}")
+        return None
+    except stripe.error.StripeError as e:
+        print(f"⚠️ Erro Stripe no pagamento automático para pedido {new_order.id}: {str(e)}")
+        return None
+
 
 @router.post("/orders/initiate-checkout")
 def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Session = Depends(get_db)):
     """
-    Passo 1: Recebe os dados do carrinho, cria um pedido com status PENDENTE
-    e gera a URL de pagamento do Stripe.
+    Cria pedido com status de pagamento pendente.
+    - Se houver cartão salvo e save_payment_method=true, tenta cobrança automática off-session.
+    - Se não for possível cobrar automaticamente, cria Checkout Session (fallback).
     """
     valid_items = []
     total_price = 0.0
@@ -30,7 +102,9 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 
         valid_items.append((product, item))
 
+    existing_saved_method = None
     stripe_customer_id = None
+
     if order_data.save_payment_method:
         existing_saved_method = db.query(SavedPaymentMethodDB).filter(
             SavedPaymentMethodDB.user_id == order_data.user_id
@@ -49,11 +123,10 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
-    # 2. Criar o Pedido no Banco com status PENDENTE
     new_order = OrderDB(
         customer_name=order_data.user_name,
         delivery_address=order_data.user_address,
-        status="Pendente",
+        status="PENDING_PAYMENT",
         total=total_price,
         restaurant_id=order_data.restaurant_id,
         user_id=order_data.user_id,
@@ -87,48 +160,64 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 
     amount_cents = int(total_price * 100)
     platform_fee = int(amount_cents * 0.20)
+    # Tenta cobrança automática apenas se houver cartão salvo válido
+    if (order_data.save_payment_method and
+        existing_saved_method is not None and
+        existing_saved_method.stripe_customer_id and
+        restaurant is not None):
+        auto_payment_result = _try_automatic_payment_with_saved_card(
+            db=db,
+            new_order=new_order,
+            saved_method=existing_saved_method,
+            restaurant=restaurant,
+            amount_cents=amount_cents,
+            platform_fee=platform_fee,
+        )
+        if auto_payment_result:
+            return auto_payment_result
 
     try:
-        payment_intent_data = {
-            'application_fee_amount': platform_fee,
-            'transfer_data': {'destination': restaurant.stripe_account_id},
+        payment_intent_data: Dict[str, Any] = {
+            "application_fee_amount": platform_fee,
+            "transfer_data": {"destination": restaurant.stripe_account_id},
         }
 
         if order_data.save_payment_method:
-            payment_intent_data['setup_future_usage'] = 'off_session'
+            payment_intent_data["setup_future_usage"] = "off_session"
 
         checkout_payload = {
-            'line_items': [{
-                'price_data': {
-                    'currency': 'eur',
-                    'product_data': {'name': f'Pedido para {restaurant.name}'},
-                    'unit_amount': amount_cents,
+            "line_items": [{
+                "price_data": {
+                    "currency": "eur",
+                    "product_data": {"name": f"Pedido para {restaurant.name}"},
+                    "unit_amount": amount_cents,
                 },
-                'quantity': 1,
+                "quantity": 1,
             }],
-            'mode': 'payment',
-            'success_url': f'http://localhost/success?order_id={new_order.id}',
-            'cancel_url': 'http://localhost/cancel',
-            'payment_intent_data': payment_intent_data,
-            'metadata': {
-                'order_id': str(new_order.id),
-                'user_id': order_data.user_id,
-                'save_payment_method': str(order_data.save_payment_method).lower(),
+            "mode": "payment",
+            "success_url": f"http://localhost/success?order_id={new_order.id}",
+            "cancel_url": "http://localhost/cancel",
+            "payment_intent_data": payment_intent_data,
+            "metadata": {
+                "order_id": str(new_order.id),
+                "user_id": order_data.user_id,
+                "save_payment_method": str(order_data.save_payment_method).lower(),
             }
         }
 
         if stripe_customer_id:
-            checkout_payload['customer'] = stripe_customer_id
+            checkout_payload["customer"] = stripe_customer_id
 
         checkout_session = stripe.checkout.Session.create(**checkout_payload)
 
-        # Retorna apenas a URL para o app
-        return {"url": checkout_session.url}
+        return {
+            "url": checkout_session.url,
+            "auto_paid": False,
+            "order_id": new_order.id,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
 
 
 @router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
@@ -320,4 +409,3 @@ def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
