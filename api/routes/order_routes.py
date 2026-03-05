@@ -273,7 +273,9 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
 async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
     payload = await request.body()
 
-    webhook_secret = config.Settings.STRIPE_WEBHOOK_SECRET or config.Settings.STRIPE_API_KEY
+    print(f"🔔 Webhook recebido. Signature: {stripe_signature[:20] if stripe_signature else 'None'}...")
+
+    webhook_secret = config.settings.STRIPE_WEBHOOK_SECRET or config.settings.STRIPE_API_KEY
 
     if not stripe_signature:
         raise HTTPException(status_code=400, detail="Cabeçalho Stripe-Signature ausente")
@@ -285,15 +287,19 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
             sig_header=stripe_signature,
             secret=webhook_secret
         )
+        print(f"✅ Evento validado: {event['type']}")
     except ValueError as e:
         # Payload inválido
+        print(f"❌ Erro - Payload inválido: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except stripe.error.SignatureVerificationError as e:
         # Assinatura inválida
+        print(f"❌ Erro - Assinatura inválida: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
     # --- Processa o evento que nos interessa ---
     if event['type'] == 'checkout.session.completed':
+        print(f"🎉 Evento checkout.session.completed recebido!")
         session = event['data']['object']
 
         payment_intent_id = session.get('payment_intent')
@@ -302,19 +308,26 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
         user_id = metadata.get('user_id')
         should_save_payment_method = str(metadata.get('save_payment_method', 'false')).lower() == 'true'
 
+        print(f"📋 Order ID: {order_id}, User ID: {user_id}, PaymentIntent: {payment_intent_id}")
+
         db = SessionLocal()
         try:
             if order_id and payment_intent_id:
                 db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
                 if db_order:
+                    print(f"📦 Pedido encontrado: {db_order.id}, Status anterior: {db_order.status}")
                     db_order.payment_intent_id = payment_intent_id
                     if session.get('customer'):
                         db_order.stripe_customer_id = session.get('customer')
 
                     if db_order.status == "PENDING_PAYMENT":
                         db_order.status = "Pendente"
+                        print(f"✅ Status atualizado para: Pendente")
+                else:
+                    print(f"❌ Pedido {order_id} não encontrado no banco!")
 
             if should_save_payment_method and user_id and payment_intent_id:
+                print(f"💾 Salvando método de pagamento para user: {user_id}")
                 payment_intent = stripe.PaymentIntent.retrieve(
                     payment_intent_id,
                     expand=['payment_method']
@@ -332,6 +345,7 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
                         ).first()
 
                         if existing_method:
+                            print(f"🔄 Atualizando método existente: {payment_method_id}")
                             existing_method.user_id = user_id
                             existing_method.stripe_customer_id = stripe_customer_id
                             existing_method.card_brand = card_data.get('brand')
@@ -339,6 +353,7 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
                             existing_method.card_exp_month = card_data.get('exp_month')
                             existing_method.card_exp_year = card_data.get('exp_year')
                         else:
+                            print(f"➕ Criando novo método salvo: {payment_method_id}")
                             db.add(SavedPaymentMethodDB(
                                 user_id=user_id,
                                 stripe_customer_id=stripe_customer_id,
@@ -350,6 +365,10 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
                             ))
 
             db.commit()
+            print(f"✅ Webhook processado com sucesso!")
+        except Exception as e:
+            print(f"❌ Erro ao processar webhook: {str(e)}")
+            db.rollback()
         finally:
             db.close()
 
