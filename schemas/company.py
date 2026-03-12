@@ -6,6 +6,31 @@ from schemas.models import Product
 from schemas.product import ProductCreateRequest
 
 
+# ==========================================
+# 🕐 SCHEMAS DE HORÁRIOS
+# ==========================================
+
+class RestaurantHourRequest(BaseModel):
+    id: Optional[int] = None
+    restaurant_id: int
+    day_of_week: int      # 0=Domingo ... 6=Sábado
+    open_time: str        # "HH:mm"
+    close_time: str       # "HH:mm"
+    is_closed: bool = False
+
+
+class RestaurantHourResponse(BaseModel):
+    id: int
+    restaurant_id: int
+    day_of_week: int
+    open_time: str
+    close_time: str
+    is_closed: bool
+
+    class Config:
+        from_attributes = True
+
+
 # REQUEST: O que o app envia para criar a empresa
 class CompanyCreateRequest(BaseModel):
     name: str

@@ -21,6 +21,7 @@ class RestaurantDB(Base):
     stripe_onboarding_completed = Column(Boolean, default=False)
 
     products = relationship("ProductDB", back_populates="restaurant")
+    hours = relationship("RestaurantHourDB", back_populates="restaurant")
 
 
 class ProductDB(Base):
@@ -105,5 +106,22 @@ class ProductRatingDB(Base):
 
     __table_args__ = (
         UniqueConstraint("order_id", "product_id", name="uq_order_product_rating"),
+    )
+
+
+class RestaurantHourDB(Base):
+    __tablename__ = "restaurant_hours"
+
+    id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    day_of_week = Column(Integer, nullable=False)  # 0=Domingo ... 6=Sábado
+    open_time = Column(String(5), nullable=False)   # "HH:mm"
+    close_time = Column(String(5), nullable=False)  # "HH:mm"
+    is_closed = Column(Boolean, default=False)
+
+    restaurant = relationship("RestaurantDB", back_populates="hours")
+
+    __table_args__ = (
+        UniqueConstraint("restaurant_id", "day_of_week", name="uq_restaurant_day"),
     )
 
