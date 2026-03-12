@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from core import config
 from core.database import get_db, SessionLocal
-from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB
-from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate
+from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB
+from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, RatingRequest
 
 router = APIRouter()
 
@@ -493,3 +493,71 @@ def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/orders/ratings")
+def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
+    """
+    Recebe as avaliações dos produtos de um pedido.
+    Calcula e atualiza o rating médio de cada produto avaliado.
+    """
+    order_id_int = int(payload.order_id)
+
+    # Valida o pedido
+    order = db.query(OrderDB).filter(OrderDB.id == order_id_int).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    if order.restaurant_id != payload.restaurant_id:
+        raise HTTPException(status_code=400, detail="restaurant_id não corresponde ao pedido")
+
+    saved_ratings = []
+    for item in payload.ratings:
+        if not (1 <= item.rating <= 5):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Rating inválido ({item.rating}) para produto {item.product_id}. Deve ser entre 1 e 5."
+            )
+
+        product = db.query(ProductDB).filter(ProductDB.id == item.product_id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Produto {item.product_id} não encontrado")
+
+        # Evita duplicatas por pedido+produto (upsert manual)
+        existing = db.query(ProductRatingDB).filter(
+            ProductRatingDB.order_id == order_id_int,
+            ProductRatingDB.product_id == item.product_id,
+        ).first()
+
+        if existing:
+            existing.rating = item.rating
+        else:
+            new_rating = ProductRatingDB(
+                order_id=order_id_int,
+                product_id=item.product_id,
+                restaurant_id=payload.restaurant_id,
+                rating=item.rating,
+            )
+            db.add(new_rating)
+
+        saved_ratings.append(item.product_id)
+
+    db.commit()
+
+    # Recalcula o rating médio de cada produto avaliado e persiste no ProductDB
+    for product_id in saved_ratings:
+        all_ratings = db.query(ProductRatingDB).filter(
+            ProductRatingDB.product_id == product_id,
+            ProductRatingDB.restaurant_id == payload.restaurant_id
+        ).all()
+        if all_ratings:
+            avg = sum(r.rating for r in all_ratings) / len(all_ratings)
+            product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+            if product:
+                product.rating = round(avg, 2)
+
+    db.commit()
+
+    print(f"✅ Avaliações registadas para o pedido {order_id_int}: produtos {saved_ratings}")
+    return {"message": "Avaliações registadas com sucesso", "rated_products": saved_ratings}
+

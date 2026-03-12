@@ -98,6 +98,15 @@ class OrderResponse(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
+class RatingItemRequest(BaseModel):
+    product_id: int
+    rating: int  # 1–5
+
+class RatingRequest(BaseModel):
+    order_id: str
+    restaurant_id: int
+    ratings: List[RatingItemRequest]
+
 class LoginRequest(BaseModel):
         username: str  # Pode ser o email ou login
         password: str
