@@ -2,10 +2,11 @@
 from typing import List
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from core.database import get_db
 # 1. IMPORTAMOS O MODELO DE BANCO CORRETO
-from core.sql_models import ProductDB, RestaurantDB
+from core.sql_models import ProductDB, RestaurantDB, ProductRatingDB
 # 2. IMPORTAMOS O SCHEMA DE DADOS
 from schemas.product import ProductCreateRequest, ProductResponse
 
@@ -45,6 +46,21 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
 def get_products_by_restaurant(restaurant_id: int, db: Session = Depends(get_db)):
     # 3. USAMOS EXPLICITAMENTE ProductDB AQUI
     products = db.query(ProductDB).filter(ProductDB.restaurant_id == restaurant_id).all()
+
+    # Calcula a média de rating para cada produto, filtrado pelo restaurante
+    avg_ratings = dict(
+        db.query(
+            ProductRatingDB.product_id,
+            func.avg(ProductRatingDB.rating)
+        )
+        .filter(ProductRatingDB.restaurant_id == restaurant_id)
+        .group_by(ProductRatingDB.product_id)
+        .all()
+    )
+
+    for product in products:
+        product.rating = avg_ratings.get(product.id)
+
     return products
 
 
@@ -67,6 +83,14 @@ def update_product(product_id: int, product_data: ProductCreateRequest, db: Sess
 
     db.commit()
     db.refresh(db_product)
+
+    # Calcula a média de rating filtrada por restaurante
+    avg = db.query(func.avg(ProductRatingDB.rating)).filter(
+        ProductRatingDB.product_id == product_id,
+        ProductRatingDB.restaurant_id == db_product.restaurant_id
+    ).scalar()
+    db_product.rating = avg
+
     return db_product
 
 

@@ -20,6 +20,7 @@ class ProductResponse(BaseModel):
     restaurant_id: int
     category: str
     preparation_time: Optional[str]
+    rating: Optional[float] = None
 
     class Config:
         from_attributes = True
