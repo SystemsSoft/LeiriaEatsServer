@@ -1,5 +1,5 @@
 # Arquivo: core/sql_models.py
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from core.database import Base
 
@@ -33,6 +33,7 @@ class ProductDB(Base):
     image_url = Column(String(500))
     category = Column(String(100), default="Geral")
     preparation_time = Column(String(100), nullable=True)
+    rating = Column(Float, nullable=True, default=None)
 
     # ForeignKey aponta para a tabela 'restaurants', coluna 'id'
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
@@ -87,3 +88,22 @@ class SavedPaymentMethodDB(Base):
     card_last4 = Column(String(4), nullable=True)
     card_exp_month = Column(Integer, nullable=True)
     card_exp_year = Column(Integer, nullable=True)
+
+
+class ProductRatingDB(Base):
+    __tablename__ = "product_ratings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    rating = Column(Integer, nullable=False)  # 1–5
+
+    order = relationship("OrderDB")
+    product = relationship("ProductDB")
+    restaurant = relationship("RestaurantDB")
+
+    __table_args__ = (
+        UniqueConstraint("order_id", "product_id", name="uq_order_product_rating"),
+    )
+
