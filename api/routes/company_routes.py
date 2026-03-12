@@ -3,13 +3,14 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import List
 
 # Importações do seu projeto
 from core.database import get_db
 from core.config import settings
-from core.sql_models import RestaurantDB
+from core.sql_models import RestaurantDB, RestaurantHourDB
 from repositories.restaurant_repo import RestaurantRepository
-from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest
+from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse
 from schemas.payment import PaymentIntentRequest
 
 # --- CONFIGURAÇÃO INICIAL ---
@@ -161,4 +162,67 @@ def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==========================================
+# 🕐 ROTAS DE HORÁRIOS DE FUNCIONAMENTO
+# ==========================================
+
+@router.post("/restaurant/{restaurant_id}/hours", response_model=List[RestaurantHourResponse], status_code=201)
+def save_restaurant_hours(
+    restaurant_id: int,
+    hours: List[RestaurantHourRequest],
+    db: Session = Depends(get_db)
+):
+    """
+    Recebe a lista completa de horários semanais do restaurante e
+    substitui (upsert) os registos existentes no banco de dados.
+    """
+    # Valida se o restaurante existe
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    print(f"📥 Recebendo {len(hours)} horários para o restaurante {restaurant_id}")
+
+    # Remove todos os horários anteriores deste restaurante (substituição completa)
+    db.query(RestaurantHourDB).filter(RestaurantHourDB.restaurant_id == restaurant_id).delete()
+
+    # Insere os novos horários
+    new_hours = []
+    for h in hours:
+        hour_db = RestaurantHourDB(
+            restaurant_id=restaurant_id,
+            day_of_week=h.day_of_week,
+            open_time=h.open_time,
+            close_time=h.close_time,
+            is_closed=h.is_closed,
+        )
+        db.add(hour_db)
+        new_hours.append(hour_db)
+
+    db.commit()
+    for h in new_hours:
+        db.refresh(h)
+
+    print(f"✅ {len(new_hours)} horários salvos com sucesso para o restaurante {restaurant_id}")
+    return new_hours
+
+
+@router.get("/restaurant/{restaurant_id}/hours", response_model=List[RestaurantHourResponse])
+def get_restaurant_hours(restaurant_id: int, db: Session = Depends(get_db)):
+    """
+    Retorna os horários de funcionamento do restaurante ordenados por dia.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    hours = (
+        db.query(RestaurantHourDB)
+        .filter(RestaurantHourDB.restaurant_id == restaurant_id)
+        .order_by(RestaurantHourDB.day_of_week)
+        .all()
+    )
+    return hours
 
