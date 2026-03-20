@@ -17,6 +17,7 @@ class RestaurantDB(Base):
     login = Column(String(50), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
     license = Column(String(100), nullable=True)
+    plan = Column(String(50), nullable=True)
     stripe_account_id = Column(String(255), nullable=False)
     stripe_onboarding_completed = Column(Boolean, default=False)
 
