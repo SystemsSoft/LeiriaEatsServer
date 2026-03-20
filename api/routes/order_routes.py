@@ -16,6 +16,16 @@ router = APIRouter()
 stripe.api_key = config.settings.STRIPE_API_KEY
 
 
+def get_commission_rate(plan: str | None) -> float:
+    """Retorna a taxa de comissão com base no plano do restaurante.
+    - ESSENCE → 18%
+    - SMART   → 21%
+    """
+    if plan and plan.upper() == "SMART":
+        return 0.21
+    return 0.18  # ESSENCE é o padrão
+
+
 def _try_automatic_payment_with_saved_card(
     *,
     db: Session,
@@ -161,7 +171,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
         raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
 
     amount_cents = int(total_price * 100)
-    platform_fee = int(amount_cents * 0.20)
+    commission_rate = get_commission_rate(restaurant.plan)
+    platform_fee = int(amount_cents * commission_rate)
     # Tenta cobrança automática apenas se houver cartão salvo válido
     if (order_data.save_payment_method and
         existing_saved_method is not None and
