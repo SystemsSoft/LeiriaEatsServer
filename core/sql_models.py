@@ -57,6 +57,7 @@ class OrderDB(Base):
     stripe_customer_id = Column(String(255), nullable=True)
     restaurant_category = Column(String(100))
     restaurant_image_url = Column(String(500))
+    tracking_code = Column(String(100), nullable=True, default="")
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
