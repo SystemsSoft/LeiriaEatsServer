@@ -135,6 +135,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
         restaurant_image_url=order_data.restaurant_image_url,
         stripe_customer_id=stripe_customer_id,
         tracking_code=order_data.tracking_code,
+        delivery_type=order_data.delivery_type,
     )
 
     db.add(new_order)

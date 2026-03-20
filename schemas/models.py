@@ -69,6 +69,7 @@ class OrderCreate(BaseModel):
     save_payment_method: bool = False
     search_query: str = ""
     tracking_code: str = ""
+    delivery_type: Optional[str] = None
     items: List[OrderItemCreate]
 
 
@@ -94,6 +95,7 @@ class OrderResponse(BaseModel):
     restaurant_category: str
     restaurant_image_url: Optional[str] = None
     tracking_code: Optional[str] = ""
+    delivery_type: Optional[str] = None
     items: List[OrderItemResponse]
 
     class Config:
