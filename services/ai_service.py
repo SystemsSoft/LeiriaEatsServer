@@ -1,4 +1,8 @@
+import datetime
+
 from sentence_transformers import SentenceTransformer, util
+
+from core.sql_models import RestaurantHourDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import SearchResponse, Restaurant, Product
 from sqlalchemy.orm import Session
@@ -348,6 +352,55 @@ class AIService:
 
 
     @classmethod
+    def _annotate_is_closed(cls, restaurants: list, db: Session) -> list:
+        """
+        Para cada restaurante (RestaurantDB ou Restaurant), consulta a tabela
+        restaurant_hours pelo dia da semana atual e devolve uma lista de objetos
+        Restaurant (Pydantic) com o campo is_closed preenchido.
+        """
+        # Dia da semana: Python weekday() 0=Segunda...6=Domingo
+        # Tabela usa:                       0=Domingo...6=Sábado
+        today_python = datetime.datetime.now().weekday()
+        today_db = (today_python + 1) % 7
+
+        result = []
+        for restaurant in restaurants:
+            # Consultar o registo de horário para o dia actual
+            hour_record = (
+                db.query(RestaurantHourDB)
+                .filter(
+                    RestaurantHourDB.restaurant_id == restaurant.id,
+                    RestaurantHourDB.day_of_week == today_db
+                )
+                .first()
+            )
+
+            is_closed_value = bool(hour_record.is_closed) if hour_record is not None else None
+            raw_val = hour_record.is_closed if hour_record else 'N/A'
+            print(f"[DEBUG] restaurant_id={restaurant.id} day={today_db} "
+                  f"is_closed_raw={raw_val!r} "
+                  f"-> {is_closed_value}")
+
+            # Construir objecto Pydantic explicitamente para garantir is_closed correcto
+            from schemas.models import Product as ProductSchema
+            pydantic_restaurant = Restaurant(
+                id=restaurant.id,
+                name=restaurant.name,
+                category=restaurant.category,
+                rating=restaurant.rating,
+                image_url=restaurant.image_url,
+                is_closed=is_closed_value,
+                products=[
+                    ProductSchema.model_validate(p) if hasattr(p, '__table__')
+                    else p
+                    for p in (restaurant.products or [])
+                ]
+            )
+            result.append(pydantic_restaurant)
+
+        return result
+
+    @classmethod
     def reload_data(cls, db: Session):
         data = RestaurantRepository.get_all(db)
         if not data:
@@ -401,11 +454,12 @@ class AIService:
         # Definimos o que é considerado um comando para listar tudo
         shortcuts = ["ver todos", "tudo", "restaurantes", "mostrar todos", "lista"]
         if user_query.lower().strip() in shortcuts:
+            all_restaurants = cls._annotate_is_closed(list(cls._data_cache), db)
             return SearchResponse(
                 reply="Aqui estão todas as opções disponíveis:",
                 intent="show_all",
-                restaurantResults=cls._data_cache,  # Retorna a lista completa do cache
-                productResults=[]  # Geralmente não listamos TODOS os produtos (seriam centenas)
+                restaurantResults=all_restaurants,
+                productResults=[]
             )
 
         # --- 0.5. DETECÇÃO DE NOME EXATO DE RESTAURANTE ---
@@ -413,10 +467,11 @@ class AIService:
         query_lower = user_query.lower().strip()
         for restaurant in cls._data_cache:
             if restaurant.name.lower() == query_lower:
+                annotated = cls._annotate_is_closed([restaurant], db)
                 return SearchResponse(
                     reply=f"Encontrei o restaurante {restaurant.name}.",
                     intent="restaurant_search",
-                    restaurantResults=[restaurant],
+                    restaurantResults=annotated,
                     productResults=[]
                 )
 
@@ -553,6 +608,9 @@ class AIService:
                 intent = "no_match"
 
         # --- 6. RETORNO ---
+        if final_restaurants:
+            final_restaurants = cls._annotate_is_closed(final_restaurants, db)
+
         return SearchResponse(
             reply=reply,
             intent=intent,
