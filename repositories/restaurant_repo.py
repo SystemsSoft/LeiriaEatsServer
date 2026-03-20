@@ -27,7 +27,8 @@ class RestaurantRepository:
             # Novos campos
             login=company.login,
             password=company.password,
-            license=company.license
+            license=company.license,
+            plan=company.plan
         )
 
         db.add(db_restaurant)

@@ -42,6 +42,7 @@ class CompanyCreateRequest(BaseModel):
     login: str
     password: str
     license: str
+    plan: Optional[str] = None
 
 class CompanyUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -63,6 +64,7 @@ class CompanyResponse(BaseModel):
     # --- NOVOS CAMPOS ---
     login: str
     license: str
+    plan: Optional[str] = None
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 
