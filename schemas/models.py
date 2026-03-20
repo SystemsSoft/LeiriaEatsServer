@@ -64,9 +64,11 @@ class OrderCreate(BaseModel):
     restaurant_id: int
     restaurant_name: str
     restaurant_category: str
-    restaurant_image_url: str
+    restaurant_image_url: Optional[str] = None
     payment_intent_id: Optional[str] = None
     save_payment_method: bool = False
+    search_query: str = ""
+    tracking_code: str = ""
     items: List[OrderItemCreate]
 
 
