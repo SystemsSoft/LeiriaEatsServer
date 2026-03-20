@@ -90,10 +90,10 @@ class OrderResponse(BaseModel):
     delivery_address: str
     total: float
     status: str
-    delivery_address: str
     restaurant_name: str
     restaurant_category: str
-    restaurant_image_url: str
+    restaurant_image_url: Optional[str] = None
+    tracking_code: Optional[str] = ""
     items: List[OrderItemResponse]
 
     class Config:
