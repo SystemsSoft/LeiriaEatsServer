@@ -58,6 +58,7 @@ class OrderDB(Base):
     restaurant_category = Column(String(100))
     restaurant_image_url = Column(String(500))
     tracking_code = Column(String(100), nullable=True, default="")
+    delivery_type = Column(String(50), nullable=True)
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
