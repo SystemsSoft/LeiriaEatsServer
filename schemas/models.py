@@ -97,6 +97,7 @@ class OrderResponse(BaseModel):
     restaurant_image_url: Optional[str] = None
     tracking_code: Optional[str] = ""
     delivery_type: Optional[str] = ""
+    base_time: int = 0
     items: List[OrderItemResponse]
 
     class Config:
