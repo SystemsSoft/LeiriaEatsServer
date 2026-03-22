@@ -70,6 +70,7 @@ class OrderCreate(BaseModel):
     search_query: str = ""
     tracking_code: str = ""
     delivery_type: Optional[str] = None
+    base_time: int
     items: List[OrderItemCreate]
 
 
