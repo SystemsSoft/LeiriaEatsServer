@@ -368,6 +368,15 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
         }
     }
 
+@router.patch("/orders/{order_id}/base_time")
+def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)):
+    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    order.base_time = payload["base_time"]
+    db.commit()
+    return {"order_id": order_id, "base_time": order.base_time}
+
 
 @router.put("/orders/{order_id}/status")
 def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
