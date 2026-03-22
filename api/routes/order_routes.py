@@ -223,6 +223,9 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 
         checkout_session = stripe.checkout.Session.create(**checkout_payload)
 
+        new_order.checkout_session_id = checkout_session.id
+        db.commit()
+
         return {
             "url": checkout_session.url,
             "auto_paid": False,
@@ -254,6 +257,115 @@ def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
     ).order_by(OrderDB.id.desc()).all()
 
     return orders
+
+
+@router.post("/orders/{order_id}/cancel")
+def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
+    """
+    Cancela um pedido e processa o reembolso automático ao cliente via Stripe.
+
+    Fluxo:
+    1. Se payment_intent_id já está no banco → usa direto.
+    2. Se ainda é null (webhook ainda não chegou) → recupera via checkout_session_id.
+    3. Verifica o status real do PaymentIntent antes de tentar o reembolso:
+       - succeeded      → estorno normal com reverse_transfer
+       - processing     → avisa que o reembolso será feito assim que capturado
+       - não capturado  → cancela o PaymentIntent diretamente (sem cobrança)
+    """
+    print(f"🚫 Solicitação de cancelamento para o pedido #{order_id}")
+
+    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    if order.status == "Cancelado":
+        raise HTTPException(status_code=400, detail="Pedido já está cancelado")
+
+    if order.status == "Entregue":
+        raise HTTPException(status_code=400, detail="Não é possível cancelar um pedido já entregue")
+
+    refund_id = None
+    refund_status = None
+    refund_error = None
+
+    payment_intent_id = order.payment_intent_id
+
+    # ─── Passo 1: webhook ainda não chegou → recupera via checkout_session_id ───
+    if not payment_intent_id and order.checkout_session_id:
+        try:
+            print(f"🔍 payment_intent_id ausente — buscando via Session: {order.checkout_session_id}")
+            session = stripe.checkout.Session.retrieve(order.checkout_session_id)
+            if session.payment_intent:
+                payment_intent_id = session.payment_intent
+                # Persiste para não ter que buscar novamente
+                order.payment_intent_id = payment_intent_id
+                db.commit()
+                print(f"✅ PaymentIntent recuperado: {payment_intent_id}")
+        except stripe.error.StripeError as e:
+            print(f"⚠️ Não foi possível recuperar a Session no Stripe: {str(e)}")
+
+    # ─── Passo 2: processa o reembolso conforme o estado do PaymentIntent ───
+    if payment_intent_id:
+        try:
+            pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+            print(f"💳 PaymentIntent status: {pi.status}")
+
+            if pi.status == "succeeded":
+                # Pagamento capturado → estorna e reverte o repasse ao restaurante
+                refund = stripe.Refund.create(
+                    payment_intent=payment_intent_id,
+                    reason="requested_by_customer",
+                    reverse_transfer=True,       # reverte o repasse ao restaurante
+                    refund_application_fee=True, # devolve a comissão da plataforma
+                    metadata={"order_id": str(order_id)},
+                )
+                refund_id = refund.id
+                refund_status = refund.status
+                print(f"✅ Reembolso criado! ID: {refund_id}, Status: {refund_status}")
+
+            elif pi.status == "processing":
+                # Ainda em processamento — não é possível estornar agora
+                refund_status = "pending_stripe_processing"
+                refund_error = (
+                    "Pagamento ainda em processamento pelo Stripe. "
+                    "O reembolso será processado automaticamente assim que a captura for concluída."
+                )
+                print(f"⏳ PaymentIntent ainda em 'processing' — reembolso pendente")
+
+            elif pi.status in ("requires_payment_method", "requires_confirmation",
+                               "requires_action", "requires_capture"):
+                # Nunca foi capturado → cancela diretamente, sem cobrança
+                stripe.PaymentIntent.cancel(payment_intent_id)
+                refund_status = "not_charged"
+                print(f"✅ PaymentIntent cancelado antes de ser capturado — sem cobrança ao cliente")
+
+            elif pi.status == "canceled":
+                refund_status = "already_canceled"
+                print(f"ℹ️ PaymentIntent já estava cancelado")
+
+        except stripe.error.InvalidRequestError as e:
+            print(f"⚠️ Reembolso não aplicável: {str(e)}")
+            refund_error = str(e)
+        except stripe.error.StripeError as e:
+            print(f"❌ Erro ao processar reembolso: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Erro ao processar reembolso: {str(e)}")
+    else:
+        print(f"ℹ️ Pedido #{order_id} sem PaymentIntent associado — sem reembolso a processar")
+
+    order.status = "Cancelado"
+    db.commit()
+
+    return {
+        "message": "Pedido cancelado com sucesso",
+        "order_id": order_id,
+        "status": "Cancelado",
+        "refund": {
+            "processed": refund_id is not None,
+            "refund_id": refund_id,
+            "refund_status": refund_status,
+            "error": refund_error,
+        }
+    }
 
 
 @router.put("/orders/{order_id}/status")
@@ -382,6 +494,42 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
         except Exception as e:
             print(f"❌ Erro ao processar webhook: {str(e)}")
             db.rollback()
+        finally:
+            db.close()
+
+    if event['type'] == 'payment_intent.succeeded':
+        pi = event['data']['object']
+        payment_intent_id = pi.get('id')
+        print(f"💳 Evento payment_intent.succeeded recebido: {payment_intent_id}")
+
+        db = SessionLocal()
+        try:
+            # Verifica se o pedido associado foi cancelado enquanto o pagamento estava em "processing"
+            order = db.query(OrderDB).filter(
+                OrderDB.payment_intent_id == payment_intent_id,
+                OrderDB.status == "Cancelado"
+            ).first()
+
+            if order:
+                print(f"⚠️ Pedido #{order.id} estava cancelado enquanto o pagamento processava — iniciando reembolso tardio")
+                stripe.Refund.create(
+                    payment_intent=payment_intent_id,
+                    reason="requested_by_customer",
+                    reverse_transfer=True,
+                    refund_application_fee=True,
+                    metadata={
+                        "order_id": str(order.id),
+                        "late_refund": "true",
+                    }
+                )
+                print(f"✅ Reembolso tardio processado com sucesso para o pedido #{order.id}")
+            else:
+                print(f"ℹ️ Nenhum pedido cancelado encontrado para PaymentIntent {payment_intent_id}")
+
+        except stripe.error.StripeError as e:
+            print(f"❌ Erro ao processar reembolso tardio: {str(e)}")
+        except Exception as e:
+            print(f"❌ Erro inesperado no reembolso tardio: {str(e)}")
         finally:
             db.close()
 
