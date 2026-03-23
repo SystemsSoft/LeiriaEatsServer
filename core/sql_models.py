@@ -1,7 +1,11 @@
 # Arquivo: core/sql_models.py
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, Boolean, UniqueConstraint, DateTime
 from sqlalchemy.orm import relationship
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from core.database import Base
+
+LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
 
 class RestaurantDB(Base):
@@ -64,6 +68,7 @@ class OrderDB(Base):
     tracking_code = Column(String(100), nullable=True, default="")
     delivery_type = Column(String(50), nullable=True)
     base_time = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
