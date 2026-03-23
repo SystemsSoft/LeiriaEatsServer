@@ -17,3 +17,5 @@ stripe
 boto3
 botocore
 starlette
+tzdata
+

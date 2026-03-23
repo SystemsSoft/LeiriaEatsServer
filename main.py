@@ -1,4 +1,6 @@
 # Arquivo: main.py
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,7 @@ import os
 
 from api.routes import product_routes, search_routes, chat_routes, order_routes, auth_routes, upload_routes, \
     company_routes
+from services.courier_notification_service import courier_notification_worker
 
 # Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
@@ -50,6 +53,9 @@ async def startup_event():
         print(f"⚠️ Erro ao pré-carregar IA: {e}")
     finally:
         db.close()
+
+    # Inicia o worker de notificação a estafetas em background
+    asyncio.create_task(courier_notification_worker())
 
 app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

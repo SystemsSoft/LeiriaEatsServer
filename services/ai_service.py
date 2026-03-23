@@ -1,4 +1,5 @@
 import datetime
+from zoneinfo import ZoneInfo
 
 from sentence_transformers import SentenceTransformer, util
 
@@ -358,9 +359,12 @@ class AIService:
         restaurant_hours pelo dia da semana atual e devolve uma lista de objetos
         Restaurant (Pydantic) com o campo is_closed preenchido.
         """
-        # Dia da semana: Python weekday() 0=Segunda...6=Domingo
-        # Tabela usa:                       0=Domingo...6=Sábado
-        today_python = datetime.datetime.now().weekday()
+        # Dia da semana calculado na timezone de Portugal (não do servidor EUA)
+        # Python weekday() 0=Segunda...6=Domingo
+        # Tabela usa:       0=Domingo...6=Sábado
+        _lisbon_tz = ZoneInfo("Europe/Lisbon")
+        today_lisbon = datetime.datetime.now(datetime.timezone.utc).astimezone(_lisbon_tz)
+        today_python = today_lisbon.weekday()
         today_db = (today_python + 1) % 7
 
         result = []
