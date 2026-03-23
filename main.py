@@ -13,6 +13,7 @@ import os
 
 from api.routes import product_routes, search_routes, chat_routes, order_routes, auth_routes, upload_routes, \
     company_routes
+from api.routes import drivers as driver_routes
 from services.courier_notification_service import courier_notification_worker
 
 # Cria as tabelas se não existirem
@@ -41,6 +42,7 @@ app.include_router(order_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(upload_routes.router)
 app.include_router(company_routes.router)
+app.include_router(driver_routes.router)   # /drivers/*
 
 @app.on_event("startup")
 async def startup_event():

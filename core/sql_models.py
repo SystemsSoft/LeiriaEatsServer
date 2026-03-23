@@ -121,6 +121,42 @@ class ProductRatingDB(Base):
     )
 
 
+class DriverDB(Base):
+    __tablename__ = "drivers"
+
+    id       = Column(Integer, primary_key=True, index=True)
+    login    = Column(String(100), unique=True, nullable=False, index=True)
+    password = Column(String(255), nullable=False)
+    status   = Column(String(50), default="PENDING")   # PENDING | ACTIVE | INACTIVE
+
+    # ── Informação pessoal ──────────────────────────────────────
+    name        = Column(String(255), nullable=True)
+    phone       = Column(String(50),  nullable=True)
+    email       = Column(String(255), nullable=True)
+    birth_date  = Column(String(20),  nullable=True)
+    address     = Column(Text,        nullable=True)
+    city        = Column(String(100), nullable=True)
+    postal_code = Column(String(20),  nullable=True)
+    cc          = Column(String(50),  nullable=True)   # Cartão de Cidadão
+
+    # ── Informação fiscal ───────────────────────────────────────
+    nif  = Column(String(20),  nullable=True)
+    niss = Column(String(20),  nullable=True)
+    iban = Column(String(50),  nullable=True)
+    stripe_account_id = Column(String(255), nullable=True)
+
+    # ── Informação do veículo ───────────────────────────────────
+    vehicle_type             = Column(String(50),  nullable=True)   # MOTORCYCLE, BICYCLE, etc.
+    vehicle_plate            = Column(String(20),  nullable=True)
+    vehicle_model            = Column(String(100), nullable=True)
+    vehicle_color            = Column(String(50),  nullable=True)
+    carta_conducao           = Column(String(100), nullable=True)
+    carta_conducao_categoria = Column(String(50),  nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+
+
 class RestaurantHourDB(Base):
     __tablename__ = "restaurant_hours"
 
