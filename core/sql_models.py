@@ -18,6 +18,8 @@ class RestaurantDB(Base):
     password = Column(String(255), nullable=False)
     license = Column(String(100), nullable=True)
     plan = Column(String(50), nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     stripe_account_id = Column(String(255), nullable=False)
     stripe_onboarding_completed = Column(Boolean, default=False)
 

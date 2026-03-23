@@ -38,10 +38,13 @@ class CompanyCreateRequest(BaseModel):
     phone: str
     address: str
     image_url: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
     login: str
     password: str
     license: str
+
     plan: Optional[str] = None
 
 class CompanyUpdateRequest(BaseModel):
@@ -50,6 +53,8 @@ class CompanyUpdateRequest(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     image_url: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 # RESPONSE: O que o app recebe de volta
 class CompanyResponse(BaseModel):
@@ -59,6 +64,8 @@ class CompanyResponse(BaseModel):
     phone: str
     address: str
     image_url: Optional[str]
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     products: list[Product]
 
     # --- NOVOS CAMPOS ---

@@ -23,6 +23,8 @@ class RestaurantRepository:
             phone=company.phone,
             address=company.address,
             image_url=company.image_url,
+            latitude=company.latitude,
+            longitude=company.longitude,
 
             # Novos campos
             login=company.login,
