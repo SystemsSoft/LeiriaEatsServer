@@ -143,7 +143,8 @@ class DriverDB(Base):
     nif  = Column(String(20),  nullable=True)
     niss = Column(String(20),  nullable=True)
     iban = Column(String(50),  nullable=True)
-    stripe_account_id = Column(String(255), nullable=True)
+    stripe_account_id        = Column(String(255), nullable=True)
+    stripe_onboarding_completed = Column(Boolean, default=False)
 
     # ── Informação do veículo ───────────────────────────────────
     vehicle_type             = Column(String(50),  nullable=True)   # MOTORCYCLE, BICYCLE, etc.

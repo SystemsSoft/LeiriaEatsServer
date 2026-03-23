@@ -105,5 +105,9 @@ class DriverProfileResponse(BaseModel):
     carta_conducao: Optional[str] = None
     carta_conducao_categoria: Optional[str] = None
 
+    # stripe
+    stripe_account_id: Optional[str] = None
+    stripe_onboarding_completed: bool = False
+
     model_config = {"from_attributes": True}
 
