@@ -353,6 +353,51 @@ def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db
 
 
 # ──────────────────────────────────────────────────────────────
+# Stripe – Painel financeiro (Express Dashboard)
+# ──────────────────────────────────────────────────────────────
+
+@router.post("/{driver_id}/stripe-dashboard")
+def get_driver_stripe_dashboard(driver_id: int, db: Session = Depends(get_db)):
+    """
+    Gera um link de acesso único ao painel financeiro do Stripe Express
+    (Express Dashboard) para o estafeta.
+
+    O link é de uso único e expira após alguns minutos — o app deve
+    abri-lo directamente num WebView ou browser externo.
+
+    Pré-requisito: o estafeta já deve ter concluído o onboarding Stripe
+    (stripe_account_id preenchido e charges_enabled = true).
+    """
+    driver = _get_driver_or_404(driver_id, db)
+
+    if not driver.stripe_account_id:
+        raise HTTPException(
+            status_code=400,
+            detail="O estafeta não tem conta Stripe associada. Conclua o onboarding primeiro.",
+        )
+
+    try:
+        login_link = stripe.Account.create_login_link(driver.stripe_account_id)
+        print(f"💳 Dashboard link gerado para estafeta id={driver.id}: {login_link.url}")
+        return {
+            "driver_id":         driver.id,
+            "stripe_account_id": driver.stripe_account_id,
+            "dashboard_url":     login_link.url,
+        }
+
+    except stripe.error.InvalidRequestError as e:
+        # Conta ainda não está activa / onboarding incompleto
+        print(f"⚠️ Dashboard indisponível para estafeta id={driver.id}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="O painel financeiro ainda não está disponível. Certifique-se de que o onboarding Stripe foi concluído.",
+        )
+    except stripe.error.StripeError as e:
+        print(f"❌ Erro Stripe (dashboard) estafeta id={driver.id}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ──────────────────────────────────────────────────────────────
 # Stripe – Saldo do estafeta
 # ──────────────────────────────────────────────────────────────
 
