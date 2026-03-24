@@ -1,9 +1,11 @@
 # Arquivo: main.py
 import asyncio
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.responses import FileResponse
 
 from core.database import Base, engine, SessionLocal
@@ -20,6 +22,41 @@ from services.courier_notification_service import courier_notification_worker
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Leria Eats - Modular Backend")
+
+
+# ──────────────────────────────────────────────────────────────
+# Handler global de erros de validação (422)
+# ──────────────────────────────────────────────────────────────
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    erros_formatados = []
+    for erro in exc.errors():
+        # loc = ("body", "login") → "body → login"
+        caminho = " → ".join(str(parte) for parte in erro.get("loc", []))
+        mensagem = erro.get("msg", "Erro desconhecido")
+        tipo = erro.get("type", "")
+        valor_recebido = erro.get("input", "—")
+
+        erros_formatados.append({
+            "campo":    caminho,
+            "problema": mensagem,
+            "tipo":     tipo,
+            "recebido": str(valor_recebido),
+        })
+
+    # Imprime no terminal para facilitar o debug
+    print("❌ Erro 422 – Falha na validação do pedido:")
+    print(f"   Rota: {request.method} {request.url.path}")
+    for e in erros_formatados:
+        print(f"   • [{e['campo']}] {e['problema']} (tipo={e['tipo']}, recebido={e['recebido']})")
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "erro":    "Dados inválidos ou em falta no pedido.",
+            "detalhes": erros_formatados,
+        },
+    )
 
 # Configuração de CORS
 app.add_middleware(

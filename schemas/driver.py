@@ -59,6 +59,15 @@ class DriverRegisterRequest(BaseModel):
     login: str
     password: str
 
+    # Perfil completo — opcional no registo.
+    # O app pode enviar tudo de uma vez OU só as credenciais
+    # e preencher o perfil depois via PUT /{id}/profile.
+    personal_info: Optional[DriverPersonalInfoDto] = Field(None, alias="personal_info")
+    fiscal_info:   Optional[DriverFiscalInfoDto]   = Field(None, alias="fiscal_info")
+    vehicle_info:  Optional[DriverVehicleInfoDto]  = Field(None, alias="vehicle_info")
+
+    model_config = {"populate_by_name": True}
+
 
 class DriverLoginRequest(BaseModel):
     login: str
@@ -70,6 +79,7 @@ class DriverLoginResponse(BaseModel):
     driver_id: int
     name: str
     status: str
+    profile_complete: bool
     message: str
 
 
@@ -81,6 +91,7 @@ class DriverProfileResponse(BaseModel):
     id: int
     login: str
     status: str
+    profile_complete: bool = False
 
     # personal
     name: Optional[str] = None

@@ -47,6 +47,44 @@ def _stripe_email(login: str) -> str:
     return login if "@" in login else f"{login}@Komaai.com"
 
 
+def _is_profile_complete(driver: DriverDB) -> bool:
+    """Verifica se o estafeta preencheu todos os dados obrigatórios."""
+    return all([
+        driver.name, driver.phone, driver.email,
+        driver.nif, driver.iban,
+        driver.vehicle_type, driver.vehicle_plate,
+    ])
+
+
+def _apply_profile(driver: DriverDB, payload: DriverRegisterRequest) -> None:
+    """Aplica os dados de perfil ao objecto DriverDB quando presentes no payload."""
+    if payload.personal_info:
+        p = payload.personal_info
+        driver.name        = p.name
+        driver.phone       = p.phone
+        driver.email       = p.email
+        driver.birth_date  = p.birth_date
+        driver.address     = p.address
+        driver.city        = p.city
+        driver.postal_code = p.postal_code
+        driver.cc          = p.cc
+
+    if payload.fiscal_info:
+        f = payload.fiscal_info
+        driver.nif  = f.nif
+        driver.niss = f.niss
+        driver.iban = f.iban
+
+    if payload.vehicle_info:
+        v = payload.vehicle_info
+        driver.vehicle_type             = v.type
+        driver.vehicle_plate            = v.plate
+        driver.vehicle_model            = v.model
+        driver.vehicle_color            = v.color
+        driver.carta_conducao           = v.carta_conducao
+        driver.carta_conducao_categoria = v.carta_conducao_categoria
+
+
 # ──────────────────────────────────────────────────────────────
 # Auth
 # ──────────────────────────────────────────────────────────────
@@ -54,14 +92,19 @@ def _stripe_email(login: str) -> str:
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db)):
     """
-    Regista um novo estafeta.
-    Cria automaticamente uma conta Stripe Express para receber transferências de entregas.
+    Regista um novo estafeta seguindo o mesmo fluxo dos restaurantes:
+      1. Guarda as credenciais na BD.
+      2. Aplica dados de perfil se enviados de uma vez (todos opcionais).
+      3. Cria uma conta Stripe Express.
+      4. Gera o link de onboarding do Stripe (UI hospedada pelo Stripe).
+      5. Devolve o link → app abre em WebView → utilizador preenche dados no Stripe
+         → Stripe redireciona para return_url.
     """
     existing = db.query(DriverDB).filter(DriverDB.login == payload.login).first()
     if existing:
         raise HTTPException(status_code=400, detail="Login já existe.")
 
-    # 1. Persiste o estafeta primeiro para obter o ID
+    # 1. Persiste o estafeta
     driver = DriverDB(
         login=payload.login,
         password=_hash_password(payload.password),
@@ -71,9 +114,14 @@ def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db
     db.commit()
     db.refresh(driver)
 
-    # 2. Cria a conta Stripe Express para transferências de entregas
-    stripe_account_id = None
+    # 2. Aplica perfil se enviado junto com o registo
+    _apply_profile(driver, payload)
+    if _is_profile_complete(driver):
+        driver.status = "REVIEW"
+    db.commit()
+
     try:
+        # 3. Cria conta Stripe Express (igual ao restaurante)
         print(f"✨ Criando conta Stripe Express para estafeta id={driver.id} ...")
         account = stripe.Account.create(
             type="express",
@@ -85,19 +133,40 @@ def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db
             },
             metadata={"driver_id": str(driver.id)},
         )
-        stripe_account_id = account.id
-        driver.stripe_account_id = stripe_account_id
+        driver.stripe_account_id = account.id
         db.commit()
-        print(f"✅ Conta Stripe criada: {stripe_account_id} → estafeta id={driver.id}")
-    except stripe.error.StripeError as e:
-        # Não bloqueia o registo – o onboarding pode ser refeito mais tarde
-        print(f"⚠️ Aviso: não foi possível criar conta Stripe para estafeta id={driver.id}: {e}")
+        print(f"✅ Conta Stripe criada: {account.id} → estafeta id={driver.id}")
 
-    return {
-        "message": "Estafeta registado com sucesso!",
-        "driver_id": driver.id,
-        "stripe_account_id": stripe_account_id,
-    }
+        # 4. Gera o link de onboarding (UI do Stripe — igual ao restaurante)
+        account_link = stripe.AccountLink.create(
+            account=driver.stripe_account_id,
+            refresh_url="http://localhost:8080/#/driver/onboarding-retry",
+            return_url="http://localhost:8080/#/driver/onboarding-success",
+            type="account_onboarding",
+        )
+        print(f"🔗 Onboarding link gerado para estafeta id={driver.id}")
+
+        return {
+            "message":          "Estafeta registado com sucesso!",
+            "driver_id":        driver.id,
+            "status":           driver.status,
+            "profile_complete": _is_profile_complete(driver),
+            "stripe_account_id": driver.stripe_account_id,
+            "onboarding_url":   account_link.url,   # ← app abre este URL no WebView
+        }
+
+    except stripe.error.StripeError as e:
+        # Stripe falhou — estafeta fica registado mas sem conta Stripe.
+        # O link de onboarding pode ser gerado depois via POST /{id}/stripe-onboarding.
+        print(f"⚠️ Stripe indisponível para estafeta id={driver.id}: {e}")
+        return {
+            "message":          "Estafeta registado, mas a conta Stripe não pôde ser criada agora.",
+            "driver_id":        driver.id,
+            "status":           driver.status,
+            "profile_complete": _is_profile_complete(driver),
+            "stripe_account_id": None,
+            "onboarding_url":   None,
+        }
 
 
 @router.post("/login", response_model=DriverLoginResponse)
@@ -108,12 +177,15 @@ def login_driver(payload: DriverLoginRequest, db: Session = Depends(get_db)):
     if not driver or not _verify_password(payload.password, driver.password):
         raise HTTPException(status_code=401, detail="Login ou senha incorretos.")
 
-    print(f"🔐 Estafeta autenticado: {driver.login}")
+    complete = _is_profile_complete(driver)
+    print(f"🔐 Estafeta autenticado: {driver.login} | perfil completo: {complete}")
+
     return DriverLoginResponse(
         authenticated=True,
         driver_id=driver.id,
         name=driver.name or "",
         status=driver.status,
+        profile_complete=complete,
         message="Login realizado com sucesso.",
     )
 
@@ -173,14 +245,14 @@ def update_driver_profile(
     driver.carta_conducao           = v.carta_conducao
     driver.carta_conducao_categoria = v.carta_conducao_categoria
 
-    # Após o preenchimento completo o estafeta fica em revisão
-    if driver.status == "PENDING":
+    # Promove o status conforme completude do perfil
+    if _is_profile_complete(driver) and driver.status == "PENDING":
         driver.status = "REVIEW"
 
     db.commit()
     db.refresh(driver)
 
-    print(f"📝 Perfil actualizado: estafeta id={driver.id} ({driver.name})")
+    print(f"📝 Perfil actualizado: estafeta id={driver.id} ({driver.name}) | completo={driver.profile_complete}")
     return driver
 
 
@@ -224,7 +296,7 @@ def create_driver_stripe_onboarding(driver_id: int, db: Session = Depends(get_db
 
         print(f"🔗 Onboarding link gerado para estafeta id={driver.id}")
         return {
-            "url": account_link.url,
+            "onboarding_url":    account_link.url,
             "stripe_account_id": driver.stripe_account_id,
         }
 
