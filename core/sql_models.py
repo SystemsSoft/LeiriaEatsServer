@@ -157,15 +157,6 @@ class DriverDB(Base):
     created_at = Column(DateTime(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))
 
-    @property
-    def profile_complete(self) -> bool:
-        """True quando todos os campos obrigatórios do perfil estão preenchidos."""
-        return all([
-            self.name, self.phone, self.email,
-            self.nif, self.iban,
-            self.vehicle_type, self.vehicle_plate,
-        ])
-
 
 class RestaurantHourDB(Base):
     __tablename__ = "restaurant_hours"

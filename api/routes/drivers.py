@@ -47,42 +47,23 @@ def _stripe_email(login: str) -> str:
     return login if "@" in login else f"{login}@Komaai.com"
 
 
-def _is_profile_complete(driver: DriverDB) -> bool:
-    """Verifica se o estafeta preencheu todos os dados obrigatórios."""
-    return all([
-        driver.name, driver.phone, driver.email,
-        driver.nif, driver.iban,
-        driver.vehicle_type, driver.vehicle_plate,
-    ])
-
-
 def _apply_profile(driver: DriverDB, payload: DriverRegisterRequest) -> None:
     """Aplica os dados de perfil ao objecto DriverDB quando presentes no payload."""
     if payload.personal_info:
         p = payload.personal_info
-        driver.name        = p.name
-        driver.phone       = p.phone
-        driver.email       = p.email
-        driver.birth_date  = p.birth_date
-        driver.address     = p.address
-        driver.city        = p.city
-        driver.postal_code = p.postal_code
-        driver.cc          = p.cc
-
-    if payload.fiscal_info:
-        f = payload.fiscal_info
-        driver.nif  = f.nif
-        driver.niss = f.niss
-        driver.iban = f.iban
+        if p.name        is not None: driver.name        = p.name
+        if p.phone       is not None: driver.phone       = p.phone
+        if p.email       is not None: driver.email       = p.email
+        if p.address     is not None: driver.address     = p.address
+        if p.city        is not None: driver.city        = p.city
+        if p.postal_code is not None: driver.postal_code = p.postal_code
 
     if payload.vehicle_info:
         v = payload.vehicle_info
-        driver.vehicle_type             = v.type
-        driver.vehicle_plate            = v.plate
-        driver.vehicle_model            = v.model
-        driver.vehicle_color            = v.color
-        driver.carta_conducao           = v.carta_conducao
-        driver.carta_conducao_categoria = v.carta_conducao_categoria
+        if v.type  is not None: driver.vehicle_type  = v.type
+        if v.plate is not None: driver.vehicle_plate = v.plate
+        if v.model is not None: driver.vehicle_model = v.model
+        if v.color is not None: driver.vehicle_color = v.color
 
 
 # ──────────────────────────────────────────────────────────────
@@ -116,17 +97,16 @@ def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db
 
     # 2. Aplica perfil se enviado junto com o registo
     _apply_profile(driver, payload)
-    if _is_profile_complete(driver):
-        driver.status = "REVIEW"
     db.commit()
 
     try:
-        # 3. Cria conta Stripe Express (igual ao restaurante)
+        # 3. Cria conta Stripe Express (sem pré-preenchimento — dados serão lidos do Stripe após onboarding)
         print(f"✨ Criando conta Stripe Express para estafeta id={driver.id} ...")
+        p = payload.personal_info
         account = stripe.Account.create(
             type="express",
             country="PT",
-            email=_stripe_email(payload.login),
+            email=p.email if (p and p.email) else _stripe_email(payload.login),
             capabilities={
                 "card_payments": {"requested": True},
                 "transfers":     {"requested": True},
@@ -147,25 +127,21 @@ def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db
         print(f"🔗 Onboarding link gerado para estafeta id={driver.id}")
 
         return {
-            "message":          "Estafeta registado com sucesso!",
-            "driver_id":        driver.id,
-            "status":           driver.status,
-            "profile_complete": _is_profile_complete(driver),
+            "message":           "Estafeta registado com sucesso!",
+            "driver_id":         driver.id,
+            "status":            driver.status,
             "stripe_account_id": driver.stripe_account_id,
-            "onboarding_url":   account_link.url,   # ← app abre este URL no WebView
+            "onboarding_url":    account_link.url,   # ← app abre este URL no WebView
         }
 
     except stripe.error.StripeError as e:
-        # Stripe falhou — estafeta fica registado mas sem conta Stripe.
-        # O link de onboarding pode ser gerado depois via POST /{id}/stripe-onboarding.
         print(f"⚠️ Stripe indisponível para estafeta id={driver.id}: {e}")
         return {
-            "message":          "Estafeta registado, mas a conta Stripe não pôde ser criada agora.",
-            "driver_id":        driver.id,
-            "status":           driver.status,
-            "profile_complete": _is_profile_complete(driver),
+            "message":           "Estafeta registado, mas a conta Stripe não pôde ser criada agora.",
+            "driver_id":         driver.id,
+            "status":            driver.status,
             "stripe_account_id": None,
-            "onboarding_url":   None,
+            "onboarding_url":    None,
         }
 
 
@@ -177,15 +153,13 @@ def login_driver(payload: DriverLoginRequest, db: Session = Depends(get_db)):
     if not driver or not _verify_password(payload.password, driver.password):
         raise HTTPException(status_code=401, detail="Login ou senha incorretos.")
 
-    complete = _is_profile_complete(driver)
-    print(f"🔐 Estafeta autenticado: {driver.login} | perfil completo: {complete}")
+    print(f"🔐 Estafeta autenticado: {driver.login}")
 
     return DriverLoginResponse(
         authenticated=True,
         driver_id=driver.id,
         name=driver.name or "",
         status=driver.status,
-        profile_complete=complete,
         message="Login realizado com sucesso.",
     )
 
@@ -219,40 +193,30 @@ def update_driver_profile(
     """
     Recebe o UpdateDriverProfileRequest enviado pelo app do estafeta e
     actualiza todas as secções: personal_info, fiscal_info e vehicle_info.
+    Apenas os campos presentes (não None) são gravados.
     """
     driver = _get_driver_or_404(driver_id, db)
 
-    p = payload.personal_info
-    driver.name        = p.name
-    driver.phone       = p.phone
-    driver.email       = p.email
-    driver.birth_date  = p.birth_date
-    driver.address     = p.address
-    driver.city        = p.city
-    driver.postal_code = p.postal_code
-    driver.cc          = p.cc
+    if payload.personal_info:
+        p = payload.personal_info
+        if p.name        is not None: driver.name        = p.name
+        if p.phone       is not None: driver.phone       = p.phone
+        if p.email       is not None: driver.email       = p.email
+        if p.address     is not None: driver.address     = p.address
+        if p.city        is not None: driver.city        = p.city
+        if p.postal_code is not None: driver.postal_code = p.postal_code
 
-    f = payload.fiscal_info
-    driver.nif  = f.nif
-    driver.niss = f.niss
-    driver.iban = f.iban
-
-    v = payload.vehicle_info
-    driver.vehicle_type             = v.type
-    driver.vehicle_plate            = v.plate
-    driver.vehicle_model            = v.model
-    driver.vehicle_color            = v.color
-    driver.carta_conducao           = v.carta_conducao
-    driver.carta_conducao_categoria = v.carta_conducao_categoria
-
-    # Promove o status conforme completude do perfil
-    if _is_profile_complete(driver) and driver.status == "PENDING":
-        driver.status = "REVIEW"
+    if payload.vehicle_info:
+        v = payload.vehicle_info
+        if v.type  is not None: driver.vehicle_type  = v.type
+        if v.plate is not None: driver.vehicle_plate = v.plate
+        if v.model is not None: driver.vehicle_model = v.model
+        if v.color is not None: driver.vehicle_color = v.color
 
     db.commit()
     db.refresh(driver)
 
-    print(f"📝 Perfil actualizado: estafeta id={driver.id} ({driver.name}) | completo={driver.profile_complete}")
+    print(f"📝 Perfil actualizado: estafeta id={driver.id} ({driver.name})")
     return driver
 
 
@@ -275,7 +239,7 @@ def create_driver_stripe_onboarding(driver_id: int, db: Session = Depends(get_db
             account = stripe.Account.create(
                 type="express",
                 country="PT",
-                email=_stripe_email(driver.login),
+                email=driver.email or _stripe_email(driver.login),
                 capabilities={
                     "card_payments": {"requested": True},
                     "transfers":     {"requested": True},
@@ -308,8 +272,9 @@ def create_driver_stripe_onboarding(driver_id: int, db: Session = Depends(get_db
 @router.post("/{driver_id}/stripe-onboarding/complete")
 def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db)):
     """
-    Marca o onboarding Stripe do estafeta como concluído e verifica o estado
-    real da conta directamente na API do Stripe.
+    Marca o onboarding Stripe do estafeta como concluído, verifica o estado
+    real da conta na API do Stripe e sincroniza os dados preenchidos lá
+    (nome, telefone, email, morada) de volta para a BD.
     """
     driver = _get_driver_or_404(driver_id, db)
 
@@ -317,25 +282,70 @@ def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="O estafeta não tem conta Stripe associada.")
 
     try:
-        account = stripe.Account.retrieve(driver.stripe_account_id)
+        # expand=["individual"] necessário para obter os dados pessoais preenchidos no onboarding
+        account = stripe.Account.retrieve(
+            driver.stripe_account_id,
+            expand=["individual"],
+        )
         is_complete = (
             account.get("details_submitted", False) and
             account.get("charges_enabled", False) and
             account.get("payouts_enabled", False)
         )
         driver.stripe_onboarding_completed = is_complete
+
+        # ── Sincroniza dados Stripe → BD ────────────────────────────────────
+        if is_complete:
+            individual = account.get("individual") or {}
+
+            first_name = individual.get("first_name") or ""
+            last_name  = individual.get("last_name")  or ""
+            full_name  = f"{first_name} {last_name}".strip()
+            if full_name:
+                driver.name = full_name
+
+            phone = individual.get("phone") or account.get("phone")
+            if phone:
+                driver.phone = phone
+
+            email = individual.get("email") or account.get("email")
+            if email:
+                driver.email = email
+
+            addr = individual.get("address") or {}
+            if addr.get("line1"):
+                driver.address = addr["line1"]
+            if addr.get("city"):
+                driver.city = addr["city"]
+            if addr.get("postal_code"):
+                driver.postal_code = addr["postal_code"]
+
+            print(
+                f"✅ Dados Stripe sincronizados → estafeta id={driver.id}: "
+                f"name={driver.name}, phone={driver.phone}, "
+                f"email={driver.email}, address={driver.address}"
+            )
+
         db.commit()
         db.refresh(driver)
 
         return {
-            "driver_id": driver.id,
-            "stripe_account_id": driver.stripe_account_id,
+            "driver_id":            driver.id,
+            "stripe_account_id":    driver.stripe_account_id,
             "onboarding_completed": is_complete,
-            "charges_enabled": account.get("charges_enabled"),
-            "payouts_enabled": account.get("payouts_enabled"),
+            "charges_enabled":      account.get("charges_enabled"),
+            "payouts_enabled":      account.get("payouts_enabled"),
+            # dados sincronizados do Stripe:
+            "synced_name":          driver.name,
+            "synced_phone":         driver.phone,
+            "synced_email":         driver.email,
+            "synced_address":       driver.address,
+            "synced_city":          driver.city,
+            "synced_postal_code":   driver.postal_code,
         }
 
     except stripe.error.StripeError as e:
+        print(f"❌ Erro Stripe no complete do estafeta id={driver.id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
