@@ -78,18 +78,11 @@ class DriverProfileResponse(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    postal_code: Optional[str] = None
 
     # vehicle
     vehicle_type: Optional[str] = None
     vehicle_plate: Optional[str] = None
     vehicle_model: Optional[str] = None
     vehicle_color: Optional[str] = None
-
-    # stripe
-    stripe_account_id: Optional[str] = None
-    stripe_onboarding_completed: bool = False
 
     model_config = {"from_attributes": True}
