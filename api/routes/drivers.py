@@ -114,6 +114,7 @@ def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db
             metadata={"driver_id": str(driver.id)},
         )
         driver.stripe_account_id = account.id
+        driver.status = "STRIPE_PENDING"   # conta Stripe criada, aguarda onboarding
         db.commit()
         print(f"✅ Conta Stripe criada: {account.id} → estafeta id={driver.id}")
 
@@ -320,6 +321,8 @@ def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db
             if addr.get("postal_code"):
                 driver.postal_code = addr["postal_code"]
 
+            driver.status = "ACTIVE"   # onboarding concluído → estafeta activo
+
             print(
                 f"✅ Dados Stripe sincronizados → estafeta id={driver.id}: "
                 f"name={driver.name}, phone={driver.phone}, "
@@ -404,9 +407,9 @@ def update_driver_status(
 ):
     """
     Altera o estado do estafeta.
-    Valores aceites: PENDING | REVIEW | ACTIVE | INACTIVE
+    Valores aceites: PENDING | STRIPE_PENDING | REVIEW | ACTIVE | INACTIVE
     """
-    allowed = {"PENDING", "REVIEW", "ACTIVE", "INACTIVE"}
+    allowed = {"PENDING", "STRIPE_PENDING", "REVIEW", "ACTIVE", "INACTIVE"}
     if new_status.upper() not in allowed:
         raise HTTPException(
             status_code=400,
