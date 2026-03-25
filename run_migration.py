@@ -3,13 +3,16 @@ from core.database import engine
 from sqlalchemy import text
 
 cmds = [
-    # 2026-03-25: localização do estafeta
+    # localização do estafeta (já aplicado — SKIP se existir)
     "ALTER TABLE drivers ADD COLUMN latitude  DOUBLE NULL",
     "ALTER TABLE drivers ADD COLUMN longitude DOUBLE NULL",
     "ALTER TABLE drivers ADD COLUMN last_seen DATETIME NULL",
-    # 2026-03-25: estafeta atribuído ao pedido
+    # estafeta atribuído ao pedido (já aplicado — SKIP se existir)
     "ALTER TABLE orders ADD COLUMN driver_id   INT          NULL",
     "ALTER TABLE orders ADD COLUMN driver_name VARCHAR(255) NULL",
+    # coordenadas do endereço de entrega
+    "ALTER TABLE orders ADD COLUMN delivery_latitude  DOUBLE NULL",
+    "ALTER TABLE orders ADD COLUMN delivery_longitude DOUBLE NULL",
 ]
 
 with engine.connect() as conn:
@@ -22,4 +25,3 @@ with engine.connect() as conn:
             print(f"⏭️  SKIP (já existe ou erro): {e}")
 
 print("\n🎉 Migration concluída.")
-

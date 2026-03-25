@@ -70,6 +70,14 @@ class OrderDB(Base):
     base_time = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
+    # ── Estafeta atribuído automaticamente pelo worker ──────────
+    driver_id   = Column(Integer, ForeignKey("drivers.id"), nullable=True)
+    driver_name = Column(String(255), nullable=True)
+
+    # ── Coordenadas do endereço de entrega (preenchidas na criação) ─────────
+    delivery_latitude  = Column(Float, nullable=True)
+    delivery_longitude = Column(Float, nullable=True)
+
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
 
@@ -178,4 +186,3 @@ class RestaurantHourDB(Base):
     __table_args__ = (
         UniqueConstraint("restaurant_id", "day_of_week", name="uq_restaurant_day"),
     )
-
