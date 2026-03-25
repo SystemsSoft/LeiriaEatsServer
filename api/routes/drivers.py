@@ -11,7 +11,7 @@ from starlette import status
 
 from core import config
 from core.database import get_db
-from core.sql_models import DriverDB
+from core.sql_models import DriverDB, OrderDB
 from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
@@ -276,6 +276,66 @@ def find_nearest_driver(
         "longitude":   nearest.longitude,
         "distance_km": round(distance_km, 2),
         "last_seen":   nearest.last_seen.isoformat() if nearest.last_seen else None,
+    }
+
+
+@router.get("/orders/pending")
+def get_pending_orders_for_driver(
+    driver_id: int = Query(..., description="ID do estafeta"),
+    db: Session = Depends(get_db),
+):
+    """
+    O app do estafeta chama este endpoint via polling (ex: a cada 10s)
+    para verificar se tem algum pedido atribuído a ele.
+
+    Cada pedido inclui:
+      - restaurant_latitude / restaurant_longitude → para mostrar no mapa
+      - distance_km → distância actual do estafeta ao restaurante (km)
+
+    Status devolvidos:
+      - 'A aguardar estafeta' → novo pedido atribuído, driver deve ir buscar
+      - 'A caminho'           → pedido aceite, em entrega
+    """
+    driver = _get_driver_or_404(driver_id, db)
+
+    orders = db.query(OrderDB).filter(
+        OrderDB.driver_id == driver_id,
+        OrderDB.status.in_(["A aguardar estafeta", "A caminho"]),
+    ).order_by(OrderDB.id.desc()).all()
+
+    result = []
+    for o in orders:
+        # Coordenadas do restaurante via relationship
+        rest_lat = o.restaurant.latitude  if o.restaurant else None
+        rest_lng = o.restaurant.longitude if o.restaurant else None
+
+        # Distância em tempo real: posição actual do estafeta → restaurante
+        distance_km = None
+        if (rest_lat is not None and rest_lng is not None
+                and driver.latitude is not None and driver.longitude is not None):
+            distance_km = round(
+                _haversine(driver.latitude, driver.longitude, rest_lat, rest_lng), 2
+            )
+
+        result.append({
+            "order_id":             o.id,
+            "status":               o.status,
+            "restaurant_name":      o.restaurant_name,
+            "restaurant_latitude":  rest_lat,
+            "restaurant_longitude": rest_lng,
+            "distance_km":          distance_km,
+            "delivery_address":     o.delivery_address,
+            "total":                o.total,
+            "tracking_code":        o.tracking_code,
+            "created_at":           o.created_at.isoformat() if o.created_at else None,
+        })
+
+    return {
+        "driver_id":  driver_id,
+        "driver_lat": driver.latitude,
+        "driver_lng": driver.longitude,
+        "total":      len(result),
+        "orders":     result,
     }
 
 
