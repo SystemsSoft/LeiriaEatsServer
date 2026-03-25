@@ -279,9 +279,9 @@ def find_nearest_driver(
     }
 
 
-@router.get("/orders/pending")
+@router.get("/{driver_id}/orders/pending")
 def get_pending_orders_for_driver(
-    driver_id: int = Query(..., description="ID do estafeta"),
+    driver_id: int,
     db: Session = Depends(get_db),
 ):
     """
