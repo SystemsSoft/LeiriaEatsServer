@@ -1,4 +1,5 @@
 # Arquivo: schemas/driver.py
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,17 @@ class DriverVehicleInfoDto(BaseModel):
 class UpdateDriverProfileRequest(BaseModel):
     personal_info: Optional[DriverPersonalInfoDto] = Field(None, alias="personal_info")
     vehicle_info:  Optional[DriverVehicleInfoDto]  = Field(None, alias="vehicle_info")
+
+    model_config = {"populate_by_name": True}
+
+
+# ──────────────────────────────────────────────────────────────
+# Localização — payload enviado pelo app via polling
+# ──────────────────────────────────────────────────────────────
+
+class DriverLocationUpdate(BaseModel):
+    latitude:  float = Field(..., ge=-90,  le=90,  description="Latitude GPS do estafeta")
+    longitude: float = Field(..., ge=-180, le=180, description="Longitude GPS do estafeta")
 
     model_config = {"populate_by_name": True}
 
@@ -84,5 +96,10 @@ class DriverProfileResponse(BaseModel):
     vehicle_plate: Optional[str] = None
     vehicle_model: Optional[str] = None
     vehicle_color: Optional[str] = None
+
+    # localização
+    latitude:  Optional[float]    = None
+    longitude: Optional[float]    = None
+    last_seen: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

@@ -1,9 +1,11 @@
 # Arquivo: api/routes/drivers.py
 import hashlib
-from typing import List
+import math
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from starlette import status
 
@@ -14,6 +16,7 @@ from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
     DriverLoginResponse,
+    DriverLocationUpdate,
     UpdateDriverProfileRequest,
     DriverProfileResponse,
 )
@@ -175,6 +178,108 @@ def list_drivers(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
     return db.query(DriverDB).offset(skip).limit(limit).all()
 
 
+# ──────────────────────────────────────────────────────────────
+# Localização – rotas estáticas
+# ATENÇÃO: devem ficar ANTES de GET /{driver_id} para o FastAPI
+# não interpretar "online"/"nearest" como um driver_id inteiro.
+# ──────────────────────────────────────────────────────────────
+
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distância em km entre dois pontos geográficos (fórmula de Haversine)."""
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+@router.get("/online")
+def list_online_drivers(
+    max_minutes: int = Query(default=2, ge=1, le=60,
+                             description="Considera online estafetas que actualizaram a localização nos últimos N minutos"),
+    db: Session = Depends(get_db),
+):
+    """
+    Devolve todos os estafetas ACTIVE que enviaram a sua localização
+    nos últimos `max_minutes` minutos.
+
+    Útil para o painel admin ou para o algoritmo de atribuição de pedidos.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_minutes)
+
+    online = db.query(DriverDB).filter(
+        DriverDB.status == "ACTIVE",
+        DriverDB.last_seen >= cutoff,
+        DriverDB.latitude.isnot(None),
+        DriverDB.longitude.isnot(None),
+    ).all()
+
+    return {
+        "total_online": len(online),
+        "max_minutes":  max_minutes,
+        "drivers": [
+            {
+                "driver_id": d.id,
+                "name":      d.name,
+                "latitude":  d.latitude,
+                "longitude": d.longitude,
+                "last_seen": d.last_seen.isoformat() if d.last_seen else None,
+            }
+            for d in online
+        ],
+    }
+
+
+@router.get("/nearest")
+def find_nearest_driver(
+    lat: float = Query(..., ge=-90,  le=90,  description="Latitude do ponto de referência (ex: restaurante)"),
+    lng: float = Query(..., ge=-180, le=180, description="Longitude do ponto de referência"),
+    max_minutes: int = Query(default=2, ge=1, le=60,
+                             description="Considera apenas estafetas que actualizaram a localização nos últimos N minutos"),
+    db: Session = Depends(get_db),
+):
+    """
+    Devolve o estafeta ACTIVE mais próximo de um ponto (lat/lng),
+    considerando apenas estafetas que actualizaram a localização
+    nos últimos `max_minutes` minutos.
+
+    Exemplo: GET /drivers/nearest?lat=39.74&lng=-8.80
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_minutes)
+
+    candidates = db.query(DriverDB).filter(
+        DriverDB.status == "ACTIVE",
+        DriverDB.last_seen >= cutoff,
+        DriverDB.latitude.isnot(None),
+        DriverDB.longitude.isnot(None),
+    ).all()
+
+    if not candidates:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nenhum estafeta online nos últimos {max_minutes} minuto(s).",
+        )
+
+    nearest = min(candidates, key=lambda d: _haversine(lat, lng, d.latitude, d.longitude))
+    distance_km = _haversine(lat, lng, nearest.latitude, nearest.longitude)
+
+    print(
+        f"🗺️  Estafeta mais próximo de ({lat},{lng}): "
+        f"id={nearest.id} ({nearest.name}) — {distance_km:.2f} km"
+    )
+
+    return {
+        "driver_id":   nearest.id,
+        "name":        nearest.name,
+        "latitude":    nearest.latitude,
+        "longitude":   nearest.longitude,
+        "distance_km": round(distance_km, 2),
+        "last_seen":   nearest.last_seen.isoformat() if nearest.last_seen else None,
+    }
+
+
+# ── /{driver_id} fica por ÚLTIMO entre os GETs ───────────────
 @router.get("/{driver_id}", response_model=DriverProfileResponse)
 def get_driver_profile(driver_id: int, db: Session = Depends(get_db)):
     """Retorna o perfil completo de um estafeta."""
@@ -468,6 +573,41 @@ def update_driver_status(
 
     print(f"🔄 Estado do estafeta id={driver.id} alterado para {driver.status}")
     return driver
+
+
+# ──────────────────────────────────────────────────────────────
+# Localização – polling do app do estafeta
+# ──────────────────────────────────────────────────────────────
+
+@router.patch("/{driver_id}/location")
+def update_driver_location(
+    driver_id: int,
+    payload: DriverLocationUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Recebe a posição GPS actual do estafeta, enviada pelo app via polling
+    (recomendado: a cada 10–15 segundos enquanto o estafeta estiver ACTIVE).
+
+    Guarda latitude, longitude e o timestamp do update (last_seen) na BD.
+    """
+    driver = _get_driver_or_404(driver_id, db)
+
+    driver.latitude  = payload.latitude
+    driver.longitude = payload.longitude
+    driver.last_seen = datetime.now(timezone.utc)
+    db.commit()
+
+    print(
+        f"📍 Localização actualizada — estafeta id={driver_id} "
+        f"({driver.name}): lat={payload.latitude}, lng={payload.longitude}"
+    )
+    return {
+        "driver_id": driver_id,
+        "latitude":  driver.latitude,
+        "longitude": driver.longitude,
+        "last_seen": driver.last_seen.isoformat(),
+    }
 
 
 # ──────────────────────────────────────────────────────────────
