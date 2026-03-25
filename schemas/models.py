@@ -108,6 +108,12 @@ class OrderResponse(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
+class OrderStatusResponse(BaseModel):
+    message: str
+    status: str
+    driver_name: Optional[str] = None
+    tracking_code: Optional[str] = None
+
 class RatingItemRequest(BaseModel):
     product_id: int
     rating: int  # 1–5
