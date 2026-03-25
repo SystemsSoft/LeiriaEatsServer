@@ -325,6 +325,8 @@ def get_pending_orders_for_driver(
             "restaurant_longitude": rest_lng,
             "distance_km":          distance_km,
             "delivery_address":     o.delivery_address,
+            "delivery_latitude":    o.delivery_latitude,
+            "delivery_longitude":   o.delivery_longitude,
             "total":                o.total,
             "tracking_code":        o.tracking_code,
             "created_at":           o.created_at.isoformat() if o.created_at else None,

@@ -136,6 +136,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     new_order = OrderDB(
         customer_name=order_data.user_name,
         delivery_address=order_data.user_address,
+        delivery_latitude=order_data.delivery_latitude,
+        delivery_longitude=order_data.delivery_longitude,
         status="PENDING_PAYMENT",
         total=total_price,
         restaurant_id=order_data.restaurant_id,

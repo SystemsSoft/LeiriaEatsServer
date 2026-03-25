@@ -61,6 +61,8 @@ class OrderCreate(BaseModel):
     user_name: str
     user_address: str
     user_phone: str
+    delivery_latitude:  Optional[float] = None   # coordenadas do endereço de entrega
+    delivery_longitude: Optional[float] = None
     restaurant_id: int
     restaurant_name: str
     restaurant_category: str
@@ -70,7 +72,7 @@ class OrderCreate(BaseModel):
     search_query: str = ""
     tracking_code: str = ""
     delivery_type: Optional[str] = None
-    base_time: int
+    base_time: int = 0        # opcional — restaurante define depois via PATCH
     items: List[OrderItemCreate]
 
 
