@@ -34,7 +34,7 @@ TOLERANCE_MINUTES     = 5    # janela de reenvio para pedidos que já passaram o
 DRIVER_ONLINE_MINUTES = 2    # considera driver "online" se last_seen < N minutos atrás
 
 # Estados considerados "activos" (aguardam atribuição de estafeta)
-ACTIVE_STATUSES = {"Pendente", "Em preparação"}
+ACTIVE_STATUSES = {"Pendente", "Em preparação", "Em Preparo"}
 
 # Conjunto em memória de pedidos já notificados
 _notified_order_ids: set[int] = set()
@@ -191,7 +191,10 @@ def _check_and_notify() -> None:
 
             notify_at = _compute_notify_at(order)
 
-            if window_start <= notify_at <= now:
+            # Modificamos a lógica: se a hora de notificar for inferior ou igual à hora atual,
+            # dispara a atribuição, sem depender da janela de 5 minutos,
+            # assim nunca ignora pedidos mesmo que tenham passado da hora ideal.
+            if notify_at <= now:
                 # 1. Atribui o estafeta mais próximo e muda status para "A aguardar estafeta"
                 driver = _assign_nearest_driver(order, db)
 
