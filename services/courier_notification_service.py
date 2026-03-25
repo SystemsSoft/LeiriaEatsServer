@@ -4,8 +4,9 @@ Worker em background que monitoriza pedidos activos e:
   1. Calcula o momento de notificação: ready_at - NOTIFY_BEFORE_MINUTES
   2. Quando esse momento chega, encontra o estafeta ACTIVE mais próximo
      do restaurante (usando a última posição conhecida via polling GPS).
-  3. Atribui o estafeta ao pedido (driver_id / driver_name).
-  4. Muda o status do pedido para 'A aguardar estafeta'.
+  3. Envia oferta ao estafeta → status 'Oferta enviada'.
+  4. O estafeta aceita  → status 'A aguardar estafeta'.
+     O estafeta recusa / timeout → limpa atribuição e tenta próximo.
 
 Timing:
   ready_at   = created_at + base_time (minutos)
@@ -28,16 +29,21 @@ logger = logging.getLogger("courier_notification")
 
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
-NOTIFY_BEFORE_MINUTES = 20   # avisar X minutos antes do pedido ficar pronto
+NOTIFY_BEFORE_MINUTES = 25   # avisar X minutos antes do pedido ficar pronto
 POLL_INTERVAL_SECONDS = 60   # verifica a cada N segundos
 TOLERANCE_MINUTES     = 5    # janela de reenvio para pedidos que já passaram o notify_at
 DRIVER_ONLINE_MINUTES = 2    # considera driver "online" se last_seen < N minutos atrás
+ACCEPT_TIMEOUT_SECONDS = 60  # estafeta tem X segundos para aceitar ou recusar a oferta
 
 # Estados considerados "activos" (aguardam atribuição de estafeta)
-ACTIVE_STATUSES = {"Pendente", "Em preparação", "Em Preparo"}
+# Apenas "Em preparo": o restaurante já confirmou e está a preparar — só então faz sentido chamar um estafeta
+ACTIVE_STATUSES = {"Em preparo"}
 
 # Conjunto em memória de pedidos já notificados
 _notified_order_ids: set[int] = set()
+
+# Dicionário em memória: order_id → datetime em que a oferta foi enviada ao estafeta
+_pending_acceptance: dict[int, datetime] = {}
 
 
 # ──────────────────────────────────────────
@@ -59,7 +65,8 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def _assign_nearest_driver(order: OrderDB, db) -> DriverDB | None:
     """
     Encontra o estafeta ACTIVE mais próximo do restaurante do pedido,
-    atribui-o ao pedido e muda o status para 'A aguardar estafeta'.
+    atribui-o ao pedido e muda o status para 'Oferta enviada'.
+    O estafeta tem ACCEPT_TIMEOUT_SECONDS para aceitar ou recusar.
     Devolve o DriverDB atribuído, ou None se não houver nenhum disponível.
     """
     restaurant = order.restaurant
@@ -70,18 +77,33 @@ def _assign_nearest_driver(order: OrderDB, db) -> DriverDB | None:
         )
         return None
 
+    # Guarda defensiva: nunca sobrescrever uma atribuição já existente
+    if order.driver_id is not None:
+        logger.info(
+            "ℹ️  Pedido #%d já tem estafeta atribuído (id=%d), a saltar.",
+            order.id, order.driver_id,
+        )
+        return None
+
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=DRIVER_ONLINE_MINUTES)
+
+    # IDs dos estafetas que já têm uma viagem activa (oferta pendente, a aguardar recolha ou já a caminho)
+    busy_driver_ids = db.query(OrderDB.driver_id).filter(
+        OrderDB.driver_id.isnot(None),
+        OrderDB.status.in_(["Oferta enviada", "A aguardar estafeta", "A caminho"]),
+    )
 
     candidates = db.query(DriverDB).filter(
         DriverDB.status    == "ACTIVE",
         DriverDB.last_seen >= cutoff,
         DriverDB.latitude.isnot(None),
         DriverDB.longitude.isnot(None),
+        DriverDB.id.notin_(busy_driver_ids),   # exclui estafetas já ocupados
     ).all()
 
     if not candidates:
         logger.warning(
-            "⚠️  Pedido #%d — nenhum estafeta online nos últimos %d minutos.",
+            "⚠️  Pedido #%d — nenhum estafeta livre online nos últimos %d minutos.",
             order.id, DRIVER_ONLINE_MINUTES,
         )
         return None
@@ -92,19 +114,22 @@ def _assign_nearest_driver(order: OrderDB, db) -> DriverDB | None:
     )
     dist_km = _haversine(restaurant.latitude, restaurant.longitude, nearest.latitude, nearest.longitude)
 
-    # Persiste a atribuição no pedido
+    # Persiste a oferta no pedido — estafeta ainda não aceitou
     order.driver_id   = nearest.id
     order.driver_name = nearest.name
-    order.status      = "A aguardar estafeta"
+    order.status      = "Oferta enviada"
     db.commit()
 
+    # Regista o momento da oferta para controlo de timeout
+    _pending_acceptance[order.id] = datetime.now(timezone.utc)
+
     logger.info(
-        "🚴 Pedido #%d atribuído → estafeta id=%d (%s) a %.2f km do restaurante '%s'.",
-        order.id, nearest.id, nearest.name, dist_km, restaurant.name,
+        "📨 Oferta enviada → estafeta id=%d (%s) a %.2f km do restaurante '%s' | Pedido #%d.",
+        nearest.id, nearest.name, dist_km, restaurant.name, order.id,
     )
     print(
-        f"🚴 Pedido #{order.id} → estafeta '{nearest.name}' (id={nearest.id}) "
-        f"a {dist_km:.2f} km — status: A aguardar estafeta"
+        f"📨 Oferta enviada → estafeta '{nearest.name}' (id={nearest.id}) "
+        f"a {dist_km:.2f} km | Pedido #{order.id} | timeout: {ACCEPT_TIMEOUT_SECONDS}s"
     )
     return nearest
 
@@ -173,15 +198,42 @@ async def courier_notification_worker() -> None:
 
 def _check_and_notify() -> None:
     """Abre uma sessão de BD, verifica pedidos e atribui estafetas."""
-    now          = datetime.now(timezone.utc)
-    window_start = now - timedelta(minutes=TOLERANCE_MINUTES)
+    now = datetime.now(timezone.utc)
 
     db = SessionLocal()
     try:
+        # ── 1. Verificar timeouts de aceitação ──────────────────────────────
+        expired_offers = [
+            oid for oid, sent_at in list(_pending_acceptance.items())
+            if (now - sent_at).total_seconds() > ACCEPT_TIMEOUT_SECONDS
+        ]
+        for order_id in expired_offers:
+            order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
+            if order and order.status == "Oferta enviada":
+                print(
+                    f"⏰ Pedido #{order_id} — timeout de aceitação ({ACCEPT_TIMEOUT_SECONDS}s), "
+                    f"estafeta '{order.driver_name}' não respondeu. A tentar próximo estafeta."
+                )
+                logger.warning(
+                    "⏰ Pedido #%d — timeout, estafeta id=%d não aceitou. A re-atribuir.",
+                    order_id, order.driver_id,
+                )
+                # Limpa a atribuição → o worker pode tentar outro estafeta
+                order.driver_id   = None
+                order.driver_name = None
+                order.status      = "Em preparo"
+                db.commit()
+
+            # Remove do tracker independentemente
+            _pending_acceptance.pop(order_id, None)
+            _notified_order_ids.discard(order_id)
+
+        # ── 2. Processar pedidos activos sem estafeta ────────────────────────
         active_orders: list[OrderDB] = (
             db.query(OrderDB)
             .filter(OrderDB.status.in_(ACTIVE_STATUSES))
             .filter(OrderDB.base_time > 0)
+            .filter(OrderDB.driver_id.is_(None))   # nunca buscar pedidos já atribuídos a um estafeta
             .all()
         )
 
@@ -191,11 +243,8 @@ def _check_and_notify() -> None:
 
             notify_at = _compute_notify_at(order)
 
-            # Modificamos a lógica: se a hora de notificar for inferior ou igual à hora atual,
-            # dispara a atribuição, sem depender da janela de 5 minutos,
-            # assim nunca ignora pedidos mesmo que tenham passado da hora ideal.
             if notify_at <= now:
-                # 1. Atribui o estafeta mais próximo e muda status para "A aguardar estafeta"
+                # 1. Envia oferta ao estafeta mais próximo → status "Oferta enviada"
                 driver = _assign_nearest_driver(order, db)
 
                 if driver:
@@ -203,8 +252,7 @@ def _check_and_notify() -> None:
                     _send_courier_notification(order, driver)
                     _notified_order_ids.add(order.id)
                 else:
-                    # Sem estafeta disponível — não marca como notificado,
-                    # tenta de novo no próximo ciclo (60s)
+                    # Sem estafeta disponível — tenta de novo no próximo ciclo (60s)
                     print(
                         f"⚠️  Pedido #{order.id} sem estafeta disponível — "
                         f"será tentado novamente no próximo ciclo."
@@ -214,4 +262,3 @@ def _check_and_notify() -> None:
         logger.exception("❌ Erro em _check_and_notify: %s", exc)
     finally:
         db.close()
-

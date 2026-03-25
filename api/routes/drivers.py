@@ -293,14 +293,15 @@ def get_pending_orders_for_driver(
       - distance_km → distância actual do estafeta ao restaurante (km)
 
     Status devolvidos:
-      - 'A aguardar estafeta' → novo pedido atribuído, driver deve ir buscar
-      - 'A caminho'           → pedido aceite, em entrega
+      - 'Oferta enviada'      → nova oferta aguarda aceitação/recusa do estafeta
+      - 'A aguardar estafeta' → pedido aceite, estafeta deve ir buscar
+      - 'A caminho'           → pedido recolhido, em entrega
     """
     driver = _get_driver_or_404(driver_id, db)
 
     orders = db.query(OrderDB).filter(
         OrderDB.driver_id == driver_id,
-        OrderDB.status.in_(["A aguardar estafeta", "A caminho"]),
+        OrderDB.status.in_(["Oferta enviada", "A aguardar estafeta", "A caminho"]),
     ).order_by(OrderDB.id.desc()).all()
 
     print(f"📡 [POLLING] Estafeta {driver_id} buscou pedidos pendentes. Encontrados: {len(orders)}")
@@ -343,6 +344,82 @@ def get_pending_orders_for_driver(
         "total":      len(result),
         "orders":     result,
     }
+
+
+# ──────────────────────────────────────────────────────────────
+# Aceitar oferta de entrega
+# ──────────────────────────────────────────────────────────────
+
+@router.post("/{driver_id}/orders/{order_id}/accept")
+def accept_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
+    """
+    O estafeta aceita a oferta de entrega.
+    Muda o status do pedido de 'Oferta enviada' → 'A aguardar estafeta'.
+    """
+    _get_driver_or_404(driver_id, db)
+
+    order = db.query(OrderDB).filter(
+        OrderDB.id        == order_id,
+        OrderDB.driver_id == driver_id,
+        OrderDB.status    == "Oferta enviada",
+    ).first()
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Oferta não encontrada ou já expirou.",
+        )
+
+    order.status = "A aguardar estafeta"
+    db.commit()
+
+    # Remove do tracker de timeout (já foi aceite)
+    from services.courier_notification_service import _pending_acceptance
+    _pending_acceptance.pop(order_id, None)
+
+    print(f"✅ Pedido #{order_id} aceite pelo estafeta id={driver_id}.")
+    return {"message": "Pedido aceite.", "order_id": order_id, "status": order.status}
+
+
+# ──────────────────────────────────────────────────────────────
+# Recusar oferta de entrega
+# ──────────────────────────────────────────────────────────────
+
+@router.post("/{driver_id}/orders/{order_id}/reject")
+def reject_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
+    """
+    O estafeta recusa a oferta de entrega.
+    Limpa a atribuição e devolve o pedido ao estado 'Em preparo'
+    para que o worker tente atribuir ao próximo estafeta disponível.
+    """
+    _get_driver_or_404(driver_id, db)
+
+    order = db.query(OrderDB).filter(
+        OrderDB.id        == order_id,
+        OrderDB.driver_id == driver_id,
+        OrderDB.status    == "Oferta enviada",
+    ).first()
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Oferta não encontrada ou já expirou.",
+        )
+
+    print(f"❌ Pedido #{order_id} recusado pelo estafeta id={driver_id}. A tentar próximo.")
+
+    # Limpa a atribuição → worker re-processa e tenta próximo driver
+    order.driver_id   = None
+    order.driver_name = None
+    order.status      = "Em preparo"
+    db.commit()
+
+    # Remove do tracker de timeout e de notificados para permitir re-atribuição imediata
+    from services.courier_notification_service import _pending_acceptance, _notified_order_ids
+    _pending_acceptance.pop(order_id, None)
+    _notified_order_ids.discard(order_id)
+
+    return {"message": "Oferta recusada. A procurar próximo estafeta.", "order_id": order_id}
 
 
 # ── /{driver_id} fica por ÚLTIMO entre os GETs ───────────────
