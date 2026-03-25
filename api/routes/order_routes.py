@@ -403,7 +403,7 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
     order.status = status_data.status
     db.commit()
 
-    return {"message": "Status atualizado", "status": order.status}
+    return {"message": "Status atualizado", "status": order.status, "driver_name": order.driver_name}
 
 
 @router.post("/stripe-webhook")
