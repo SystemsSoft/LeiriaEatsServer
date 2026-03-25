@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from core import config
 from core.database import get_db, SessionLocal
 from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB
-from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, RatingRequest
+from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest
 
 router = APIRouter()
 
@@ -380,7 +380,7 @@ def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)
     return {"order_id": order_id, "base_time": order.base_time}
 
 
-@router.put("/orders/{order_id}/status")
+@router.put("/orders/{order_id}/status", response_model=OrderStatusResponse)
 def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
     print(f"🔄 Atualizando pedido #{order_id} para: {status_data.status}")
 
@@ -403,7 +403,7 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
     order.status = status_data.status
     db.commit()
 
-    return {"message": "Status atualizado", "status": order.status, "driver_name": order.driver_name}
+    return {"message": "Status atualizado", "status": order.status, "driver_name": order.driver_name, "tracking_code": order.tracking_code}
 
 
 @router.post("/stripe-webhook")
