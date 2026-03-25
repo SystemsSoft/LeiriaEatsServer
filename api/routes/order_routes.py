@@ -155,6 +155,14 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     db.commit()
     db.refresh(new_order)
 
+    # Copia as coordenadas do restaurante para o pedido (evita JOIN futuro)
+    rest_for_coords = db.query(RestaurantDB).filter(RestaurantDB.id == order_data.restaurant_id).first()
+    if rest_for_coords:
+        new_order.restaurant_latitude  = rest_for_coords.latitude
+        new_order.restaurant_longitude = rest_for_coords.longitude
+        db.commit()
+        print(f"📍 Coordenadas do restaurante gravadas no pedido #{new_order.id}: lat={rest_for_coords.latitude}, lng={rest_for_coords.longitude}")
+
     for product, item_data in valid_items:
         db_item = OrderItemDB(
             order_id=new_order.id,

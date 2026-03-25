@@ -78,6 +78,10 @@ class OrderDB(Base):
     delivery_latitude  = Column(Float, nullable=True)
     delivery_longitude = Column(Float, nullable=True)
 
+    # ── Coordenadas do restaurante (copiadas na criação para evitar JOIN) ───
+    restaurant_latitude  = Column(Float, nullable=True)
+    restaurant_longitude = Column(Float, nullable=True)
+
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
 

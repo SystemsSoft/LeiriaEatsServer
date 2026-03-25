@@ -100,6 +100,10 @@ class OrderResponse(BaseModel):
     tracking_code: Optional[str] = ""
     delivery_type: Optional[str] = ""
     base_time: Optional[int] = None
+    delivery_latitude: Optional[float] = None
+    delivery_longitude: Optional[float] = None
+    restaurant_latitude: Optional[float] = None
+    restaurant_longitude: Optional[float] = None
     items: List[OrderItemResponse]
 
     class Config:
