@@ -11,7 +11,7 @@ from starlette import status
 
 from core import config
 from core.database import get_db
-from core.sql_models import DriverDB, OrderDB
+from core.sql_models import DriverDB, OrderDB, RestaurantDB
 from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
@@ -377,8 +377,24 @@ def accept_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
     from services.courier_notification_service import _pending_acceptance
     _pending_acceptance.pop(order_id, None)
 
-    print(f"✅ Pedido #{order_id} aceite pelo estafeta id={driver_id}.")
-    return {"message": "Pedido aceite.", "order_id": order_id, "status": order.status}
+    # Busca coordenadas do restaurante
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order.restaurant_id).first()
+    restaurant_latitude  = restaurant.latitude  if restaurant else None
+    restaurant_longitude = restaurant.longitude if restaurant else None
+
+    print(
+        f"✅ Pedido #{order_id} aceite pelo estafeta id={driver_id}. "
+        f"Restaurante: lat={restaurant_latitude}, lng={restaurant_longitude}"
+    )
+    return {
+        "message":              "Pedido aceite.",
+        "order_id":             order_id,
+        "status":               order.status,
+        "restaurant_latitude":  restaurant_latitude,
+        "restaurant_longitude": restaurant_longitude,
+        "delivery_latitude":    order.delivery_latitude,
+        "delivery_longitude":   order.delivery_longitude,
+    }
 
 
 # ──────────────────────────────────────────────────────────────
