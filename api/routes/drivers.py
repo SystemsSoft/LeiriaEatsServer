@@ -303,6 +303,10 @@ def get_pending_orders_for_driver(
         OrderDB.status.in_(["A aguardar estafeta", "A caminho"]),
     ).order_by(OrderDB.id.desc()).all()
 
+    print(f"📡 [POLLING] Estafeta {driver_id} buscou pedidos pendentes. Encontrados: {len(orders)}")
+    for o in orders:
+        print(f"   ↳ Pedido #{o.id} | Status: {o.status} | Restaurante: {o.restaurant_name}")
+
     result = []
     for o in orders:
         # Coordenadas do restaurante via relationship
