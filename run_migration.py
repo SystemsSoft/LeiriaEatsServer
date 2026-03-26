@@ -16,6 +16,9 @@ cmds = [
     # coordenadas do restaurante (copiadas na criação do pedido)
     "ALTER TABLE orders ADD COLUMN restaurant_latitude  DOUBLE NULL",
     "ALTER TABLE orders ADD COLUMN restaurant_longitude DOUBLE NULL",
+    # taxas de entrega e de serviço
+    "ALTER TABLE orders ADD COLUMN delivery_fee DOUBLE NOT NULL DEFAULT 0",
+    "ALTER TABLE orders ADD COLUMN service_fee  DOUBLE NOT NULL DEFAULT 0",
 ]
 
 with engine.connect() as conn:

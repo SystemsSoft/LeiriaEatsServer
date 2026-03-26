@@ -75,6 +75,8 @@ class OrderCreate(BaseModel):
     tracking_code: str = ""
     delivery_type: Optional[str] = None
     base_time: int = 0        # opcional — restaurante define depois via PATCH
+    delivery_fee: Optional[float] = 0.0   # taxa de entrega
+    service_fee: Optional[float] = 0.0    # taxa de serviço
     items: List[OrderItemCreate]
 
 
@@ -106,6 +108,8 @@ class OrderResponse(BaseModel):
     delivery_longitude: Optional[float] = None
     restaurant_latitude: Optional[float] = None
     restaurant_longitude: Optional[float] = None
+    delivery_fee: Optional[float] = 0.0
+    service_fee: Optional[float] = 0.0
     items: List[OrderItemResponse]
 
     class Config:

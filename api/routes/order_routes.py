@@ -204,6 +204,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
         tracking_code=order_data.tracking_code,
         delivery_type=order_data.delivery_type,
         base_time=order_data.base_time,
+        delivery_fee=order_data.delivery_fee or 0.0,
+        service_fee=order_data.service_fee or 0.0,
     )
 
     db.add(new_order)
@@ -236,7 +238,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     if not restaurant or not restaurant.stripe_account_id:
         raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
 
-    amount_cents = int(total_price * 100)
+    amount_cents = int((total_price + (order_data.delivery_fee or 0.0) + (order_data.service_fee or 0.0)) * 100)
     commission_rate = get_commission_rate(restaurant.plan)
     platform_fee = int(amount_cents * commission_rate)
     # Tenta cobrança automática apenas se houver cartão salvo válido
