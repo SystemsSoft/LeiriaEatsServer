@@ -17,8 +17,19 @@ SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PO
 # pool_recycle é importante para conexões AWS que caem por inatividade
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_recycle=3600,
-    pool_pre_ping=True
+    # ── Pool de conexões ────────────────────────────────────────────────────
+    pool_size=5,               # conexões permanentes no pool
+    max_overflow=10,           # conexões extras permitidas acima do pool_size
+    pool_timeout=30,           # segundos para aguardar uma conexão livre no pool
+    # ── Evitar conexões mortas (AWS NAT encerra idle após ~300s) ───────────
+    pool_recycle=280,          # recicla conexões ao fim de 280s (abaixo do limite AWS)
+    pool_pre_ping=True,        # testa a conexão antes de usar (SELECT 1)
+    # ── Timeout de rede na ligação inicial ─────────────────────────────────
+    connect_args={
+        "connect_timeout": 10,     # falha rápida se não conseguir ligar em 10s
+        "read_timeout":    30,     # timeout para leitura de dados (evita hang indefinido)
+        "write_timeout":   30,     # timeout para escrita de dados
+    },
 )
 
 # --- SESSÃO DO BANCO ---
