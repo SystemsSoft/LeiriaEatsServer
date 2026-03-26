@@ -491,7 +491,85 @@ def reject_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
     return {"message": "Oferta recusada. A procurar próximo estafeta.", "order_id": order_id}
 
 
-# ── /{driver_id} fica por ÚLTIMO entre os GETs ───────────────
+# ──────────────────────────────────────────────────────────────
+# Marcar pedido como entregue + pagamento ao estafeta
+# ──────────────────────────────────────────────────────────────
+
+@router.post("/{driver_id}/orders/{order_id}/deliver")
+def deliver_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
+    """
+    O estafeta confirma a entrega do pedido.
+    1. Muda o status do pedido de 'A caminho' → 'Entregue'.
+    2. Efectua o pagamento ao estafeta via Stripe Transfer
+       usando o valor guardado em driver_delivery_fee.
+    3. Guarda o ID do Transfer em driver_payment_transfer_id.
+    """
+    driver = _get_driver_or_404(driver_id, db)
+
+    order = db.query(OrderDB).filter(
+        OrderDB.id        == order_id,
+        OrderDB.driver_id == driver_id,
+    ).first()
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Pedido não encontrado ou não pertence a este estafeta.",
+        )
+
+    # ── 1. Atualiza o status do pedido ──────────────────────────────────────
+    order.status = "DELIVERED"
+    db.commit()
+    print(f"✅ Pedido #{order_id} marcado como Entregue pelo estafeta id={driver_id}.")
+
+    # ── 2. Pagamento ao estafeta via Stripe Transfer ─────────────────────────
+    transfer_id = None
+
+    if not driver.stripe_account_id:
+        print(f"⚠️  Estafeta id={driver_id} não tem conta Stripe — pagamento manual necessário.")
+    elif not order.driver_delivery_fee or order.driver_delivery_fee <= 0:
+        print(f"⚠️  Pedido #{order_id} sem driver_delivery_fee definido — pagamento ignorado.")
+    else:
+        try:
+            amount_cents = int(order.driver_delivery_fee * 100)
+
+            transfer = stripe.Transfer.create(
+                amount=amount_cents,
+                currency="eur",
+                destination=driver.stripe_account_id,
+                description=f"Pagamento de entrega — Pedido #{order_id}",
+                metadata={
+                    "order_id":  str(order_id),
+                    "driver_id": str(driver_id),
+                },
+            )
+
+            transfer_id          = transfer.id
+            order.driver_payment_transfer_id = transfer_id
+            db.commit()
+
+            print(
+                f"💸 Pagamento de €{order.driver_delivery_fee:.2f} enviado ao estafeta "
+                f"id={driver_id} | Transfer ID: {transfer_id}"
+            )
+
+        except stripe.error.StripeError as e:
+            # Não reverte o status — a entrega já foi confirmada; o pagamento pode ser reprocessado manualmente
+            print(f"❌ Erro Stripe ao pagar estafeta id={driver_id} no pedido #{order_id}: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Entrega confirmada, mas falha no pagamento Stripe: {str(e)}",
+            )
+
+    return {
+        "message":                   "Pedido entregue com sucesso.",
+        "order_id":                  order_id,
+        "status":                    order.status,
+        "driver_delivery_fee":       order.driver_delivery_fee,
+        "driver_payment_transfer_id": transfer_id,
+    }
+
+
 @router.get("/{driver_id}", response_model=DriverProfileResponse)
 def get_driver_profile(driver_id: int, db: Session = Depends(get_db)):
     """Retorna o perfil completo de um estafeta."""
