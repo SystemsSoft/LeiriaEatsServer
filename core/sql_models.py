@@ -82,6 +82,10 @@ class OrderDB(Base):
     restaurant_latitude  = Column(Float, nullable=True)
     restaurant_longitude = Column(Float, nullable=True)
 
+    # ── Taxas ────────────────────────────────────────────────────────────────
+    delivery_fee = Column(Float, nullable=True, default=0.0)
+    service_fee  = Column(Float, nullable=True, default=0.0)
+
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
 
