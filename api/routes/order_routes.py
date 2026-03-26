@@ -238,9 +238,14 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     if not restaurant or not restaurant.stripe_account_id:
         raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
 
-    amount_cents = int((total_price + (order_data.delivery_fee or 0.0) + (order_data.service_fee or 0.0)) * 100)
+    delivery_fee = order_data.delivery_fee or 0.0
+    service_fee = order_data.service_fee or 0.0
+    amount_cents = int((total_price + delivery_fee + service_fee) * 100)
     commission_rate = get_commission_rate(restaurant.plan)
-    platform_fee = int(amount_cents * commission_rate)
+    # Comissão aplicada apenas sobre o valor dos produtos (total_price)
+    commission_on_products = int(total_price * 100 * commission_rate)
+    # A plataforma retém: comissão dos produtos + 100% da taxa de entrega + 100% da taxa de serviço
+    platform_fee = commission_on_products + int(delivery_fee * 100) + int(service_fee * 100)
     # Tenta cobrança automática apenas se houver cartão salvo válido
     if (order_data.save_payment_method and
         existing_saved_method is not None and
