@@ -25,6 +25,8 @@ class Restaurant(BaseModel):
     rating: Optional[float] = None
     image_url: Optional[str] = None
     is_closed: Optional[bool] = None  # Estado de encerramento do restaurante no dia/hora atual
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
     # O nome aqui deve ser 'products' para bater com o banco de dados
     products: List[Product] = []
