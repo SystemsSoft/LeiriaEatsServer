@@ -241,7 +241,8 @@ def _check_and_notify() -> None:
             db.query(OrderDB)
             .filter(OrderDB.status.in_(ACTIVE_STATUSES))
             .filter(OrderDB.base_time > 0)
-            .filter(OrderDB.driver_id.is_(None))   # nunca buscar pedidos já atribuídos a um estafeta
+            .filter(OrderDB.driver_id.is_(None))
+            .filter(OrderDB.delivery_type != "pickup")   # pedidos pickup não precisam de estafeta
             .all()
         )
 
