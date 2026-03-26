@@ -326,9 +326,10 @@ def get_pending_orders_for_driver(
 
     result = []
     for o in orders:
-        # Coordenadas do restaurante via relationship
-        rest_lat = o.restaurant.latitude  if o.restaurant else None
-        rest_lng = o.restaurant.longitude if o.restaurant else None
+        # Dados do restaurante via relationship
+        rest_lat     = o.restaurant.latitude  if o.restaurant else None
+        rest_lng     = o.restaurant.longitude if o.restaurant else None
+        rest_address = o.restaurant.address   if o.restaurant else None
 
         # Distância 1: posição actual do estafeta → restaurante
         driver_to_restaurant_km = None
@@ -357,6 +358,7 @@ def get_pending_orders_for_driver(
             "order_id":                   o.id,
             "status":                     o.status,
             "restaurant_name":            o.restaurant_name,
+            "restaurant_address":         rest_address,
             "restaurant_latitude":        rest_lat,
             "restaurant_longitude":       rest_lng,
             "driver_to_restaurant_km":    driver_to_restaurant_km,
