@@ -19,6 +19,8 @@ import math
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import OperationalError
+
 from core.database import SessionLocal
 from core.sql_models import OrderDB, DriverDB
 
@@ -190,6 +192,12 @@ async def courier_notification_worker() -> None:
     while True:
         try:
             _check_and_notify()
+        except OperationalError as exc:
+            logger.error(
+                "🔌 Falha de conexão com a base de dados no worker — será retentado no próximo ciclo (%ds). Detalhe: %s",
+                POLL_INTERVAL_SECONDS, exc,
+            )
+            print(f"🔌 [WORKER] Timeout/erro de BD — a retomar em {POLL_INTERVAL_SECONDS}s.")
         except Exception as exc:
             logger.exception("❌ Erro no courier notification worker: %s", exc)
 

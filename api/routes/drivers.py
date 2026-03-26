@@ -326,10 +326,14 @@ def get_pending_orders_for_driver(
 
     result = []
     for o in orders:
-        # Dados do restaurante via relationship
-        rest_lat     = o.restaurant.latitude  if o.restaurant else None
-        rest_lng     = o.restaurant.longitude if o.restaurant else None
-        rest_address = o.restaurant.address   if o.restaurant else None
+        # Busca dados do restaurante directamente na BD via restaurant_id
+        restaurant_obj = (
+            db.query(RestaurantDB).filter(RestaurantDB.id == o.restaurant_id).first()
+            if o.restaurant_id else None
+        )
+        rest_lat     = restaurant_obj.latitude  if restaurant_obj else None
+        rest_lng     = restaurant_obj.longitude if restaurant_obj else None
+        rest_address = restaurant_obj.address   if restaurant_obj else None
 
         # Distância 1: posição actual do estafeta → restaurante
         driver_to_restaurant_km = None
@@ -390,8 +394,9 @@ def accept_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
     """
     O estafeta aceita a oferta de entrega.
     Muda o status do pedido de 'Oferta enviada' → 'A aguardar estafeta'.
+    Calcula e persiste o driver_delivery_fee com base na posição actual do estafeta.
     """
-    _get_driver_or_404(driver_id, db)
+    driver = _get_driver_or_404(driver_id, db)
 
     order = db.query(OrderDB).filter(
         OrderDB.id        == order_id,
@@ -405,26 +410,39 @@ def accept_order(driver_id: int, order_id: int, db: Session = Depends(get_db)):
             detail="Oferta não encontrada ou já expirou.",
         )
 
-    order.status = "A aguardar estafeta"
+    # Busca coordenadas do restaurante
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order.restaurant_id).first()
+    restaurant_latitude  = restaurant.latitude  if restaurant else None
+    restaurant_longitude = restaurant.longitude if restaurant else None
+
+    # Calcula o valor da entrega com a posição actual do estafeta
+    driver_delivery_fee = None
+    if (driver.latitude is not None and driver.longitude is not None
+            and restaurant_latitude is not None and restaurant_longitude is not None
+            and order.delivery_latitude is not None and order.delivery_longitude is not None):
+        driver_to_restaurant  = _haversine(driver.latitude, driver.longitude, restaurant_latitude, restaurant_longitude)
+        restaurant_to_delivery = _haversine(restaurant_latitude, restaurant_longitude, order.delivery_latitude, order.delivery_longitude)
+        total_distance = driver_to_restaurant + restaurant_to_delivery
+        driver_delivery_fee = _calculate_delivery_fee(total_distance)
+
+    order.status             = "A aguardar estafeta"
+    order.driver_delivery_fee = driver_delivery_fee
     db.commit()
 
     # Remove do tracker de timeout (já foi aceite)
     from services.courier_notification_service import _pending_acceptance
     _pending_acceptance.pop(order_id, None)
 
-    # Busca coordenadas do restaurante
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order.restaurant_id).first()
-    restaurant_latitude  = restaurant.latitude  if restaurant else None
-    restaurant_longitude = restaurant.longitude if restaurant else None
-
     print(
         f"✅ Pedido #{order_id} aceite pelo estafeta id={driver_id}. "
-        f"Restaurante: lat={restaurant_latitude}, lng={restaurant_longitude}"
+        f"Restaurante: lat={restaurant_latitude}, lng={restaurant_longitude} | "
+        f"Taxa de entrega: €{driver_delivery_fee}"
     )
     return {
         "message":              "Pedido aceite.",
         "order_id":             order_id,
         "status":               order.status,
+        "driver_delivery_fee":  driver_delivery_fee,
         "restaurant_latitude":  restaurant_latitude,
         "restaurant_longitude": restaurant_longitude,
         "delivery_latitude":    order.delivery_latitude,

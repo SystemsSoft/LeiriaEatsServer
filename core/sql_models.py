@@ -83,8 +83,9 @@ class OrderDB(Base):
     restaurant_longitude = Column(Float, nullable=True)
 
     # ── Taxas ────────────────────────────────────────────────────────────────
-    delivery_fee = Column(Float, nullable=True, default=0.0)
-    service_fee  = Column(Float, nullable=True, default=0.0)
+    delivery_fee         = Column(Float, nullable=True, default=0.0)
+    service_fee          = Column(Float, nullable=True, default=0.0)
+    driver_delivery_fee  = Column(Float, nullable=True, default=None)  # valor a pagar ao estafeta pela entrega
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
