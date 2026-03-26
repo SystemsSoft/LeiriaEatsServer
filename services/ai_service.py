@@ -394,6 +394,8 @@ class AIService:
                 rating=restaurant.rating,
                 image_url=restaurant.image_url,
                 is_closed=is_closed_value,
+                latitude=getattr(restaurant, "latitude", None),
+                longitude=getattr(restaurant, "longitude", None),
                 products=[
                     ProductSchema.model_validate(p) if hasattr(p, '__table__')
                     else p
