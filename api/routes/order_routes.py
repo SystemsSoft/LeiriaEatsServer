@@ -1,5 +1,6 @@
 # Arquivo: api/routes/order_routes.py
 from typing import List, Dict, Any
+import math
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
@@ -8,12 +9,66 @@ from sqlalchemy.orm import Session
 from core import config
 from core.database import get_db, SessionLocal
 from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB
-from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest
+from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest
 
 router = APIRouter()
 
 # Garante que chamadas Stripe nesse módulo usem a chave secreta do backend
 stripe.api_key = config.settings.STRIPE_API_KEY
+
+
+# ─── Utilitário: Fórmula de Haversine ──────────────────────────────────────
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calcula a distância em km entre dois pontos geográficos (WGS-84)."""
+    R = 6371.0  # Raio médio da Terra em km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+# ─── Endpoint: Calcular taxa de entrega ────────────────────────────────────
+@router.post("/orders/delivery-fee")
+def calculate_delivery_fee(payload: DeliveryFeeRequest):
+    """
+    Calcula a taxa de entrega com base na distância entre o cliente e o restaurante.
+
+    Escalões:
+      Escalão 1: Até 2 km       → 1,99 €
+      Escalão 2: 2 km – 4 km    → 2,99 €
+      Escalão 3: 4 km – 6 km    → 3,99 €
+      Escalão 4: Mais de 6 km   → Erro (fora da área de entrega)
+    """
+    distance_km = _haversine_km(
+        payload.customer_latitude,
+        payload.customer_longitude,
+        payload.restaurant_latitude,
+        payload.restaurant_longitude,
+    )
+
+    print(f"📍 Distância calculada: {distance_km:.2f} km")
+
+    if distance_km <= 2.0:
+        fee = 1.99
+        tier = 1
+    elif distance_km <= 4.0:
+        fee = 2.99
+        tier = 2
+    elif distance_km <= 6.0:
+        fee = 3.99
+        tier = 3
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Endereço fora da área de entrega. Distância calculada: {distance_km:.2f} km (máximo permitido: 6 km).",
+        )
+
+    return {
+        "distance_km": round(distance_km, 2),
+        "delivery_fee": fee,
+        "tier": tier,
+    }
 
 
 def get_commission_rate(plan: str | None) -> float:

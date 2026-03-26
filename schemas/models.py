@@ -135,5 +135,9 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
         id: int
-        name: str
-        message: str
+
+class DeliveryFeeRequest(BaseModel):
+    customer_latitude: float
+    customer_longitude: float
+    restaurant_latitude: float
+    restaurant_longitude: float
