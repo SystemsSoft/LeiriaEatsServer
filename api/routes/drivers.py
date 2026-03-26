@@ -194,6 +194,22 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _calculate_delivery_fee(total_distance_km: float) -> float:
+    """
+    Calcula o valor total da entrega com base na distância percorrida pelo estafeta:
+      - Tarifa base : €1,20
+      - Por km      : €0,35
+      - Mínimo      : €2,50
+
+    A distância total é: estafeta → restaurante + restaurante → morada de entrega.
+    """
+    BASE_FARE   = 1.20
+    RATE_PER_KM = 0.35
+    MINIMUM_FEE = 2.50
+    fee = BASE_FARE + total_distance_km * RATE_PER_KM
+    return round(max(fee, MINIMUM_FEE), 2)
+
+
 @router.get("/online")
 def list_online_drivers(
     max_minutes: int = Query(default=2, ge=1, le=60,
@@ -314,27 +330,44 @@ def get_pending_orders_for_driver(
         rest_lat = o.restaurant.latitude  if o.restaurant else None
         rest_lng = o.restaurant.longitude if o.restaurant else None
 
-        # Distância em tempo real: posição actual do estafeta → restaurante
-        distance_km = None
+        # Distância 1: posição actual do estafeta → restaurante
+        driver_to_restaurant_km = None
         if (rest_lat is not None and rest_lng is not None
                 and driver.latitude is not None and driver.longitude is not None):
-            distance_km = round(
+            driver_to_restaurant_km = round(
                 _haversine(driver.latitude, driver.longitude, rest_lat, rest_lng), 2
             )
 
+        # Distância 2: restaurante → morada de entrega
+        restaurant_to_delivery_km = None
+        if (rest_lat is not None and rest_lng is not None
+                and o.delivery_latitude is not None and o.delivery_longitude is not None):
+            restaurant_to_delivery_km = round(
+                _haversine(rest_lat, rest_lng, o.delivery_latitude, o.delivery_longitude), 2
+            )
+
+        # Valor total da entrega: tarifa base €1,20 + €0,35/km sobre a distância total
+        # (estafeta→restaurante + restaurante→entrega), mínimo €2,50
+        estimated_delivery_fee = None
+        if driver_to_restaurant_km is not None and restaurant_to_delivery_km is not None:
+            total_distance = driver_to_restaurant_km + restaurant_to_delivery_km
+            estimated_delivery_fee = _calculate_delivery_fee(total_distance)
+
         result.append({
-            "order_id":             o.id,
-            "status":               o.status,
-            "restaurant_name":      o.restaurant_name,
-            "restaurant_latitude":  rest_lat,
-            "restaurant_longitude": rest_lng,
-            "distance_km":          distance_km,
-            "delivery_address":     o.delivery_address,
-            "delivery_latitude":    o.delivery_latitude,
-            "delivery_longitude":   o.delivery_longitude,
-            "total":                o.total,
-            "tracking_code":        o.tracking_code,
-            "created_at":           o.created_at.isoformat() if o.created_at else None,
+            "order_id":                   o.id,
+            "status":                     o.status,
+            "restaurant_name":            o.restaurant_name,
+            "restaurant_latitude":        rest_lat,
+            "restaurant_longitude":       rest_lng,
+            "driver_to_restaurant_km":    driver_to_restaurant_km,
+            "restaurant_to_delivery_km":  restaurant_to_delivery_km,
+            "estimated_delivery_fee":     estimated_delivery_fee,
+            "delivery_address":           o.delivery_address,
+            "delivery_latitude":          o.delivery_latitude,
+            "delivery_longitude":         o.delivery_longitude,
+            "total":                      o.total,
+            "tracking_code":              o.tracking_code,
+            "created_at":                 o.created_at.isoformat() if o.created_at else None,
         })
 
     return {
