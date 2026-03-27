@@ -71,11 +71,14 @@ def calculate_delivery_fee(payload: DeliveryFeeRequest):
     }
 
 
-def get_commission_rate(plan: str | None) -> float:
+def get_commission_rate(plan: str | None, use_own_delivery: bool = False) -> float:
     """Retorna a taxa de comissão com base no plano do restaurante.
-    - ESSENCE → 18%
-    - SMART   → 21%
+    - use_own_delivery=True → 15% (fixo, independente do plano)
+    - ESSENCE              → 18%
+    - SMART                → 21%
     """
+    if use_own_delivery:
+        return 0.15
     if plan and plan.upper() == "SMART":
         return 0.21
     return 0.18  # ESSENCE é o padrão
@@ -241,7 +244,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     delivery_fee = order_data.delivery_fee or 0.0
     service_fee = order_data.service_fee or 0.0
     amount_cents = int((total_price + delivery_fee + service_fee) * 100)
-    commission_rate = get_commission_rate(restaurant.plan)
+    commission_rate = get_commission_rate(restaurant.plan, use_own_delivery=restaurant.use_own_delivery or False)
     # Comissão aplicada apenas sobre o valor dos produtos (total_price)
     commission_on_products = int(total_price * 100 * commission_rate)
     # A plataforma retém: comissão dos produtos + 100% da taxa de entrega + 100% da taxa de serviço
