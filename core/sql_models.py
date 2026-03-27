@@ -26,6 +26,7 @@ class RestaurantDB(Base):
     longitude = Column(Float, nullable=True)
     stripe_account_id = Column(String(255), nullable=False)
     stripe_onboarding_completed = Column(Boolean, default=False)
+    use_own_delivery = Column(Boolean, nullable=False, default=False)
 
     products = relationship("ProductDB", back_populates="restaurant")
     hours = relationship("RestaurantHourDB", back_populates="restaurant")

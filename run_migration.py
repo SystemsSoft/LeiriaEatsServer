@@ -19,6 +19,9 @@ cmds = [
     # taxas de entrega e de serviço
     "ALTER TABLE orders ADD COLUMN delivery_fee DOUBLE NOT NULL DEFAULT 0",
     "ALTER TABLE orders ADD COLUMN service_fee  DOUBLE NOT NULL DEFAULT 0",
+    # estafeta próprio do restaurante (renomear coluna antiga se existir, criar nova)
+    "ALTER TABLE restaurants CHANGE COLUMN uses_own_courier use_own_delivery BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE restaurants ADD COLUMN use_own_delivery BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
 with engine.connect() as conn:

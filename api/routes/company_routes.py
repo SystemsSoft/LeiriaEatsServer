@@ -10,7 +10,7 @@ from core.database import get_db
 from core.config import settings
 from core.sql_models import RestaurantDB, RestaurantHourDB
 from repositories.restaurant_repo import RestaurantRepository
-from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse
+from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse, UsesPlatformCourierRequest
 from schemas.payment import PaymentIntentRequest
 
 # --- CONFIGURAÇÃO INICIAL ---
@@ -225,4 +225,34 @@ def get_restaurant_hours(restaurant_id: int, db: Session = Depends(get_db)):
         .all()
     )
     return hours
+
+
+# ==========================================
+# 🚴 ROTA DE ESTAFETA PRÓPRIO
+# ==========================================
+
+@router.patch("/restaurant/{restaurant_id}/courier-preference")
+def update_courier_preference(
+    restaurant_id: int,
+    body: UsesPlatformCourierRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Atualiza se o restaurante utiliza estafeta próprio (True)
+    ou os estafetas da plataforma (False).
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    restaurant.use_own_delivery = body.use_own_delivery
+    db.commit()
+    db.refresh(restaurant)
+
+    print(f"✅ Restaurante {restaurant_id} — use_own_delivery={restaurant.use_own_delivery}")
+    return {
+        "restaurant_id": restaurant_id,
+        "use_own_delivery": restaurant.use_own_delivery,
+    }
+
 

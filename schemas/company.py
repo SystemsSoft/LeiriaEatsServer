@@ -56,6 +56,11 @@ class CompanyUpdateRequest(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
+
+class UsesPlatformCourierRequest(BaseModel):
+    use_own_delivery: bool
+
+
 # RESPONSE: O que o app recebe de volta
 class CompanyResponse(BaseModel):
     id: int
@@ -72,6 +77,7 @@ class CompanyResponse(BaseModel):
     login: str
     license: str
     plan: Optional[str] = None
+    use_own_delivery: bool = False
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 
