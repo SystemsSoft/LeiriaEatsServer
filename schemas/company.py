@@ -61,6 +61,33 @@ class UsesPlatformCourierRequest(BaseModel):
     use_own_delivery: bool
 
 
+# ==========================================
+# 📦 SCHEMAS DE ZONAS DE ENTREGA
+# ==========================================
+
+class DeliveryZoneRequest(BaseModel):
+    zone: int
+    radius_km: float
+    price: float
+    enabled: bool = True
+    center_lat: Optional[float] = None
+    center_lng: Optional[float] = None
+
+
+class DeliveryZoneResponse(BaseModel):
+    id: int
+    restaurant_id: int
+    zone: int
+    radius_km: float
+    price: float
+    enabled: bool
+    center_lat: Optional[float] = None
+    center_lng: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
 # RESPONSE: O que o app recebe de volta
 class CompanyResponse(BaseModel):
     id: int
