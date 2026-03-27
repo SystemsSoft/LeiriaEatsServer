@@ -116,6 +116,49 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/connect/dashboard/{restaurant_id}")
+def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
+    """
+    Gera um link de acesso ao dashboard financeiro da Stripe para o restaurante.
+    Verifica o estado real do onboarding na API da Stripe e sincroniza o campo local.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    if not restaurant.stripe_account_id:
+        raise HTTPException(status_code=400, detail="Restaurante ainda não tem conta Stripe configurada.")
+
+    try:
+        # Verifica o estado real na Stripe (não confia apenas no campo local)
+        account = stripe.Account.retrieve(restaurant.stripe_account_id)
+        is_complete = (
+            account.get("details_submitted", False) and
+            account.get("charges_enabled", False) and
+            account.get("payouts_enabled", False)
+        )
+
+        # Sincroniza o campo na BD
+        restaurant.stripe_onboarding_completed = is_complete
+        db.commit()
+
+        if not is_complete:
+            raise HTTPException(
+                status_code=400,
+                detail="O onboarding da Stripe ainda não foi concluído. Complete o registo primeiro."
+            )
+
+        login_link = stripe.Account.create_login_link(restaurant.stripe_account_id)
+        print(f"✅ Dashboard Stripe gerado para restaurante {restaurant_id}")
+        return {"url": login_link.url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Erro ao gerar dashboard Stripe: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/checkout/create-session")
 def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends(get_db)):
 
