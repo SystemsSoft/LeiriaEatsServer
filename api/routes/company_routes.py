@@ -125,7 +125,14 @@ def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends
         raise HTTPException(status_code=400, detail="Restaurante não configurou pagamentos.")
 
     amount_cents = int(request.amount_euros * 100)
-    platform_fee = int(amount_cents * 0.20)
+    # 15% fixo se o restaurante usa estafeta próprio, senão segue o plano
+    if restaurant.use_own_delivery:
+        commission_rate = 0.15
+    elif restaurant.plan and restaurant.plan.upper() == "SMART":
+        commission_rate = 0.21
+    else:
+        commission_rate = 0.18
+    platform_fee = int(amount_cents * commission_rate)
 
     try:
         checkout_session = stripe.checkout.Session.create(
