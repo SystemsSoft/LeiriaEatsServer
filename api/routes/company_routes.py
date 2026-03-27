@@ -238,6 +238,24 @@ def get_restaurant_hours(restaurant_id: int, db: Session = Depends(get_db)):
 # 🚴 ROTA DE ESTAFETA PRÓPRIO
 # ==========================================
 
+@router.get("/restaurant/{restaurant_id}/courier-preference")
+def get_courier_preference(
+    restaurant_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Retorna se o restaurante utiliza estafeta próprio ou da plataforma.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    return {
+        "restaurant_id": restaurant_id,
+        "use_own_delivery": restaurant.use_own_delivery,
+    }
+
+
 @router.patch("/restaurant/{restaurant_id}/courier-preference")
 def update_courier_preference(
     restaurant_id: int,
