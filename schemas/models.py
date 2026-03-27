@@ -141,6 +141,7 @@ class LoginResponse(BaseModel):
         id: int
 
 class DeliveryFeeRequest(BaseModel):
+    restaurant_id: int
     customer_latitude: float
     customer_longitude: float
     restaurant_latitude: float

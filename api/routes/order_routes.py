@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from core import config
 from core.database import get_db, SessionLocal
-from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB
+from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB
 from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest
 
 router = APIRouter()
@@ -28,36 +28,62 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * R * math.asin(math.sqrt(a))
 
 
-# ─── Endpoint: Calcular taxa de entrega ────────────────────────────────────
-@router.post("/orders/delivery-fee")
-def calculate_delivery_fee(payload: DeliveryFeeRequest):
+# ─── Helper: Resolve taxa de entrega ──────────────────────────────────────
+def _resolve_delivery_fee(
+    *,
+    db: Session,
+    restaurant: RestaurantDB,
+    distance_km: float,
+) -> dict:
     """
-    Calcula a taxa de entrega com base na distância entre o cliente e o restaurante.
+    Calcula e devolve a taxa de entrega correcta para a distância dada.
 
-    Escalões:
-      Escalão 1: Até 2 km       → 1,99 €
-      Escalão 2: 2 km – 4 km    → 2,99 €
-      Escalão 3: 4 km – 6 km    → 3,99 €
-      Escalão 4: Mais de 6 km   → Erro (fora da área de entrega)
+    • use_own_delivery=True  → usa as delivery_zones habilitadas do restaurante
+                               (menor raio que abranja a distância).
+    • use_own_delivery=False → escalões padrão da plataforma (até 6 km).
+
+    Levanta HTTPException 400 se o endereço estiver fora da área de entrega.
     """
-    distance_km = _haversine_km(
-        payload.customer_latitude,
-        payload.customer_longitude,
-        payload.restaurant_latitude,
-        payload.restaurant_longitude,
-    )
+    if restaurant.use_own_delivery:
+        zones = (
+            db.query(DeliveryZoneDB)
+            .filter(
+                DeliveryZoneDB.restaurant_id == restaurant.id,
+                DeliveryZoneDB.enabled == True,
+            )
+            .order_by(DeliveryZoneDB.radius_km.asc())
+            .all()
+        )
 
-    print(f"📍 Distância calculada: {distance_km:.2f} km")
+        matched_zone = next((z for z in zones if distance_km <= z.radius_km), None)
 
+        if not matched_zone:
+            max_radius = zones[-1].radius_km if zones else 0
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Endereço fora da área de entrega do restaurante. "
+                    f"Distância calculada: {distance_km:.2f} km "
+                    f"(raio máximo configurado: {max_radius:.2f} km)."
+                ),
+            )
+
+        print(f"🚚 Entrega própria — Zona {matched_zone.zone}: {matched_zone.price} € (raio {matched_zone.radius_km} km)")
+        return {
+            "distance_km": round(distance_km, 2),
+            "delivery_fee": matched_zone.price,
+            "tier": matched_zone.zone,
+            "zone_id": matched_zone.id,
+            "use_own_delivery": True,
+        }
+
+    # ── Escalões padrão da plataforma ─────────────────────────────────────
     if distance_km <= 2.0:
-        fee = 1.99
-        tier = 1
+        fee, tier = 1.99, 1
     elif distance_km <= 4.0:
-        fee = 2.99
-        tier = 2
+        fee, tier = 2.99, 2
     elif distance_km <= 6.0:
-        fee = 3.99
-        tier = 3
+        fee, tier = 3.99, 3
     else:
         raise HTTPException(
             status_code=400,
@@ -68,7 +94,33 @@ def calculate_delivery_fee(payload: DeliveryFeeRequest):
         "distance_km": round(distance_km, 2),
         "delivery_fee": fee,
         "tier": tier,
+        "use_own_delivery": False,
     }
+
+
+# ─── Endpoint: Calcular taxa de entrega ────────────────────────────────────
+@router.post("/orders/delivery-fee")
+def calculate_delivery_fee(payload: DeliveryFeeRequest, db: Session = Depends(get_db)):
+    """
+    Calcula a taxa de entrega com base na distância entre o cliente e o restaurante.
+
+    Se o restaurante usar entrega própria (use_own_delivery=True), aplica o preço
+    definido nas zonas de entrega (delivery_zones).
+    Caso contrário, aplica os escalões padrão da plataforma.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == payload.restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado.")
+
+    distance_km = _haversine_km(
+        payload.customer_latitude,
+        payload.customer_longitude,
+        payload.restaurant_latitude,
+        payload.restaurant_longitude,
+    )
+    print(f"📍 Distância calculada: {distance_km:.2f} km")
+
+    return _resolve_delivery_fee(db=db, restaurant=restaurant, distance_km=distance_km)
 
 
 def get_commission_rate(plan: str | None, use_own_delivery: bool = False) -> float:
@@ -191,6 +243,27 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
+    # ── Busca o restaurante antes de criar o pedido ────────────────────────
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order_data.restaurant_id).first()
+    if not restaurant or not restaurant.stripe_account_id:
+        raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
+
+    # ── Recalcula delivery_fee no servidor se use_own_delivery=True ────────
+    delivery_fee = order_data.delivery_fee or 0.0
+    if restaurant.use_own_delivery and order_data.delivery_latitude and order_data.delivery_longitude and restaurant.latitude and restaurant.longitude:
+        distance_km = _haversine_km(
+            order_data.delivery_latitude,
+            order_data.delivery_longitude,
+            restaurant.latitude,
+            restaurant.longitude,
+        )
+        print(f"📍 [Checkout] Distância calculada: {distance_km:.2f} km — recalculando taxa com zonas do restaurante")
+        fee_result = _resolve_delivery_fee(db=db, restaurant=restaurant, distance_km=distance_km)
+        delivery_fee = fee_result["delivery_fee"]
+        print(f"💰 [Checkout] Taxa de entrega recalculada: {delivery_fee} €")
+
+    service_fee = order_data.service_fee or 0.0
+
     new_order = OrderDB(
         customer_name=order_data.user_name,
         delivery_address=order_data.user_address,
@@ -207,8 +280,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
         tracking_code=order_data.tracking_code,
         delivery_type=order_data.delivery_type,
         base_time=order_data.base_time,
-        delivery_fee=order_data.delivery_fee or 0.0,
-        service_fee=order_data.service_fee or 0.0,
+        delivery_fee=delivery_fee,
+        service_fee=service_fee,
     )
 
     db.add(new_order)
@@ -216,12 +289,10 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     db.refresh(new_order)
 
     # Copia as coordenadas do restaurante para o pedido (evita JOIN futuro)
-    rest_for_coords = db.query(RestaurantDB).filter(RestaurantDB.id == order_data.restaurant_id).first()
-    if rest_for_coords:
-        new_order.restaurant_latitude  = rest_for_coords.latitude
-        new_order.restaurant_longitude = rest_for_coords.longitude
-        db.commit()
-        print(f"📍 Coordenadas do restaurante gravadas no pedido #{new_order.id}: lat={rest_for_coords.latitude}, lng={rest_for_coords.longitude}")
+    new_order.restaurant_latitude  = restaurant.latitude
+    new_order.restaurant_longitude = restaurant.longitude
+    db.commit()
+    print(f"📍 Coordenadas do restaurante gravadas no pedido #{new_order.id}: lat={restaurant.latitude}, lng={restaurant.longitude}")
 
     for product, item_data in valid_items:
         db_item = OrderItemDB(
@@ -233,16 +304,9 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
             image_url=product.image_url,
             description=product.description
         )
-
         db.add(db_item)
     db.commit()
 
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order_data.restaurant_id).first()
-    if not restaurant or not restaurant.stripe_account_id:
-        raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
-
-    delivery_fee = order_data.delivery_fee or 0.0
-    service_fee = order_data.service_fee or 0.0
     amount_cents = int((total_price + delivery_fee + service_fee) * 100)
     commission_rate = get_commission_rate(restaurant.plan, use_own_delivery=restaurant.use_own_delivery or False)
     # Comissão aplicada apenas sobre o valor dos produtos (total_price)
