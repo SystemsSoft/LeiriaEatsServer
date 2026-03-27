@@ -8,9 +8,9 @@ from typing import List
 # Importações do seu projeto
 from core.database import get_db
 from core.config import settings
-from core.sql_models import RestaurantDB, RestaurantHourDB
+from core.sql_models import RestaurantDB, RestaurantHourDB, DeliveryZoneDB
 from repositories.restaurant_repo import RestaurantRepository
-from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse, UsesPlatformCourierRequest
+from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse, UsesPlatformCourierRequest, DeliveryZoneRequest, DeliveryZoneResponse
 from schemas.payment import PaymentIntentRequest
 
 # --- CONFIGURAÇÃO INICIAL ---
@@ -322,5 +322,69 @@ def update_courier_preference(
         "restaurant_id": restaurant_id,
         "use_own_delivery": restaurant.use_own_delivery,
     }
+
+
+# ==========================================
+# 📦 ROTAS DE ZONAS DE ENTREGA
+# ==========================================
+
+@router.get("/restaurant/{restaurant_id}/delivery-zones", response_model=List[DeliveryZoneResponse])
+def get_delivery_zones(restaurant_id: int, db: Session = Depends(get_db)):
+    """
+    Retorna todas as zonas de entrega do restaurante, ordenadas pelo número da zona.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    zones = (
+        db.query(DeliveryZoneDB)
+        .filter(DeliveryZoneDB.restaurant_id == restaurant_id)
+        .order_by(DeliveryZoneDB.zone)
+        .all()
+    )
+    return zones
+
+
+@router.post("/restaurant/{restaurant_id}/delivery-zones", response_model=List[DeliveryZoneResponse], status_code=201)
+def save_delivery_zones(
+    restaurant_id: int,
+    zones: List[DeliveryZoneRequest],
+    db: Session = Depends(get_db),
+):
+    """
+    Recebe a lista completa de zonas de entrega do restaurante e substitui
+    (upsert) os registos existentes no banco de dados.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    print(f"📥 Recebendo {len(zones)} zonas de entrega para o restaurante {restaurant_id}")
+
+    # Remove todas as zonas anteriores (substituição completa)
+    db.query(DeliveryZoneDB).filter(DeliveryZoneDB.restaurant_id == restaurant_id).delete()
+
+    # Insere as novas zonas
+    new_zones = []
+    for z in zones:
+        zone_db = DeliveryZoneDB(
+            restaurant_id=restaurant_id,
+            zone=z.zone,
+            radius_km=z.radius_km,
+            price=z.price,
+            enabled=z.enabled,
+            center_lat=z.center_lat,
+            center_lng=z.center_lng,
+        )
+        db.add(zone_db)
+        new_zones.append(zone_db)
+
+    db.commit()
+    for z in new_zones:
+        db.refresh(z)
+
+    print(f"✅ {len(new_zones)} zonas de entrega salvas para o restaurante {restaurant_id}")
+    return new_zones
 
 

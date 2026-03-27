@@ -30,6 +30,7 @@ class RestaurantDB(Base):
 
     products = relationship("ProductDB", back_populates="restaurant")
     hours = relationship("RestaurantHourDB", back_populates="restaurant")
+    delivery_zones = relationship("DeliveryZoneDB", back_populates="restaurant", cascade="all, delete-orphan")
 
 
 class ProductDB(Base):
@@ -197,3 +198,23 @@ class RestaurantHourDB(Base):
     __table_args__ = (
         UniqueConstraint("restaurant_id", "day_of_week", name="uq_restaurant_day"),
     )
+
+
+class DeliveryZoneDB(Base):
+    __tablename__ = "delivery_zones"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    zone          = Column(Integer, nullable=False)          # número da zona (1, 2, 3…)
+    radius_km     = Column(Float,   nullable=False)
+    price         = Column(Float,   nullable=False)
+    enabled       = Column(Boolean, nullable=False, default=True)
+    center_lat    = Column(Float,   nullable=True)
+    center_lng    = Column(Float,   nullable=True)
+
+    restaurant = relationship("RestaurantDB", back_populates="delivery_zones")
+
+    __table_args__ = (
+        UniqueConstraint("restaurant_id", "zone", name="uq_restaurant_zone"),
+    )
+
