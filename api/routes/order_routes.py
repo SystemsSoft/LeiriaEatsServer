@@ -311,8 +311,14 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     commission_rate = get_commission_rate(restaurant.plan, use_own_delivery=restaurant.use_own_delivery or False)
     # Comissão aplicada apenas sobre o valor dos produtos (total_price)
     commission_on_products = int(total_price * 100 * commission_rate)
-    # A plataforma retém: comissão dos produtos + 100% da taxa de entrega + 100% da taxa de serviço
-    platform_fee = commission_on_products + int(delivery_fee * 100) + int(service_fee * 100)
+    # Se o restaurante usa entrega própria, a taxa de entrega vai para o restaurante (não para a plataforma)
+    # Caso contrário, a plataforma retém: comissão dos produtos + 100% da taxa de entrega + 100% da taxa de serviço
+    if restaurant.use_own_delivery:
+        platform_fee = commission_on_products + int(service_fee * 100)
+        print(f"🚚 use_own_delivery=True → delivery_fee ({delivery_fee} €) vai para o restaurante. platform_fee={platform_fee / 100:.2f} €")
+    else:
+        platform_fee = commission_on_products + int(delivery_fee * 100) + int(service_fee * 100)
+        print(f"📦 use_own_delivery=False → delivery_fee ({delivery_fee} €) vai para a plataforma. platform_fee={platform_fee / 100:.2f} €")
     # Tenta cobrança automática apenas se houver cartão salvo válido
     if (order_data.save_payment_method and
         existing_saved_method is not None and
