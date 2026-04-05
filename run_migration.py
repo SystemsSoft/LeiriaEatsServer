@@ -22,6 +22,8 @@ cmds = [
     # estafeta próprio do restaurante (renomear coluna antiga se existir, criar nova)
     "ALTER TABLE restaurants CHANGE COLUMN uses_own_courier use_own_delivery BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE restaurants ADD COLUMN use_own_delivery BOOLEAN NOT NULL DEFAULT FALSE",
+    # rating dos produtos pode ser NULL
+    "ALTER TABLE products MODIFY COLUMN rating DOUBLE NULL DEFAULT NULL",
 ]
 
 with engine.connect() as conn:

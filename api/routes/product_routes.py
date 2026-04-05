@@ -31,12 +31,17 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
         image_url=product_data.image_url,
         restaurant_id=product_data.restaurant_id,
         category=product_data.category,
-       preparation_time = product_data.preparation_time
+        preparation_time=product_data.preparation_time
     )
 
-    db.add(new_product)
-    db.commit()
-    db.refresh(new_product)
+    try:
+        db.add(new_product)
+        db.commit()
+        db.refresh(new_product)
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Erro ao criar produto: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar produto: {str(e)}")
 
     return new_product
 
