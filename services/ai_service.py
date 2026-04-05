@@ -393,6 +393,7 @@ class AIService:
                 category=restaurant.category,
                 rating=restaurant.rating,
                 image_url=restaurant.image_url,
+                plan=getattr(restaurant, "plan", None),
                 is_closed=is_closed_value,
                 latitude=getattr(restaurant, "latitude", None),
                 longitude=getattr(restaurant, "longitude", None),
