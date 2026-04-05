@@ -24,6 +24,7 @@ class Restaurant(BaseModel):
     category: str
     rating: Optional[float] = None
     image_url: Optional[str] = None
+    plan: Optional[str] = None
     is_closed: Optional[bool] = None  # Estado de encerramento do restaurante no dia/hora atual
     latitude: Optional[float] = None
     longitude: Optional[float] = None
