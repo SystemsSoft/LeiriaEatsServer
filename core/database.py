@@ -4,10 +4,10 @@ from sqlalchemy.orm import sessionmaker
 
 
 DB_USER = "dbmasteruser"
-DB_PASS = "q1w2e3r4"
-DB_HOST = "ls-4c09769be49b9f8b7ca900b4ecadba80d77c8a07.cq7sywsga5zr.us-east-1.rds.amazonaws.com"
+DB_PASS = "dbmasteruser"
+DB_HOST = "ls-8097ab8779ed2a3c062eeb7627e27d8f5aaa96b9.codoai20o7g2.us-east-1.rds.amazonaws.com"
 DB_PORT = "3306"
-DB_NAME = "LeiriaEatsDB"
+DB_NAME = "KomaDB"
 
 # String de Conexão no formato Python (SQLAlchemy)
 # Sintaxe: mysql+pymysql://usuario:senha@host:porta/nome_banco
