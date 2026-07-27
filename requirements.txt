@@ -11,6 +11,7 @@ numpy
 scikit-learn
 pymysql
 python-dotenv
+python-multipart
 passlib
 bcrypt
 stripe
@@ -18,4 +19,3 @@ boto3
 botocore
 starlette
 tzdata
-
