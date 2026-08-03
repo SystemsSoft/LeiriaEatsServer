@@ -4,7 +4,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH_KEY="${SSH_KEY:-$PROJECT_DIR/athenna.pem}"
-SERVER_HOST="${SERVER_HOST:-100.57.162.78}"
+# Atualizado para o IP público atual da instância (ver RESUMO_DIAGNOSTICO.md)
+SERVER_HOST="${SERVER_HOST:-3.239.34.2}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ec2-user/leiria-eats}"
 SERVICE_NAME="${SERVICE_NAME:-leiria-eats.service}"
