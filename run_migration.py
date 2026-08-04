@@ -24,6 +24,10 @@ cmds = [
     "ALTER TABLE restaurants ADD COLUMN use_own_delivery BOOLEAN NOT NULL DEFAULT FALSE",
     # rating dos produtos pode ser NULL
     "ALTER TABLE products MODIFY COLUMN rating DOUBLE NULL DEFAULT NULL",
+    # 2026-08-04: campo status para controle do ciclo de vida do restaurante
+    "ALTER TABLE restaurants ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'PENDING'",
+    # 2026-08-04: permite NULL na coluna stripe_account_id (é criado após o cadastro inicial)
+    "ALTER TABLE restaurants MODIFY COLUMN stripe_account_id VARCHAR(255) NULL",
 ]
 
 with engine.connect() as conn:

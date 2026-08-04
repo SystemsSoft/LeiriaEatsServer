@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from core import config
 from core.database import get_db, SessionLocal
-from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB
+from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB
 from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest
 
 router = APIRouter()
@@ -685,6 +685,56 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
             print(f"❌ Erro ao processar reembolso tardio: {str(e)}")
         except Exception as e:
             print(f"❌ Erro inesperado no reembolso tardio: {str(e)}")
+        finally:
+            db.close()
+
+    # --- Eventos de Conta Stripe Connect (Restaurantes e Drivers) ---
+    if event['type'] == 'account.updated':
+        account_data = event['data']['object']
+        account_id = account_data.get('id')
+        is_complete = (
+            account_data.get('details_submitted', False) and
+            account_data.get('charges_enabled', False) and
+            account_data.get('payouts_enabled', False)
+        )
+
+        print(f"🔄 Evento account.updated recebido para conta: {account_id}")
+        print(f"   details_submitted={account_data.get('details_submitted')}, "
+              f"charges_enabled={account_data.get('charges_enabled')}, "
+              f"payouts_enabled={account_data.get('payouts_enabled')}")
+
+        db = SessionLocal()
+        try:
+            # Verifica se é uma conta de restaurante
+            restaurant = db.query(RestaurantDB).filter(
+                RestaurantDB.stripe_account_id == account_id
+            ).first()
+
+            if restaurant:
+                restaurant.stripe_onboarding_completed = is_complete
+                if is_complete and restaurant.status != "ACTIVE":
+                    restaurant.status = "ACTIVE"
+                    print(f"✅ Restaurante {restaurant.id} ({restaurant.name}) → status=ACTIVE")
+                db.commit()
+
+            # Verifica se é uma conta de driver
+            driver = db.query(DriverDB).filter(
+                DriverDB.stripe_account_id == account_id
+            ).first()
+
+            if driver:
+                driver.stripe_onboarding_completed = is_complete
+                if is_complete and driver.status not in ["ACTIVE", "INACTIVE"]:
+                    driver.status = "ACTIVE"
+                    print(f"✅ Driver {driver.id} ({driver.login}) → status=ACTIVE")
+                db.commit()
+
+            if not restaurant and not driver:
+                print(f"⚠️ Nenhum restaurante ou driver encontrado com stripe_account_id={account_id}")
+
+        except Exception as e:
+            print(f"❌ Erro ao processar account.updated: {str(e)}")
+            db.rollback()
         finally:
             db.close()
 

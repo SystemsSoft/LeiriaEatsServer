@@ -30,7 +30,8 @@ class RestaurantRepository:
             login=company.login,
             password=company.password,
             license=company.license,
-            plan=company.plan
+            plan=company.plan,
+            status="PENDING"  # Status inicial
         )
 
         db.add(db_restaurant)

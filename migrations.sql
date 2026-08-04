@@ -53,3 +53,9 @@ CREATE TABLE IF NOT EXISTS delivery_zones (
 -- 2026-04-05: Permite NULL na coluna rating da tabela products (para concordar com o modelo)
 ALTER TABLE products MODIFY COLUMN rating DOUBLE NULL DEFAULT NULL;
 
+-- 2026-08-04: Adiciona campo status para controle do ciclo de vida do restaurante
+ALTER TABLE restaurants ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING | STRIPE_PENDING | ACTIVE | INACTIVE';
+
+-- 2026-08-04: Permite NULL na coluna stripe_account_id (é criado após o cadastro inicial)
+ALTER TABLE restaurants MODIFY COLUMN stripe_account_id VARCHAR(255) NULL;
+

@@ -98,8 +98,9 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
             )
 
             restaurant.stripe_account_id = account.id
+            restaurant.status = "STRIPE_PENDING"  # Conta Stripe criada, aguarda onboarding
             db.commit()
-            print(f"✅ Conta Stripe Criada: {account.id}")
+            print(f"✅ Conta Stripe Criada: {account.id} → status=STRIPE_PENDING")
 
         # 3. Gera o Link Mágico (Mantendo sua porta 8080)
         account_link = stripe.AccountLink.create(
@@ -140,6 +141,9 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
 
         # Sincroniza o campo na BD
         restaurant.stripe_onboarding_completed = is_complete
+        if is_complete and restaurant.status != "ACTIVE":
+            restaurant.status = "ACTIVE"  # Onboarding completo → restaurante ativo
+            print(f"✅ Status atualizado para ACTIVE (restaurante {restaurant_id})")
         db.commit()
 
         if not is_complete:

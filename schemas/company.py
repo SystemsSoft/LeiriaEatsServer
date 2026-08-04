@@ -105,6 +105,7 @@ class CompanyResponse(BaseModel):
     license: str
     plan: Optional[str] = None
     use_own_delivery: bool = False
+    status: str = "PENDING"  # PENDING | STRIPE_PENDING | ACTIVE | INACTIVE
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 
