@@ -312,19 +312,14 @@ def onboarding_success():
             // Chama a atualização imediatamente
             updateStatus();
             
-            // Auto-redirect para deep link depois de 3 segundos
+            // Auto-redirect para o site após 3 segundos
             setTimeout(function() {
-                window.location.href = 'komarestaurant://onboarding-success';
+                window.location.href = 'https://komarestaurant.netlify.app/';
             }, 3000);
             
             function closeWindow() {
-                // Tenta fechar a janela/aba
-                window.close();
-                
-                // Se não funcionar (navegadores modernos bloqueiam), redireciona para deep link
-                setTimeout(function() {
-                    window.location.href = 'komarestaurant://onboarding-success';
-                }, 100);
+                // Redireciona para o site
+                window.location.href = 'https://komarestaurant.netlify.app/';
             }
         </script>
     </head>
@@ -350,7 +345,7 @@ def onboarding_success():
             </p>
             
             <button class="close-button" onclick="closeWindow()">
-                Fechar esta aba
+                Voltar ao Início
             </button>
             
             <p class="footer">
@@ -491,16 +486,13 @@ def onboarding_refresh():
             }
         </style>
         <script>
-            // Auto-redirect para deep link depois de 3 segundos
+            // Auto-redirect para o site após 3 segundos
             setTimeout(function() {
-                window.location.href = 'komarestaurant://onboarding-expired';
+                window.location.href = 'https://komarestaurant.netlify.app/';
             }, 3000);
             
             function closeWindow() {
-                window.close();
-                setTimeout(function() {
-                    window.location.href = 'komarestaurant://onboarding-expired';
-                }, 100);
+                window.location.href = 'https://komarestaurant.netlify.app/';
             }
         </script>
     </head>
@@ -524,7 +516,7 @@ def onboarding_refresh():
             </div>
             
             <button class="close-button" onclick="closeWindow()">
-                Fechar esta aba
+                Voltar ao Início
             </button>
             
             <p class="footer">
