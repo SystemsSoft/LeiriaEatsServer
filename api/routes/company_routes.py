@@ -103,11 +103,11 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
             db.commit()
             print(f"✅ Conta Stripe Criada: {account.id} → status=STRIPE_PENDING")
 
-        # 3. Gera o Link Mágico com URLs de produção
+        # 3. Gera o Link Mágico com URLs de produção (incluindo restaurant_id)
         account_link = stripe.AccountLink.create(
             account=restaurant.stripe_account_id,
-            refresh_url="https://api.leiriaeats.com/connect/onboarding-refresh",
-            return_url="https://api.leiriaeats.com/connect/onboarding-success",
+            refresh_url=f"https://api.leiriaeats.com/connect/onboarding-refresh?restaurant_id={restaurant_id}",
+            return_url=f"https://api.leiriaeats.com/connect/onboarding-success?restaurant_id={restaurant_id}",
             type="account_onboarding",
         )
 
@@ -277,6 +277,41 @@ def onboarding_success():
             }
         </style>
         <script>
+            // Extrai restaurant_id da URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const restaurantId = urlParams.get('restaurant_id');
+            
+            // Função para atualizar status automaticamente
+            async function updateStatus() {
+                if (!restaurantId) {
+                    console.error('Restaurant ID não encontrado na URL');
+                    return;
+                }
+                
+                try {
+                    console.log('🔄 Verificando status do restaurante', restaurantId);
+                    
+                    const response = await fetch(`/connect/check-status/${restaurantId}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    const data = await response.json();
+                    console.log('✅ Status atualizado:', data);
+                    
+                    if (data.status === 'ACTIVE') {
+                        console.log('🎉 Conta ativada com sucesso!');
+                    }
+                } catch (error) {
+                    console.error('❌ Erro ao atualizar status:', error);
+                }
+            }
+            
+            // Chama a atualização imediatamente
+            updateStatus();
+            
             // Auto-redirect para deep link depois de 3 segundos
             setTimeout(function() {
                 window.location.href = 'komarestaurant://onboarding-success';
@@ -500,6 +535,67 @@ def onboarding_refresh():
     </html>
     """
     return HTMLResponse(content=html_content)
+
+
+@router.post("/connect/check-status/{restaurant_id}")
+def check_stripe_status(restaurant_id: int, db: Session = Depends(get_db)):
+    """
+    Verifica manualmente o status do onboarding Stripe e atualiza o banco.
+    Útil quando o webhook não dispara ou demora muito.
+    """
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    if not restaurant.stripe_account_id:
+        raise HTTPException(status_code=400, detail="Restaurante não tem conta Stripe")
+
+    try:
+        # Busca o estado atual da conta no Stripe
+        account = stripe.Account.retrieve(restaurant.stripe_account_id)
+
+        details_submitted = getattr(account, "details_submitted", False)
+        charges_enabled = getattr(account, "charges_enabled", False)
+        payouts_enabled = getattr(account, "payouts_enabled", False)
+
+        is_complete = details_submitted and charges_enabled and payouts_enabled
+
+        print(f"🔍 Verificando conta {restaurant.stripe_account_id}:")
+        print(f"   details_submitted: {details_submitted}")
+        print(f"   charges_enabled: {charges_enabled}")
+        print(f"   payouts_enabled: {payouts_enabled}")
+        print(f"   is_complete: {is_complete}")
+
+        # Atualiza o status no banco
+        old_status = restaurant.status
+        old_license = restaurant.license
+
+        restaurant.stripe_onboarding_completed = is_complete
+
+        if is_complete and restaurant.status != "ACTIVE":
+            restaurant.status = "ACTIVE"
+            restaurant.license = "ATIVO"
+            db.commit()
+            print(f"✅ Status atualizado: {old_status} → ACTIVE, {old_license} → ATIVO")
+        else:
+            db.commit()
+            print(f"⚠️ Status mantido: {restaurant.status} (onboarding incomplete)")
+
+        return {
+            "restaurant_id": restaurant_id,
+            "stripe_account_id": restaurant.stripe_account_id,
+            "details_submitted": details_submitted,
+            "charges_enabled": charges_enabled,
+            "payouts_enabled": payouts_enabled,
+            "onboarding_complete": is_complete,
+            "status": restaurant.status,
+            "license": restaurant.license,
+            "updated": is_complete and old_status != "ACTIVE"
+        }
+
+    except Exception as e:
+        print(f"❌ Erro ao verificar status: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/connect/dashboard/{restaurant_id}")
