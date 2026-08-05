@@ -31,7 +31,7 @@ logger = logging.getLogger("courier_notification")
 
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
 
-NOTIFY_BEFORE_MINUTES = 25   # avisar X minutos antes do pedido ficar pronto
+NOTIFY_BEFORE_MINUTES = 15   # avisar X minutos antes do pedido ficar pronto
 POLL_INTERVAL_SECONDS = 60   # verifica a cada N segundos
 TOLERANCE_MINUTES     = 5    # janela de reenvio para pedidos que já passaram o notify_at
 DRIVER_ONLINE_MINUTES = 2    # considera driver "online" se last_seen < N minutos atrás
