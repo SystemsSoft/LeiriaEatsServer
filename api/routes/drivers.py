@@ -683,38 +683,42 @@ def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db
             driver.stripe_account_id,
             expand=["individual"],
         )
+
+        # Objetos Stripe usam atributos, não .get()
         is_complete = (
-            account.get("details_submitted", False) and
-            account.get("charges_enabled", False) and
-            account.get("payouts_enabled", False)
+            getattr(account, "details_submitted", False) and
+            getattr(account, "charges_enabled", False) and
+            getattr(account, "payouts_enabled", False)
         )
         driver.stripe_onboarding_completed = is_complete
 
         # ── Sincroniza dados Stripe → BD ────────────────────────────────────
         if is_complete:
-            individual = account.get("individual") or {}
+            individual = getattr(account, "individual", None)
 
-            first_name = individual.get("first_name") or ""
-            last_name  = individual.get("last_name")  or ""
-            full_name  = f"{first_name} {last_name}".strip()
-            if full_name:
-                driver.name = full_name
+            if individual:
+                first_name = getattr(individual, "first_name", "") or ""
+                last_name  = getattr(individual, "last_name", "")  or ""
+                full_name  = f"{first_name} {last_name}".strip()
+                if full_name:
+                    driver.name = full_name
 
-            phone = individual.get("phone") or account.get("phone")
-            if phone:
-                driver.phone = phone
+                phone = getattr(individual, "phone", None) or getattr(account, "phone", None)
+                if phone:
+                    driver.phone = phone
 
-            email = individual.get("email") or account.get("email")
-            if email:
-                driver.email = email
+                email = getattr(individual, "email", None) or getattr(account, "email", None)
+                if email:
+                    driver.email = email
 
-            addr = individual.get("address") or {}
-            if addr.get("line1"):
-                driver.address = addr["line1"]
-            if addr.get("city"):
-                driver.city = addr["city"]
-            if addr.get("postal_code"):
-                driver.postal_code = addr["postal_code"]
+                addr = getattr(individual, "address", None)
+                if addr:
+                    if getattr(addr, "line1", None):
+                        driver.address = addr.line1
+                    if getattr(addr, "city", None):
+                        driver.city = addr.city
+                    if getattr(addr, "postal_code", None):
+                        driver.postal_code = addr.postal_code
 
             driver.status = "ACTIVE"   # onboarding concluído → estafeta activo
 
@@ -731,8 +735,9 @@ def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db
             "driver_id":            driver.id,
             "stripe_account_id":    driver.stripe_account_id,
             "onboarding_completed": is_complete,
-            "charges_enabled":      account.get("charges_enabled"),
-            "payouts_enabled":      account.get("payouts_enabled"),
+            "charges_enabled":      getattr(account, "charges_enabled", False),
+            "payouts_enabled":      getattr(account, "payouts_enabled", False),
+            "status":               driver.status,
             # dados sincronizados do Stripe:
             "synced_name":          driver.name,
             "synced_phone":         driver.phone,
@@ -745,6 +750,11 @@ def mark_driver_onboarding_complete(driver_id: int, db: Session = Depends(get_db
     except stripe.error.StripeError as e:
         print(f"❌ Erro Stripe no complete do estafeta id={driver.id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"❌ Erro inesperado no complete do estafeta id={driver.id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 
 # ──────────────────────────────────────────────────────────────

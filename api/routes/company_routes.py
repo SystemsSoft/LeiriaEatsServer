@@ -134,9 +134,9 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
         # Verifica o estado real na Stripe (não confia apenas no campo local)
         account = stripe.Account.retrieve(restaurant.stripe_account_id)
         is_complete = (
-            account.get("details_submitted", False) and
-            account.get("charges_enabled", False) and
-            account.get("payouts_enabled", False)
+            getattr(account, "details_submitted", False) and
+            getattr(account, "charges_enabled", False) and
+            getattr(account, "payouts_enabled", False)
         )
 
         # Sincroniza o campo na BD
@@ -160,6 +160,8 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         print(f"❌ Erro ao gerar dashboard Stripe: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
 
