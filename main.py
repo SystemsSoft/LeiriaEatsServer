@@ -83,7 +83,7 @@ app.include_router(driver_routes.router)   # /drivers/*
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Iniciando Leiria Eats Server...")
+    print("🚀 Iniciando Koma Ai Server...")
     db = SessionLocal()
     try:
         # Carrega a IA com os dados do banco (Pizzaria Dom Bosco, etc)

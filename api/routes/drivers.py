@@ -6,6 +6,7 @@ from typing import List, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from starlette import status
 
@@ -172,30 +173,380 @@ def login_driver(payload: DriverLoginRequest, db: Session = Depends(get_db)):
 # Callbacks do Stripe Onboarding
 # ──────────────────────────────────────────────────────────────
 
-@router.get("/onboarding-success")
+@router.get("/onboarding-success", response_class=HTMLResponse)
 def driver_onboarding_success():
     """
     Endpoint chamado pelo Stripe após o estafeta completar o onboarding.
     O webhook account.updated já atualizará o status para ACTIVE automaticamente.
     """
-    return {
-        "success": True,
-        "message": "Onboarding concluído! Seu status será atualizado para ACTIVE em instantes.",
-        "redirect": "komapartner://driver/onboarding-success"
-    }
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="pt">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Onboarding Concluído - Koma Driver</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                background: linear-gradient(135deg, #D8E5E3 0%, #89C9B8 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            
+            .container {
+                background: white;
+                border-radius: 20px;
+                padding: 60px 40px;
+                max-width: 500px;
+                width: 100%;
+                text-align: center;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                animation: slideUp 0.5s ease-out;
+            }
+            
+            @keyframes slideUp {
+                from {
+                    opacity: 0;
+                    transform: translateY(30px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            
+            .success-icon {
+                width: 80px;
+                height: 80px;
+                background: linear-gradient(135deg, #89C9B8 0%, #5FA794 100%);
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 30px;
+                animation: scaleIn 0.5s ease-out 0.2s both;
+            }
+            
+            @keyframes scaleIn {
+                from {
+                    transform: scale(0);
+                }
+                to {
+                    transform: scale(1);
+                }
+            }
+            
+            .checkmark {
+                width: 40px;
+                height: 40px;
+                border: 4px solid white;
+                border-top: none;
+                border-right: none;
+                transform: rotate(-45deg);
+                margin-top: -10px;
+            }
+            
+            h1 {
+                color: #2d3748;
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 20px;
+            }
+            
+            .message {
+                color: #4a5568;
+                font-size: 18px;
+                line-height: 1.6;
+                margin-bottom: 30px;
+            }
+            
+            .status-badge {
+                display: inline-block;
+                background: linear-gradient(135deg, #89C9B8 0%, #5FA794 100%);
+                color: white;
+                padding: 12px 30px;
+                border-radius: 25px;
+                font-weight: 600;
+                font-size: 16px;
+                margin-bottom: 30px;
+                animation: pulse 2s ease-in-out infinite;
+            }
+            
+            @keyframes pulse {
+                0%, 100% {
+                    transform: scale(1);
+                }
+                50% {
+                    transform: scale(1.05);
+                }
+            }
+            
+            .info-text {
+                color: #718096;
+                font-size: 14px;
+                line-height: 1.6;
+                margin-bottom: 30px;
+            }
+            
+            .close-button {
+                background: linear-gradient(135deg, #89C9B8 0%, #5FA794 100%);
+                color: white;
+                border: none;
+                padding: 16px 40px;
+                border-radius: 10px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s, box-shadow 0.2s;
+                box-shadow: 0 4px 15px rgba(137, 201, 184, 0.4);
+            }
+            
+            .close-button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(137, 201, 184, 0.6);
+            }
+            
+            .close-button:active {
+                transform: translateY(0);
+            }
+            
+            .footer {
+                margin-top: 30px;
+                color: #a0aec0;
+                font-size: 12px;
+            }
+        </style>
+        <script>
+            // Auto-redirect para deep link depois de 3 segundos
+            setTimeout(function() {
+                window.location.href = 'komapartner://driver/onboarding-success';
+            }, 3000);
+            
+            function closeWindow() {
+                window.close();
+                setTimeout(function() {
+                    window.location.href = 'komapartner://driver/onboarding-success';
+                }, 100);
+            }
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="success-icon">
+                <div class="checkmark"></div>
+            </div>
+            
+            <h1>🚴 Cadastro Concluído!</h1>
+            
+            <div class="status-badge">
+                🎉 Estafeta Ativado com Sucesso
+            </div>
+            
+            <p class="message">
+                Parabéns! Seu cadastro foi finalizado com sucesso.<br>
+                Seu status será atualizado para <strong>ACTIVE</strong> em instantes.
+            </p>
+            
+            <p class="info-text">
+                Você já pode começar a aceitar entregas na plataforma Koma.
+            </p>
+            
+            <button class="close-button" onclick="closeWindow()">
+                Fechar esta aba
+            </button>
+            
+            <p class="footer">
+                Redirecionando automaticamente em 3 segundos...
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
-@router.get("/onboarding-refresh")
+@router.get("/onboarding-refresh", response_class=HTMLResponse)
 def driver_onboarding_refresh():
     """
     Endpoint chamado se o link de onboarding expirar.
     O app deve chamar novamente POST /drivers/{driver_id}/stripe-onboarding
     """
-    return {
-        "success": False,
-        "message": "Link expirado. Solicite um novo link de onboarding.",
-        "redirect": "komapartner://driver/onboarding-expired"
-    }
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="pt">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Link Expirado - Koma Driver</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                background: linear-gradient(135deg, #D8E5E3 0%, #E8B4A8 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            
+            .container {
+                background: white;
+                border-radius: 20px;
+                padding: 60px 40px;
+                max-width: 500px;
+                width: 100%;
+                text-align: center;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                animation: slideUp 0.5s ease-out;
+            }
+            
+            @keyframes slideUp {
+                from {
+                    opacity: 0;
+                    transform: translateY(30px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            
+            .error-icon {
+                width: 80px;
+                height: 80px;
+                background: linear-gradient(135deg, #E8B4A8 0%, #D88A7A 100%);
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 30px;
+                font-size: 48px;
+                animation: scaleIn 0.5s ease-out 0.2s both;
+            }
+            
+            @keyframes scaleIn {
+                from {
+                    transform: scale(0) rotate(-180deg);
+                }
+                to {
+                    transform: scale(1) rotate(0);
+                }
+            }
+            
+            h1 {
+                color: #2d3748;
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 20px;
+            }
+            
+            .message {
+                color: #4a5568;
+                font-size: 18px;
+                line-height: 1.6;
+                margin-bottom: 30px;
+            }
+            
+            .info-text {
+                color: #718096;
+                font-size: 14px;
+                line-height: 1.6;
+                margin-bottom: 30px;
+                background: #f7fafc;
+                padding: 20px;
+                border-radius: 10px;
+                border-left: 4px solid #D88A7A;
+            }
+            
+            .close-button {
+                background: linear-gradient(135deg, #E8B4A8 0%, #D88A7A 100%);
+                color: white;
+                border: none;
+                padding: 16px 40px;
+                border-radius: 10px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s, box-shadow 0.2s;
+                box-shadow: 0 4px 15px rgba(232, 180, 168, 0.4);
+            }
+            
+            .close-button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(232, 180, 168, 0.6);
+            }
+            
+            .close-button:active {
+                transform: translateY(0);
+            }
+            
+            .footer {
+                margin-top: 30px;
+                color: #a0aec0;
+                font-size: 12px;
+            }
+        </style>
+        <script>
+            // Auto-redirect para deep link depois de 3 segundos
+            setTimeout(function() {
+                window.location.href = 'komapartner://driver/onboarding-expired';
+            }, 3000);
+            
+            function closeWindow() {
+                window.close();
+                setTimeout(function() {
+                    window.location.href = 'komapartner://driver/onboarding-expired';
+                }, 100);
+            }
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="error-icon">
+                ⏱️
+            </div>
+            
+            <h1>Link Expirado</h1>
+            
+            <p class="message">
+                O link de onboarding expirou.<br>
+                Isso é normal e acontece por segurança.
+            </p>
+            
+            <div class="info-text">
+                <strong>O que fazer agora?</strong><br>
+                Volte ao aplicativo e solicite um novo link de onboarding.<br>
+                Seus dados já foram salvos e você poderá continuar de onde parou.
+            </div>
+            
+            <button class="close-button" onclick="closeWindow()">
+                Fechar esta aba
+            </button>
+            
+            <p class="footer">
+                Redirecionando automaticamente em 3 segundos...
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 # ──────────────────────────────────────────────────────────────
