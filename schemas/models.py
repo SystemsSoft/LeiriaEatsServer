@@ -111,6 +111,12 @@ class OrderResponse(BaseModel):
     restaurant_longitude: Optional[float] = None
     delivery_fee: Optional[float] = 0.0
     service_fee: Optional[float] = 0.0
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    vehicle_type: Optional[str] = None
+    vehicle_model: Optional[str] = None
+    vehicle_plate: Optional[str] = None
+    vehicle_color: Optional[str] = None
     items: List[OrderItemResponse]
 
     class Config:

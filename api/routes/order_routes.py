@@ -387,23 +387,109 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     print(f"👤 Buscando histórico de: {user_id}")
 
-    orders = db.query(OrderDB).filter_by(
+    orders_query = db.query(OrderDB).filter_by(
         user_id=user_id
     ).order_by(OrderDB.id.desc()).all()
 
-    return orders
+    # Popula os campos do driver manualmente
+    result = []
+    for order in orders_query:
+        order_dict = {
+            "id": order.id,
+            "customer_name": order.customer_name,
+            "delivery_address": order.delivery_address,
+            "total": order.total,
+            "status": order.status,
+            "restaurant_name": order.restaurant_name,
+            "restaurant_category": order.restaurant_category,
+            "restaurant_image_url": order.restaurant_image_url,
+            "tracking_code": order.tracking_code,
+            "delivery_type": order.delivery_type,
+            "base_time": order.base_time,
+            "delivery_latitude": order.delivery_latitude,
+            "delivery_longitude": order.delivery_longitude,
+            "restaurant_latitude": order.restaurant_latitude,
+            "restaurant_longitude": order.restaurant_longitude,
+            "delivery_fee": order.delivery_fee,
+            "service_fee": order.service_fee,
+            "items": order.items,
+            "driver_name": None,
+            "driver_phone": None,
+            "vehicle_type": None,
+            "vehicle_model": None,
+            "vehicle_plate": None,
+            "vehicle_color": None,
+        }
+        
+        # Se o pedido tem um driver atribuído, busca as informações do veículo
+        if order.driver_id:
+            driver = db.query(DriverDB).filter(DriverDB.id == order.driver_id).first()
+            if driver:
+                order_dict["driver_name"] = driver.name
+                order_dict["driver_phone"] = driver.phone
+                order_dict["vehicle_type"] = driver.vehicle_type
+                order_dict["vehicle_model"] = driver.vehicle_model
+                order_dict["vehicle_plate"] = driver.vehicle_plate
+                order_dict["vehicle_color"] = driver.vehicle_color
+        
+        result.append(OrderResponse(**order_dict))
+
+    return result
 
 
 @router.get("/orders/{restaurant_id}", response_model=List[OrderResponse])
 def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
     print(f"🔎 Buscando pedidos para o Restaurante ID {restaurant_id}")
 
-    # Busca no banco filtrando pelo ID do restaurante
-    orders = db.query(OrderDB).filter(
+    # Busca no banco filtrando pelo ID do restaurante, com join no driver
+    orders_query = db.query(OrderDB).filter(
         OrderDB.restaurant_id == restaurant_id
     ).order_by(OrderDB.id.desc()).all()
 
-    return orders
+    # Popula os campos do driver manualmente
+    result = []
+    for order in orders_query:
+        order_dict = {
+            "id": order.id,
+            "customer_name": order.customer_name,
+            "delivery_address": order.delivery_address,
+            "total": order.total,
+            "status": order.status,
+            "restaurant_name": order.restaurant_name,
+            "restaurant_category": order.restaurant_category,
+            "restaurant_image_url": order.restaurant_image_url,
+            "tracking_code": order.tracking_code,
+            "delivery_type": order.delivery_type,
+            "base_time": order.base_time,
+            "delivery_latitude": order.delivery_latitude,
+            "delivery_longitude": order.delivery_longitude,
+            "restaurant_latitude": order.restaurant_latitude,
+            "restaurant_longitude": order.restaurant_longitude,
+            "delivery_fee": order.delivery_fee,
+            "service_fee": order.service_fee,
+            "items": order.items,
+            "driver_name": None,
+            "driver_phone": None,
+            "vehicle_type": None,
+            "vehicle_model": None,
+            "vehicle_plate": None,
+            "vehicle_color": None,
+        }
+        
+        # Se o pedido tem um driver atribuído, busca as informações do veículo
+        if order.driver_id:
+            driver = db.query(DriverDB).filter(DriverDB.id == order.driver_id).first()
+            if driver:
+                order_dict["driver_name"] = driver.name
+                order_dict["driver_phone"] = driver.phone
+                order_dict["vehicle_type"] = driver.vehicle_type
+                order_dict["vehicle_model"] = driver.vehicle_model
+                order_dict["vehicle_plate"] = driver.vehicle_plate
+                order_dict["vehicle_color"] = driver.vehicle_color
+        
+        result.append(OrderResponse(**order_dict))
+
+    return result
 
 
 @router.post("/orders/{order_id}/cancel")
