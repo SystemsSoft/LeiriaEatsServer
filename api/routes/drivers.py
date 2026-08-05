@@ -124,8 +124,8 @@ def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db
         # 4. Gera o link de onboarding (UI do Stripe — igual ao restaurante)
         account_link = stripe.AccountLink.create(
             account=driver.stripe_account_id,
-            refresh_url="http://localhost:8080/#/driver/onboarding-retry",
-            return_url="http://localhost:8080/#/driver/onboarding-success",
+            refresh_url="https://api.leiriaeats.com/drivers/onboarding-refresh",
+            return_url="https://api.leiriaeats.com/drivers/onboarding-success",
             type="account_onboarding",
         )
         print(f"🔗 Onboarding link gerado para estafeta id={driver.id}")
@@ -166,6 +166,36 @@ def login_driver(payload: DriverLoginRequest, db: Session = Depends(get_db)):
         status=driver.status,
         message="Login realizado com sucesso.",
     )
+
+
+# ──────────────────────────────────────────────────────────────
+# Callbacks do Stripe Onboarding
+# ──────────────────────────────────────────────────────────────
+
+@router.get("/onboarding-success")
+def driver_onboarding_success():
+    """
+    Endpoint chamado pelo Stripe após o estafeta completar o onboarding.
+    O webhook account.updated já atualizará o status para ACTIVE automaticamente.
+    """
+    return {
+        "success": True,
+        "message": "Onboarding concluído! Seu status será atualizado para ACTIVE em instantes.",
+        "redirect": "komapartner://driver/onboarding-success"
+    }
+
+
+@router.get("/onboarding-refresh")
+def driver_onboarding_refresh():
+    """
+    Endpoint chamado se o link de onboarding expirar.
+    O app deve chamar novamente POST /drivers/{driver_id}/stripe-onboarding
+    """
+    return {
+        "success": False,
+        "message": "Link expirado. Solicite um novo link de onboarding.",
+        "redirect": "komapartner://driver/onboarding-expired"
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -649,8 +679,8 @@ def create_driver_stripe_onboarding(driver_id: int, db: Session = Depends(get_db
         # Gera o link de onboarding
         account_link = stripe.AccountLink.create(
             account=driver.stripe_account_id,
-            refresh_url="http://localhost:8080/#/driver/onboarding-retry",
-            return_url="http://localhost:8080/#/driver/onboarding-success",
+            refresh_url="https://api.leiriaeats.com/drivers/onboarding-refresh",
+            return_url="https://api.leiriaeats.com/drivers/onboarding-success",
             type="account_onboarding",
         )
 

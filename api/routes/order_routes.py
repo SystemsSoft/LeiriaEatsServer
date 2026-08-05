@@ -714,7 +714,8 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
                 restaurant.stripe_onboarding_completed = is_complete
                 if is_complete and restaurant.status != "ACTIVE":
                     restaurant.status = "ACTIVE"
-                    print(f"✅ Restaurante {restaurant.id} ({restaurant.name}) → status=ACTIVE")
+                    restaurant.license = "ATIVO"  # Sincroniza o campo license
+                    print(f"✅ Restaurante {restaurant.id} ({restaurant.name}) → status=ACTIVE, license=ATIVO")
                 db.commit()
 
             # Verifica se é uma conta de driver

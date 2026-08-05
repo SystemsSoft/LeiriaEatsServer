@@ -102,19 +102,50 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
             db.commit()
             print(f"✅ Conta Stripe Criada: {account.id} → status=STRIPE_PENDING")
 
-        # 3. Gera o Link Mágico (Mantendo sua porta 8080)
+        # 3. Gera o Link Mágico com URLs de produção
         account_link = stripe.AccountLink.create(
             account=restaurant.stripe_account_id,
-            refresh_url="http://localhost:8080/#/",
-            return_url="http://localhost:8080/#/sucesso",
+            refresh_url="https://api.leiriaeats.com/connect/onboarding-refresh",
+            return_url="https://api.leiriaeats.com/connect/onboarding-success",
             type="account_onboarding",
         )
 
-        return {"url": account_link.url}
+        return {
+            "url": account_link.url,
+            "stripe_account_id": restaurant.stripe_account_id,
+            "status": restaurant.status,
+            "message": "Complete o onboarding no Stripe. O status mudará para ACTIVE automaticamente após conclusão."
+        }
 
     except Exception as e:
         print(f"❌ Erro Stripe: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/connect/onboarding-success")
+def onboarding_success():
+    """
+    Endpoint chamado pelo Stripe após o usuário completar o onboarding.
+    O webhook account.updated já atualizará o status para ACTIVE automaticamente.
+    """
+    return {
+        "success": True,
+        "message": "Onboarding concluído! Seu status será atualizado para ACTIVE em instantes.",
+        "redirect": "komapartner://onboarding-success"
+    }
+
+
+@router.get("/connect/onboarding-refresh")
+def onboarding_refresh():
+    """
+    Endpoint chamado se o link de onboarding expirar.
+    O app deve chamar novamente POST /connect/onboarding/{restaurant_id}
+    """
+    return {
+        "success": False,
+        "message": "Link expirado. Solicite um novo link de onboarding.",
+        "redirect": "komapartner://onboarding-expired"
+    }
 
 
 @router.get("/connect/dashboard/{restaurant_id}")
@@ -143,7 +174,8 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
         restaurant.stripe_onboarding_completed = is_complete
         if is_complete and restaurant.status != "ACTIVE":
             restaurant.status = "ACTIVE"  # Onboarding completo → restaurante ativo
-            print(f"✅ Status atualizado para ACTIVE (restaurante {restaurant_id})")
+            restaurant.license = "ATIVO"  # Sincroniza o campo license
+            print(f"✅ Status atualizado para ACTIVE e license para ATIVO (restaurante {restaurant_id})")
         db.commit()
 
         if not is_complete:
