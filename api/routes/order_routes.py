@@ -610,6 +610,41 @@ def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)
     return {"order_id": order_id, "base_time": order.base_time}
 
 
+@router.post("/orders/{order_id}/reset-delivery")
+def reset_order_delivery(order_id: int, db: Session = Depends(get_db)):
+    """
+    Remove o estafeta atual de um pedido e reinicia a busca.
+    Limpa os campos driver_id, driver_name e informações de pagamento ao estafeta.
+    """
+    print(f"🔄 Reiniciando busca de estafeta para o pedido #{order_id}")
+    
+    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    
+    # Armazena o nome do driver anterior para log
+    previous_driver = order.driver_name or f"ID {order.driver_id}"
+    
+    # Remove a atribuição do driver
+    order.driver_id = None
+    order.driver_name = None
+    
+    # Limpa os campos de pagamento ao estafeta (se houver)
+    order.driver_delivery_fee = None
+    order.driver_payment_transfer_id = None
+    
+    db.commit()
+    
+    print(f"✅ Estafeta {previous_driver} removido do pedido #{order_id}. Busca reiniciada.")
+    
+    return {
+        "message": "Estafeta removido e busca reiniciada com sucesso",
+        "order_id": order_id,
+        "previous_driver": previous_driver,
+        "status": order.status
+    }
+
+
 @router.put("/orders/{order_id}/status", response_model=OrderStatusResponse)
 def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
     print(f"🔄 Atualizando pedido #{order_id} para: {status_data.status}")
@@ -1323,4 +1358,3 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
 
     print(f"✅ Avaliações registadas para o pedido {order_id_int}: produtos {saved_ratings}")
     return {"message": "Avaliações registadas com sucesso", "rated_products": saved_ratings}
-
