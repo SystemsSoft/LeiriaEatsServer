@@ -125,13 +125,13 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
 @router.get("/connect/onboarding-success")
 def onboarding_success():
     """
-    Endpoint chamado pelo Stripe após o usuário completar o onboarding.
+    Endpoint chamado pelo Stripe após o restaurante completar o onboarding.
     O webhook account.updated já atualizará o status para ACTIVE automaticamente.
     """
     return {
         "success": True,
         "message": "Onboarding concluído! Seu status será atualizado para ACTIVE em instantes.",
-        "redirect": "komapartner://onboarding-success"
+        "redirect": "komarestaurant://onboarding-success"  # Específico para app do restaurante
     }
 
 
@@ -144,7 +144,7 @@ def onboarding_refresh():
     return {
         "success": False,
         "message": "Link expirado. Solicite um novo link de onboarding.",
-        "redirect": "komapartner://onboarding-expired"
+        "redirect": "komarestaurant://onboarding-expired"  # Específico para app do restaurante
     }
 
 
