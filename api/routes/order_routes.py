@@ -1,9 +1,10 @@
 # Arquivo: api/routes/order_routes.py
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import math
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from core import config
@@ -354,7 +355,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
                 "quantity": 1,
             }],
             "mode": "payment",
-            "success_url": f"http://localhost/success?order_id={new_order.id}",
+            "success_url": f"https://api.leiriaeats.com/payment-success?order_id={new_order.id}",
             "cancel_url": "http://localhost/cancel",
             "payment_intent_data": payment_intent_data,
             "metadata": {
@@ -860,6 +861,315 @@ def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/orders/{order_id}/check-payment-status")
+def check_order_payment_status(order_id: int, db: Session = Depends(get_db)):
+    """
+    Verifica o status real do pagamento no Stripe e atualiza o pedido no banco.
+    Útil como fallback caso o webhook não seja processado imediatamente.
+    """
+    print(f"🔍 Verificando status de pagamento para pedido #{order_id}")
+
+    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    # Se já foi processado, retorna o status atual
+    if order.status != "PENDING_PAYMENT":
+        return {
+            "order_id": order_id,
+            "status": order.status,
+            "payment_confirmed": True,
+            "already_processed": True
+        }
+
+    # Tenta buscar o status no Stripe
+    try:
+        payment_intent_id = order.payment_intent_id
+
+        # Se não tem payment_intent_id ainda, tenta recuperar via checkout_session_id
+        if not payment_intent_id and order.checkout_session_id:
+            print(f"🔍 Buscando PaymentIntent via Session: {order.checkout_session_id}")
+            session = stripe.checkout.Session.retrieve(order.checkout_session_id)
+
+            if session.payment_intent:
+                payment_intent_id = session.payment_intent
+                order.payment_intent_id = payment_intent_id
+
+                # Captura o customer_id se disponível
+                if session.customer:
+                    order.stripe_customer_id = session.customer
+
+                db.commit()
+                print(f"✅ PaymentIntent recuperado: {payment_intent_id}")
+
+        # Verifica o status do pagamento
+        if payment_intent_id:
+            pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+            print(f"💳 PaymentIntent status: {pi.status}")
+
+            if pi.status == "succeeded":
+                # Pagamento confirmado → atualiza para Pendente
+                order.status = "Pendente"
+                db.commit()
+                print(f"✅ Pedido #{order_id} atualizado: PENDING_PAYMENT → Pendente")
+
+                return {
+                    "order_id": order_id,
+                    "status": "Pendente",
+                    "payment_confirmed": True,
+                    "updated": True
+                }
+            else:
+                # Pagamento ainda não foi completado
+                return {
+                    "order_id": order_id,
+                    "status": "PENDING_PAYMENT",
+                    "payment_confirmed": False,
+                    "payment_status": pi.status
+                }
+        else:
+            # Sem payment_intent ainda
+            return {
+                "order_id": order_id,
+                "status": "PENDING_PAYMENT",
+                "payment_confirmed": False,
+                "message": "Pagamento ainda não foi processado"
+            }
+
+    except stripe.error.StripeError as e:
+        print(f"❌ Erro ao verificar status no Stripe: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro ao verificar pagamento: {str(e)}")
+
+
+@router.get("/payment-success", response_class=HTMLResponse)
+def payment_success(order_id: Optional[int] = None):
+    """
+    Página de sucesso após pagamento completado no Stripe.
+    Atualiza automaticamente o status do pedido via JavaScript.
+    """
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="pt">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Pagamento Confirmado - Koma Ai</title>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                background: linear-gradient(135deg, #D4D7DD 0%, #A8ADB7 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }}
+            
+            .container {{
+                background: white;
+                border-radius: 20px;
+                padding: 60px 40px;
+                max-width: 500px;
+                width: 100%;
+                text-align: center;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                animation: slideUp 0.5s ease-out;
+            }}
+            
+            @keyframes slideUp {{
+                from {{
+                    opacity: 0;
+                    transform: translateY(30px);
+                }}
+                to {{
+                    opacity: 1;
+                    transform: translateY(0);
+                }}
+            }}
+            
+            .success-icon {{
+                width: 80px;
+                height: 80px;
+                background: linear-gradient(135deg, #D4D7DD 0%, #A8ADB7 100%);
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 30px;
+                animation: scaleIn 0.5s ease-out 0.2s both;
+            }}
+            
+            @keyframes scaleIn {{
+                from {{
+                    transform: scale(0);
+                }}
+                to {{
+                    transform: scale(1);
+                }}
+            }}
+            
+            .checkmark {{
+                width: 40px;
+                height: 40px;
+                border: 4px solid white;
+                border-top: none;
+                border-right: none;
+                transform: rotate(-45deg);
+                margin-top: -10px;
+            }}
+            
+            h1 {{
+                color: #2d3748;
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 20px;
+            }}
+            
+            .message {{
+                color: #4a5568;
+                font-size: 18px;
+                line-height: 1.6;
+                margin-bottom: 30px;
+            }}
+            
+            .status-badge {{
+                display: inline-block;
+                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+                color: white;
+                padding: 12px 30px;
+                border-radius: 25px;
+                font-weight: 600;
+                font-size: 16px;
+                margin-bottom: 30px;
+                animation: pulse 2s ease-in-out infinite;
+            }}
+            
+            @keyframes pulse {{
+                0%, 100% {{
+                    transform: scale(1);
+                }}
+                50% {{
+                    transform: scale(1.05);
+                }}
+            }}
+            
+            .info-text {{
+                color: #718096;
+                font-size: 14px;
+                line-height: 1.6;
+                margin-bottom: 30px;
+            }}
+            
+            .close-button {{
+                background: linear-gradient(135deg, #D4D7DD 0%, #A8ADB7 100%);
+                color: white;
+                border: none;
+                padding: 16px 40px;
+                border-radius: 10px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s, box-shadow 0.2s;
+                box-shadow: 0 4px 15px rgba(168, 173, 183, 0.4);
+            }}
+            
+            .close-button:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(168, 173, 183, 0.6);
+            }}
+            
+            .close-button:active {{
+                transform: translateY(0);
+            }}
+            
+            .footer {{
+                margin-top: 30px;
+                color: #a0aec0;
+                font-size: 12px;
+            }}
+        </style>
+        <script>
+            // Função para atualizar o status do pedido automaticamente
+            async function updateOrderStatus() {{
+                const orderId = '{order_id}';
+                if (!orderId || orderId === 'None') {{
+                    console.error('Order ID não fornecido na URL');
+                    return;
+                }}
+                
+                try {{
+                    const response = await fetch(`/orders/${{orderId}}/check-payment-status`, {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/json'
+                        }}
+                    }});
+                    
+                    const data = await response.json();
+                    console.log('Status atualizado:', data);
+                    
+                    if (data.payment_confirmed) {{
+                        console.log('✅ Pagamento confirmado! Status:', data.status);
+                    }}
+                }} catch (error) {{
+                    console.error('Erro ao atualizar status:', error);
+                }}
+            }}
+            
+            // Chama a atualização assim que a página carrega
+            window.addEventListener('load', updateOrderStatus);
+            
+            // Auto-redirect depois de 3 segundos
+            setTimeout(function() {{
+                window.location.href = 'https://komaapp.netlify.app/';
+            }}, 3000);
+            
+            function goHome() {{
+                window.location.href = 'https://komaapp.netlify.app/';
+            }}
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="success-icon">
+                <div class="checkmark"></div>
+            </div>
+            
+            <h1>💳 Pagamento Confirmado!</h1>
+            
+            <div class="status-badge">
+                ✅ Pedido Realizado com Sucesso
+            </div>
+            
+            <p class="message">
+                Obrigado! Seu pagamento foi processado com sucesso.<br>
+                Seu pedido já está sendo preparado.
+            </p>
+            
+            <p class="info-text">
+                Você receberá atualizações em tempo real sobre o status do seu pedido.
+            </p>
+            
+            <button class="close-button" onclick="goHome()">
+                Voltar ao Início
+            </button>
+            
+            <p class="footer">
+                Redirecionando automaticamente em 3 segundos...
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @router.post("/orders/ratings")
