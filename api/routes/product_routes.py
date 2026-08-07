@@ -9,6 +9,7 @@ from core.database import get_db
 from core.sql_models import ProductDB, RestaurantDB, ProductRatingDB
 # 2. IMPORTAMOS O SCHEMA DE DADOS
 from schemas.product import ProductCreateRequest, ProductResponse
+from services.ai_service import AIService
 
 router = APIRouter()
 
@@ -38,6 +39,10 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
         db.add(new_product)
         db.commit()
         db.refresh(new_product)
+
+        # Recarrega o cache do AIService para incluir o novo produto nas buscas
+        AIService.reload_data(db)
+        print(f"🔄 Cache do AIService recarregado com o novo produto")
     except Exception as e:
         db.rollback()
         print(f"❌ Erro ao criar produto: {str(e)}")
@@ -96,6 +101,10 @@ def update_product(product_id: int, product_data: ProductCreateRequest, db: Sess
     ).scalar()
     db_product.rating = avg
 
+    # Recarrega o cache do AIService para atualizar o produto nas buscas
+    AIService.reload_data(db)
+    print(f"🔄 Cache do AIService recarregado após atualização do produto")
+
     return db_product
 
 
@@ -109,4 +118,9 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
 
     db.delete(db_product)
     db.commit()
+
+    # Recarrega o cache do AIService para remover o produto das buscas
+    AIService.reload_data(db)
+    print(f"🔄 Cache do AIService recarregado após deletar o produto")
+
     return {"message": "Deletado com sucesso"}

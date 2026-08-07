@@ -13,6 +13,7 @@ from core.sql_models import RestaurantDB, RestaurantHourDB, DeliveryZoneDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse, UsesPlatformCourierRequest, DeliveryZoneRequest, DeliveryZoneResponse
 from schemas.payment import PaymentIntentRequest
+from services.ai_service import AIService
 
 # --- CONFIGURAÇÃO INICIAL ---
 # 1. Cria o Router UMA VEZ SÓ
@@ -36,6 +37,11 @@ def register_company(company_data: CompanyCreateRequest, db: Session = Depends(g
         # Chama o repositório que faz o Hash da senha e salva
         new_company = RestaurantRepository.create_company(db, company_data)
         print(f"✅ Empresa criada com ID: {new_company.id}")
+
+        # Recarrega o cache do AIService para incluir o novo restaurante nas buscas
+        AIService.reload_data(db)
+        print(f"🔄 Cache do AIService recarregado com o novo restaurante")
+
         return new_company
     except Exception as e:
         print(f"❌ Erro ao criar empresa: {e}")
@@ -62,6 +68,11 @@ def update_company(company_id: int, company_update: CompanyUpdateRequest, db: Se
 
     db.commit()
     db.refresh(db_company)
+
+    # Recarrega o cache do AIService após atualizar empresa
+    AIService.reload_data(db)
+    print(f"🔄 Cache do AIService recarregado após atualização da empresa")
+
     return db_company
 
 
@@ -569,6 +580,10 @@ def check_stripe_status(restaurant_id: int, db: Session = Depends(get_db)):
             restaurant.license = "ATIVO"
             db.commit()
             print(f"✅ Status atualizado: {old_status} → ACTIVE, {old_license} → ATIVO")
+
+            # Recarrega o cache do AIService após ativar o restaurante
+            AIService.reload_data(db)
+            print(f"🔄 Cache do AIService recarregado após ativar restaurante")
         else:
             db.commit()
             print(f"⚠️ Status mantido: {restaurant.status} (onboarding incomplete)")
@@ -618,7 +633,13 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
             restaurant.status = "ACTIVE"  # Onboarding completo → restaurante ativo
             restaurant.license = "ATIVO"  # Sincroniza o campo license
             print(f"✅ Status atualizado para ACTIVE e license para ATIVO (restaurante {restaurant_id})")
-        db.commit()
+            db.commit()
+
+            # Recarrega o cache do AIService após ativar o restaurante
+            AIService.reload_data(db)
+            print(f"🔄 Cache do AIService recarregado após ativar restaurante")
+        else:
+            db.commit()
 
         if not is_complete:
             raise HTTPException(
