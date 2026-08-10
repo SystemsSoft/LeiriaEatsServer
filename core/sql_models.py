@@ -49,6 +49,44 @@ class ProductDB(Base):
     # ForeignKey aponta para a tabela 'restaurants', coluna 'id'
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
 
+    # ══════════════════════════════════════════════════════════════
+    # Novas colunas para melhorar recomendações da IA
+    # ══════════════════════════════════════════════════════════════
+    
+    # Ingredientes e composição
+    ingredients = Column(Text, nullable=True)  # Lista de ingredientes separados por vírgula
+    allergens = Column(String(500), nullable=True)  # Ex: "glúten, lactose, amendoim"
+    
+    # Tags dietéticas (separadas por vírgula)
+    # Ex: "vegetariano, sem glúten, low carb"
+    dietary_tags = Column(String(500), nullable=True)
+    
+    # Nível de picância
+    # Valores: "não picante", "levemente picante", "picante", "muito picante"
+    spice_level = Column(String(50), nullable=True, default="não picante")
+    
+    # Informações de porção
+    serves_people = Column(Integer, nullable=True)  # Quantas pessoas serve (1, 2, 4, etc)
+    portion_size = Column(String(50), nullable=True)  # "individual", "pequeno", "médio", "grande", "família"
+    
+    # Informações nutricionais básicas
+    calories = Column(Integer, nullable=True)  # Calorias aproximadas
+    
+    # Status e popularidade
+    is_popular = Column(Boolean, default=False)  # Se é item destaque/popular
+    is_available = Column(Boolean, default=True)  # Se está disponível no momento
+    
+    # Tempo de preparo estruturado
+    preparation_time_minutes = Column(Integer, nullable=True)  # Tempo em minutos (ex: 30)
+    
+    # Recomendação por horário (separado por vírgula)
+    # Ex: "café da manhã, almoço", "jantar, lanche", "sobremesa"
+    recommended_for = Column(String(200), nullable=True)
+    
+    # Tags adicionais para busca (separadas por vírgula)
+    # Ex: "rápido, leve, gourmet, tradicional, kids"
+    search_tags = Column(String(500), nullable=True)
+
     restaurant = relationship("RestaurantDB", back_populates="products")
 
 

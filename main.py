@@ -10,6 +10,7 @@ from starlette.responses import FileResponse
 
 from core.database import Base, engine, SessionLocal
 from services.ai_service import AIService
+from services.hybrid_ai_service import HybridAIService
 import os
 
 
@@ -83,18 +84,38 @@ app.include_router(driver_routes.router)   # /drivers/*
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Iniciando Koma Ai Server...")
+    print("🚀 Iniciando Koma AI Server...")
+
+    # Inicializar modelos de IA (E5 + Phi-3)
+    print("\n" + "="*50)
+    print("🤖 CARREGANDO MODELOS DE INTELIGÊNCIA ARTIFICIAL")
+    print("="*50)
+
+    try:
+        # Carregar sistema híbrido (E5 + Phi-3)
+        HybridAIService.initialize_models()
+        print("✅ Sistema de IA híbrido inicializado com sucesso!")
+    except Exception as e:
+        print(f"⚠️ Erro ao carregar modelos de IA: {e}")
+        print("⚠️ O servidor continuará, mas a IA conversacional pode não funcionar.")
+
+    print("="*50 + "\n")
+
+    # Carregar dados do banco para a IA
     db = SessionLocal()
     try:
-        # Carrega a IA com os dados do banco (Pizzaria Dom Bosco, etc)
+        print("📊 Carregando dados do banco para indexação...")
         AIService.reload_data(db)
+        print("✅ Dados indexados com sucesso!")
     except Exception as e:
-        print(f"⚠️ Erro ao pré-carregar IA: {e}")
+        print(f"⚠️ Erro ao carregar dados: {e}")
     finally:
         db.close()
 
     # Inicia o worker de notificação a estafetas em background
     asyncio.create_task(courier_notification_worker())
+
+    print("\n🎉 Servidor pronto para receber requisições!\n")
 
 app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

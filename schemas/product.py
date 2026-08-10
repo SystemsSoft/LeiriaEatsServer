@@ -11,6 +11,20 @@ class ProductCreateRequest(BaseModel):
     category: str
     preparation_time: Optional[str] = None
 
+    # Novas colunas para IA
+    ingredients: Optional[str] = None
+    allergens: Optional[str] = None
+    dietary_tags: Optional[str] = None
+    spice_level: Optional[str] = "não picante"
+    serves_people: Optional[int] = None
+    portion_size: Optional[str] = None
+    calories: Optional[int] = None
+    is_popular: Optional[bool] = False
+    is_available: Optional[bool] = True
+    preparation_time_minutes: Optional[int] = None
+    recommended_for: Optional[str] = None
+    search_tags: Optional[str] = None
+
 class ProductResponse(BaseModel):
     id: int
     name: str
@@ -21,6 +35,20 @@ class ProductResponse(BaseModel):
     category: str
     preparation_time: Optional[str]
     rating: Optional[float] = None
+
+    # Novas colunas para IA
+    ingredients: Optional[str] = None
+    allergens: Optional[str] = None
+    dietary_tags: Optional[str] = None
+    spice_level: Optional[str] = None
+    serves_people: Optional[int] = None
+    portion_size: Optional[str] = None
+    calories: Optional[int] = None
+    is_popular: Optional[bool] = None
+    is_available: Optional[bool] = None
+    preparation_time_minutes: Optional[int] = None
+    recommended_for: Optional[str] = None
+    search_tags: Optional[str] = None
 
     class Config:
         from_attributes = True

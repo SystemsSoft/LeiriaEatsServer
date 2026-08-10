@@ -1,0 +1,33 @@
+INFO:     Started server process [15646]
+INFO:     Waiting for application startup.
+🚀 Iniciando Koma AI Server...
+
+==================================================
+🤖 CARREGANDO MODELOS DE INTELIGÊNCIA ARTIFICIAL
+==================================================
+🚀 Inicializando modelos de IA...
+📡 Carregando E5 (Sentence Transformer)...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/391 [00:00<?, ?it/s]Loading weights: 100%|██████████| 391/391 [00:00<00:00, 7526.61it/s]
+✅ E5 carregado!
+🤖 Carregando TinyLlama...
+🤖 [TinyLlama] Iniciando carregamento do modelo...
+📚 [TinyLlama] Carregando tokenizer...
+🧠 [TinyLlama] Carregando modelo (isso pode levar 1-2 minutos)...
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 2437.55it/s]
+✅ [TinyLlama] Modelo carregado com sucesso!
+✅ TinyLlama carregado!
+🎉 Todos os modelos foram carregados com sucesso!
+✅ Sistema de IA híbrido inicializado com sucesso!
+==================================================
+
+📊 Carregando dados do banco para indexação...
+✅ Dados indexados com sucesso!
+
+🎉 Servidor pronto para receber requisições!
+
+🟢 Courier notification worker iniciado.
+INFO:     Application startup complete.
+ERROR:    [Errno 48] error while attempting to bind on address ('0.0.0.0', 8000): [errno 48] address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.

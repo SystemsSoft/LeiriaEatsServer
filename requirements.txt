@@ -19,3 +19,5 @@ boto3
 botocore
 starlette
 tzdata
+accelerate
+bitsandbytes
