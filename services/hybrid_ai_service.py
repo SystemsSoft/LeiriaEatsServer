@@ -239,12 +239,29 @@ class HybridAIService:
         else:
             all_products = search_results.productResults
 
-        found_products = []
+        # ⭐ NOVO: Unir resultados da busca com itens que já estão no carrinho
+        # Isso garante que a IA possa falar e retornar produtos de múltiplos restaurantes
+        candidate_pool = []
         seen_ids = set()
-        for product in all_products[:8]:
-            if product.id in seen_ids:
-                continue
-            seen_ids.add(product.id)
+
+        # 1. Prioridade para itens do carrinho (para que a IA sempre tenha os dados completos deles)
+        for item in session.cart:
+            if item.product_id not in seen_ids:
+                # Buscar objeto completo no cache do AIService
+                full_product = next((p for p in AIService._product_obj_cache if p.id == item.product_id), None)
+                if full_product:
+                    candidate_pool.append(full_product)
+                    seen_ids.add(item.product_id)
+
+        # 2. Adicionar resultados da busca
+        for product in all_products:
+            if product.id not in seen_ids:
+                candidate_pool.append(product)
+                seen_ids.add(product.id)
+
+        found_products = []
+        # Pegamos até 15 produtos para dar um contexto rico (carrinho + busca)
+        for product in candidate_pool[:15]:
 
             def _get(attr, default=None):
                 return getattr(product, attr, default)
