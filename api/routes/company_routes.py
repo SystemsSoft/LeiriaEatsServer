@@ -27,6 +27,15 @@ stripe.api_key = settings.STRIPE_API_KEY
 # 🏢 ROTAS DE GERENCIAMENTO DE EMPRESA
 # ==========================================
 
+@router.get("/restaurants", response_model=List[CompanyResponse])
+def get_all_restaurants(db: Session = Depends(get_db)):
+    """
+    Retorna a lista de todos os restaurantes cadastrados no sistema.
+    """
+    restaurants = RestaurantRepository.get_all(db)
+    return restaurants
+
+
 @router.post("/companies", response_model=CompanyResponse, status_code=201)
 def register_company(company_data: CompanyCreateRequest, db: Session = Depends(get_db)):
     """
@@ -823,5 +832,3 @@ def update_courier_preference(
         "restaurant_id": restaurant_id,
         "use_own_delivery": restaurant.use_own_delivery,
     }
-
-

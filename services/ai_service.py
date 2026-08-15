@@ -516,7 +516,7 @@ class AIService:
             scores_prod = util.cos_sim(user_embedding, cls._embeddings_products)[0]
             for i, p_obj in enumerate(cls._product_obj_cache):
                 score = scores_prod[i].item()
-                if score > 0.65:  # Threshold aumentado para maior precisão
+                if score > 0.45:  # Threshold para incluir candidatos
                     prod_results.append({
                         "obj": p_obj,
                         "score": score,
@@ -526,11 +526,10 @@ class AIService:
         # --- 4. ORDENAÇÃO ---
         res_results.sort(key=lambda x: x["score"], reverse=True)
 
-        # Regra: se NOT em modo sugestão, manter apenas o produto de maior score
-        # Se em modo sugestão, manter TODOS os produtos acima de 0.65
-        if not suggestion_mode and len(prod_results) > 1:
-            best_product = max(prod_results, key=lambda x: x["score"])
-            prod_results = [best_product]
+        # Ordenar produtos por score e manter apenas os top 6 mais relevantes
+        # Isso evita mandar todos os 16 produtos para o Gemini
+        prod_results.sort(key=lambda x: x["score"], reverse=True)
+        prod_results = prod_results[:6]
 
         # Se detectou intenção de preço, ordenar produtos por preço
         if price_intent == "cheap":
@@ -580,35 +579,25 @@ class AIService:
             # Comportamento 3 (product): Retornar APENAS produtos
             final_restaurants = []
 
-            # Se em modo sugestão, retornar todos os produtos qualificados (até 10)
-            if suggestion_mode:
-                final_products = [item["obj"] for item in prod_results[:10]]
-            else:
-                # Caso contrário, retornar apenas 1
-                final_products = [item["obj"] for item in prod_results[:1]]
+            # Retornar sempre os top 6 produtos mais relevantes
+            # O Gemini decide quais mencionar baseado no contexto
+            final_products = [item["obj"] for item in prod_results[:6]]
 
-            # Adicionar quantidade ao produto(s)
-            if final_products and not suggestion_mode:
-                # Para busca normal, adicionar quantidade ao produto único
-                final_products[0].quantity = quantity
-            elif final_products and suggestion_mode:
-                # Para sugestões, adicionar quantidade ao primeiro sugerido
+            # Adicionar quantidade ao primeiro produto
+            if final_products:
                 final_products[0].quantity = quantity
 
             if final_products:
-                # Criar reply mais específico baseado na intenção de preço e modo
-                if suggestion_mode:
-                    # Modo sugestão: listar produtos como sugestões
-                    produtos_info = ", ".join([f"{p.name} (R$ {p.price:.2f})" for p in final_products])
-                    reply = f"Aqui estão sugestões de pratos: {produtos_info}."
-                elif price_intent == "cheap":
-                    # Mostrar apenas o 1 prato mais barato
-                    reply = f"Encontrei o prato mais barato: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
+                # Criar reply baseado nos produtos encontrados
+                produtos_info = ", ".join([f"{p.name} (R$ {p.price:.2f})" for p in final_products])
+                if price_intent == "cheap":
+                    reply = f"O prato mais barato: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
                 elif price_intent == "expensive":
-                    # Mostrar apenas o 1 prato mais caro
-                    reply = f"Encontrei o prato premium: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
+                    reply = f"O prato premium: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
+                elif len(final_products) > 1:
+                    reply = f"Encontrei {len(final_products)} opções: {produtos_info}."
                 else:
-                    reply = f"Encontrei o prato: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
+                    reply = f"Encontrei: {quantity}x {final_products[0].name} (R$ {final_products[0].price * quantity:.2f})."
                 intent = "product_search"
             else:
                 reply = "Não encontrei pratos relevantes para essa busca."

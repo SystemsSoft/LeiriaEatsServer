@@ -86,13 +86,13 @@ app.include_router(driver_routes.router)   # /drivers/*
 async def startup_event():
     print("🚀 Iniciando Koma AI Server...")
 
-    # Inicializar modelos de IA (E5 + Phi-3)
+    # Inicializar modelos de IA (E5 + Gemini)
     print("\n" + "="*50)
     print("🤖 CARREGANDO MODELOS DE INTELIGÊNCIA ARTIFICIAL")
     print("="*50)
 
     try:
-        # Carregar sistema híbrido (E5 + Phi-3)
+        # Carregar sistema híbrido (E5 local + Gemini API)
         HybridAIService.initialize_models()
         print("✅ Sistema de IA híbrido inicializado com sucesso!")
     except Exception as e:

@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 from schemas.models import Product
-from schemas.product import ProductCreateRequest
 
 
 # ==========================================
@@ -98,7 +97,9 @@ class CompanyResponse(BaseModel):
     image_url: Optional[str]
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    rating: Optional[float] = None
     products: list[Product]
+    hours: list[RestaurantHourResponse] = []
 
     # --- NOVOS CAMPOS ---
     login: str

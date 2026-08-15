@@ -1,9 +1,10 @@
 """
 Hybrid AI Service
-Integra busca semântica (E5) com conversação natural (Phi-3-Mini)
+Integra busca semântica (E5) com conversação natural (Google Gemini 1.5 Flash)
 """
 from services.ai_service import AIService
-from services.phi3_sales_service import Phi3SalesAgent
+from services.gemini_sales_service import GeminiSalesAgent
+from services.session_service import SessionManager, UserSession
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 
@@ -11,9 +12,9 @@ from typing import Dict, List, Optional
 class HybridAIService:
     """
     Pipeline híbrido que combina:
-    1. E5 (Busca semântica) - Entende intenção e busca produtos
-    2. Phi-3-Mini (Conversação) - Transforma resultados em diálogo natural
-    Age como um vendedor conversacional real
+    1. E5 (Busca semântica local) - Entende intenção e busca produtos
+    2. Google Gemini 1.5 Flash (Conversação API) - Transforma resultados em diálogo natural
+    Age como um vendedor conversacional real, inteligente e consultivo
     """
 
     # Palavras de saudação
@@ -65,6 +66,24 @@ class HybridAIService:
         "sobremesa", "doce", "pudim", "sorvete", "bolo", "torta",
         "mousse", "brigadeiro", "açaí", "acai", "brownie"
     }
+
+    # Palavras que indicam confirmação/finalização do pedido
+    _ORDER_CONFIRMATION = {
+        "sim", "confirma", "confirmar", "confirmado", "pode mandar", "pode fechar",
+        "fecha o pedido", "finaliza", "finalizar", "finalizado", "quero confirmar",
+        "pode confirmar", "tá bom", "ta bom", "ok", "isso mesmo", "perfeito",
+        "pode ir", "manda", "quero esse", "quero esses", "aceito", "fechado",
+        "pode fazer", "faz o pedido", "faz", "vai", "bora", "pode"
+    }
+
+    @staticmethod
+    def _detect_order_confirmation(message: str, session) -> bool:
+        """
+        Detecta se o usuário está confirmando o pedido.
+        Retorna True se a mensagem indicar confirmação, independente do carrinho.
+        """
+        msg_lower = message.lower().strip()
+        return any(word in msg_lower for word in HybridAIService._ORDER_CONFIRMATION)
 
     @staticmethod
     def _detect_intent_type(message: str) -> Dict:
@@ -144,29 +163,27 @@ class HybridAIService:
         user_message: str,
         restaurant_id: Optional[int],
         cart: List[Dict],
-        db: Session
+        db: Session,
+        session_id: Optional[str] = None
     ) -> Dict:
         """
-        Pipeline GENERATIVO completo - E5 busca + Phi-3-Mini conversa
-
-        MUDANÇA IMPORTANTE: Agora usa Phi-3-Mini para TODAS as respostas
-        Sem templates estáticos - IA decide baseada em contexto completo
-
-        Args:
-            user_message: Mensagem do usuário
-            restaurant_id: ID do restaurante (opcional, para filtrar busca)
-            cart: Lista de itens no carrinho atual
-            db: Sessão do banco de dados
-
-        Returns:
-            Dicionário com:
-                - response: Resposta conversacional do Phi-3-Mini
-                - products: Lista de produtos encontrados pelo E5
-                - intent: Intenção detectada
-                - semantic_search_used: True/False
+        Pipeline GENERATIVO completo - E5 busca + Gemini conversa
+        Usa SessionManager para manter contexto entre mensagens
         """
 
         print(f"💬 [Chat] Mensagem recebida: '{user_message}'")
+
+        # ── SESSÃO ────────────────────────────────────────────────────────
+        session = SessionManager.get_or_create(session_id, restaurant_id)
+        
+        # Sincronizar restaurant_id caso tenha sido omitido na request mas já exista na sessão
+        if not restaurant_id and session.restaurant_id:
+            restaurant_id = session.restaurant_id
+            
+        print(f"👤 [Session] ID: {session.session_id[:8]}... | Restaurante: {restaurant_id} | Carrinho: {len(session.cart)} item(s) | Histórico: {len(session.history)} msg(s)")
+
+        # Adicionar mensagem do usuário ao histórico
+        session.add_message("user", user_message)
 
         # FASE 1: Detectar tipo de intenção e necessidades
         intent_info = HybridAIService._detect_intent_type(user_message)
@@ -176,56 +193,111 @@ class HybridAIService:
             print(f"   Detalhes: {intent_info['details']}")
 
         # FASE 2: Buscar produtos SEMPRE (mesmo em consultas/saudações)
-        # Isso dá contexto completo ao Phi-3-Mini
+        # Isso dá contexto completo ao Gemini
         print(f"🔍 [E5] Buscando produtos relevantes...")
-
-        search_query = user_message
-        if restaurant_id:
-            search_query = f"{user_message} restaurant:{restaurant_id}"
 
         # Buscar com E5 (semantic search)
         search_results = AIService.process_search(
-            user_query=search_query,
+            user_query=user_message,
             db=db,
             scope="product"
         )
 
-        # Extrair produtos encontrados com TODAS as informações
+        # ⭐ ESTRATÉGIA HÍBRIDA DE PRODUTOS:
+        # 1. Se tem restaurant_id: pega TODOS os produtos do restaurante do banco
+        #    e usa o E5 apenas para ordenar por relevância
+        # 2. Se não tem restaurant_id: usa os top 6 do E5
+
+        if restaurant_id:
+            from core.sql_models import ProductDB as ProductDBModel
+            # Buscar todos os produtos do restaurante diretamente do banco
+            db_products = db.query(ProductDBModel).filter(
+                ProductDBModel.restaurant_id == restaurant_id
+            ).all()
+
+            # Mapear IDs dos resultados E5 para ter os scores de relevância
+            e5_scores = {}
+            for p in search_results.productResults:
+                e5_scores[p.id] = True  # marcador de relevância E5
+
+            # Converter produtos do banco para objetos do cache do AIService
+            all_products = []
+            e5_relevant = []  # produtos que o E5 considerou relevantes
+            other_products = []  # demais produtos do restaurante
+
+            for db_prod in db_products:
+                # Encontrar o objeto Product no cache do AIService
+                cached = next((p for p in AIService._product_obj_cache if p.id == db_prod.id), None)
+                if cached:
+                    if db_prod.id in e5_scores:
+                        e5_relevant.append(cached)
+                    else:
+                        other_products.append(cached)
+
+            # Priorizar produtos relevantes pelo E5, depois os demais do restaurante
+            all_products = e5_relevant + other_products
+        else:
+            all_products = search_results.productResults
+
         found_products = []
-        for product in search_results.productResults[:5]:  # Top 5 produtos
+        seen_ids = set()
+        for product in all_products[:8]:
+            if product.id in seen_ids:
+                continue
+            seen_ids.add(product.id)
+
+            def _get(attr, default=None):
+                return getattr(product, attr, default)
+
             product_data = {
                 "id": product.id,
                 "name": product.name,
                 "price": float(product.price),
-                "description": product.description if hasattr(product, 'description') else "",
-                "category": product.category if hasattr(product, 'category') else "",
-                "quantity": product.quantity if hasattr(product, 'quantity') else 1,
-                # Informações inteligentes para IA
-                "ingredients": product.ingredients if hasattr(product, 'ingredients') else None,
-                "allergens": product.allergens if hasattr(product, 'allergens') else None,
-                "dietary_tags": product.dietary_tags if hasattr(product, 'dietary_tags') else None,
-                "spice_level": product.spice_level if hasattr(product, 'spice_level') else None,
-                "serves_people": product.serves_people if hasattr(product, 'serves_people') else None,
-                "portion_size": product.portion_size if hasattr(product, 'portion_size') else None,
-                "calories": product.calories if hasattr(product, 'calories') else None,
-                "is_popular": product.is_popular if hasattr(product, 'is_popular') else False,
-                "preparation_time_minutes": product.preparation_time_minutes if hasattr(product, 'preparation_time_minutes') else None,
-                "recommended_for": product.recommended_for if hasattr(product, 'recommended_for') else None,
-                "search_tags": product.search_tags if hasattr(product, 'search_tags') else None,
+                "restaurant_id": _get("restaurant_id"),
+                "image_url": _get("image_url"),
+                "description": _get("description", ""),
+                "category": _get("category", ""),
+                "rating": _get("rating"),
+                "is_available": _get("is_available", True),
+                "is_popular": _get("is_popular", False),
+                # Porção e pessoas
+                "serves_people": _get("serves_people"),
+                "portion_size": _get("portion_size"),
+                # Tempo de preparo
+                "preparation_time_minutes": _get("preparation_time_minutes"),
+                "preparation_time": _get("preparation_time"),
+                # Ingredientes e composição
+                "ingredients": _get("ingredients"),
+                "allergens": _get("allergens"),
+                "dietary_tags": _get("dietary_tags"),
+                "spice_level": _get("spice_level"),
+                # Nutrição
+                "calories": _get("calories"),
+                # Contexto de uso
+                "recommended_for": _get("recommended_for"),
+                "search_tags": _get("search_tags"),
             }
             found_products.append(product_data)
 
         print(f"✅ [E5] Encontrou {len(found_products)} produtos")
 
-        # FASE 3: Phi-3-Mini SEMPRE responde (generativo completo)
-        print(f"🤖 [Phi-3-Mini] Gerando resposta conversacional generativa...")
+        # FASE 3: Gemini SEMPRE responde (generativo completo via API)
+        print(f"🤖 [Gemini] Gerando resposta conversacional...")
 
-        # Preparar contexto COMPLETO para Phi-3-Mini
+        # ── DETECÇÃO DE CONFIRMAÇÃO DE PEDIDO ─────────────────────────────
+        order_confirmed = HybridAIService._detect_order_confirmation(user_message, session)
+        if order_confirmed:
+            print(f"🎉 [Session] Pedido confirmado pelo usuário!")
+
+        # Preparar contexto COMPLETO para Gemini (produtos + sessão + histórico)
         context = {
             "products": found_products,
-            "cart": cart,
+            "cart": session.get_cart_as_list(),
             "user_query": user_message,
             "has_results": len(found_products) > 0,
+            "history_text": session.get_history_text(),
+            "session_context": session.context,
+            "order_confirmed": order_confirmed,
 
             # ⭐ Passar informações de intent para guiar o modelo
             "intent_type": intent_type,
@@ -235,45 +307,91 @@ class HybridAIService:
             "user_needs": intent_info.get("details", {})
         }
 
-        # ⭐ USAR PHI-3-MINI SEMPRE (não mais fallback)
+        # ⭐ USAR GEMINI SEMPRE (API cloud - sem peso no servidor)
         try:
-            if Phi3SalesAgent.is_ready():
-                ai_response = Phi3SalesAgent.generate_response(
+            if GeminiSalesAgent.is_ready():
+                ai_response = GeminiSalesAgent.generate_response(
                     user_message=user_message,
                     context=context
                 )
-                print(f"✅ [Phi-3-Mini] Resposta generativa criada!")
+                print(f"✅ [Gemini] Resposta gerada!")
                 used_ai = True
             else:
-                print("⚠️  [Phi-3-Mini] Não disponível, usando fallback")
+                print("⚠️  [Gemini] Não disponível, usando fallback")
                 ai_response = HybridAIService._generate_fallback_response(
                     found_products,
                     user_message,
-                    cart
+                    session.get_cart_as_list()
                 )
                 used_ai = False
         except Exception as e:
-            print(f"❌ [Phi-3-Mini] Erro ao gerar resposta: {e}")
+            print(f"❌ [Gemini] Erro ao gerar resposta: {e}")
             import traceback
             traceback.print_exc()
             print("⚠️  Usando fallback por segurança")
             ai_response = HybridAIService._generate_fallback_response(
                 found_products,
                 user_message,
-                cart
+                session.get_cart_as_list()
             )
             used_ai = False
+
+        # Filtrar: retornar apenas produtos que a IA mencionou na resposta
+        mentioned_products = HybridAIService._filter_mentioned_products(ai_response, found_products)
+        print(f"📦 [Products] {len(mentioned_products)}/{len(found_products)} produtos mencionados na resposta")
+
+        # Salvar resposta da IA no histórico da sessão
+        session.add_message("assistant", ai_response)
 
         print(f"✅ Resposta final gerada")
 
         return {
             "response": ai_response,
-            "products": found_products,
+            "products": mentioned_products,
             "intent": intent_type,
             "semantic_search_used": True,
             "ai_generated": used_ai,
-            "needs_mapped": intent_info["details"]
+            "needs_mapped": intent_info["details"],
+            "session_id": session.session_id,
+            "cart": session.get_cart_summary(),
+            "order_confirmed": order_confirmed,
+            "restaurant_id": session.restaurant_id,
         }
+
+    @staticmethod
+    def _filter_mentioned_products(ai_response: str, products: List[Dict]) -> List[Dict]:
+        """
+        Retorna apenas os produtos cujo nome aparece na resposta do Gemini.
+        Usa comparação case-insensitive e ignora acentos para maior precisão.
+        """
+        import unicodedata
+
+        def normalize(text: str) -> str:
+            """Remove acentos e converte para minúsculas"""
+            return ''.join(
+                c for c in unicodedata.normalize('NFD', text.lower())
+                if unicodedata.category(c) != 'Mn'
+            )
+
+        response_normalized = normalize(ai_response)
+        mentioned = []
+
+        for product in products:
+            name = product.get("name", "")
+            if not name:
+                continue
+            name_normalized = normalize(name)
+            # Verifica se o nome completo OU pelo menos 2 palavras significativas aparecem
+            words = [w for w in name_normalized.split() if len(w) > 3]
+            full_match = name_normalized in response_normalized
+            partial_match = len(words) >= 2 and sum(
+                1 for w in words if w in response_normalized
+            ) >= min(2, len(words))
+
+            if full_match or partial_match:
+                mentioned.append(product)
+
+        return mentioned
 
     @staticmethod
     def _generate_consultation_response(message: str, intent_info: Dict, cart: List[Dict]) -> str:
@@ -360,23 +478,14 @@ class HybridAIService:
         details = intent_info.get("details", {})
         
         if details.get("asks_quantity"):
-            if cart:
-                return (
-                    "Sobre as quantidades, depende do que você quer! 😊\n\n"
-                    "Me diga:\n"
-                    "• Quantas pessoas vão comer?\n"
-                    "• É para almoço, jantar ou lanche?\n"
-                    "• Vocês comem bastante ou moderado?\n\n"
-                    "Assim eu sugiro as quantidades ideais!"
-                )
-            else:
-                return (
-                    "Para te ajudar com as quantidades, preciso saber:\n"
-                    "• O que você quer pedir?\n"
-                    "• Quantas pessoas vão comer?\n\n"
-                    "Me fala o que você tem em mente! 😊"
-                )
-        
+            return (
+                "Para te ajudar com as quantidades, me diga:\n"
+                "• O que você quer pedir?\n"
+                "• Quantas pessoas vão comer?\n"
+                "• É para almoço, jantar ou lanche?\n\n"
+                "Assim eu sugiro as quantidades ideais! 😊"
+            )
+
         if details.get("mentions_drink"):
             return (
                 "Temos várias opções de bebidas! 🥤\n\n"
@@ -406,16 +515,12 @@ class HybridAIService:
     @staticmethod
     def _generate_fallback_response(products: List[Dict], user_message: str, cart: List[Dict]) -> str:
         """
-        Resposta simples caso Phi-3-Mini não esteja disponível
+        Resposta simples caso Gemini não esteja disponível
         Age como vendedor conversacional, usa informações inteligentes dos produtos
         """
         if not products:
             # Sem produtos encontrados - oferecer ajuda
-            if cart:
-                cart_items = ", ".join([item.get('name', 'item') for item in cart])
-                return f"Você já tem {cart_items} no carrinho. Não encontrei '{user_message}' no cardápio. Pode descrever melhor ou escolher outra coisa?"
-            else:
-                return "Hmm, não encontrei isso no nosso cardápio. 🤔 Pode me dizer de outra forma? Por exemplo: 'pizza', 'hambúrguer', 'refrigerante'..."
+            return "Hmm, não encontrei isso no nosso cardápio. 🤔 Pode me dizer de outra forma? Por exemplo: 'pizza', 'hambúrguer', 'refrigerante'..."
 
         if len(products) == 1:
             # Um produto - descrever com detalhes inteligentes
@@ -434,7 +539,7 @@ class HybridAIService:
             
             extra_text = f" ({', '.join(extra_info)})" if extra_info else ""
             
-            return f"Encontrei: {p['name']}{desc}{extra_text} por R$ {p['price']:.2f}. Quantos você quer adicionar?"
+            return f"Encontrei: {p['name']}{desc}{extra_text} por R$ {p['price']:.2f}. Quantos você quer?"
 
         # Múltiplos produtos - listar com informações inteligentes
         products_list = []
@@ -459,15 +564,15 @@ class HybridAIService:
     @staticmethod
     def initialize_models():
         """
-        Inicializa ambos os modelos (E5 e Phi-3-Mini)
+        Inicializa ambos os modelos (E5 local e Gemini API)
         Deve ser chamado na inicialização do servidor
         """
         print("🚀 Inicializando modelos de IA...")
 
         e5_loaded = False
-        phi3_loaded = False
+        gemini_loaded = False
 
-        # Carregar E5 (já existente)
+        # Carregar E5 (busca semântica local)
         try:
             print("📡 Carregando E5 (Sentence Transformer)...")
             AIService.get_model()
@@ -475,36 +580,42 @@ class HybridAIService:
             e5_loaded = True
         except Exception as e:
             print(f"❌ Erro ao carregar E5: {e}")
-            print("⚠️  Sistema continuará sem E5")
+            print("⚠️  Sistema continuará sem busca semântica")
 
-        # Carregar Phi-3-Mini (novo)
+        # Configurar Gemini (API cloud - instantâneo)
         try:
-            print("🤖 Carregando Phi-3-Mini...")
-            Phi3SalesAgent.initialize()
-            print("✅ Phi-3-Mini carregado!")
-            phi3_loaded = True
+            print("🤖 Configurando Gemini API...")
+            GeminiSalesAgent.initialize()
+            print("✅ Gemini configurado!")
+            gemini_loaded = True
         except Exception as e:
-            print(f"❌ Erro ao carregar Phi-3-Mini: {e}")
+            print(f"❌ Erro ao configurar Gemini: {e}")
             print("⚠️  Sistema usará respostas de fallback")
 
         # Resumo
-        if e5_loaded and phi3_loaded:
+        if e5_loaded and gemini_loaded:
             print("🎉 Todos os modelos foram carregados com sucesso!")
+            print("💡 Sistema híbrido: E5 (busca local) + Gemini (conversação cloud)")
         elif e5_loaded:
             print("⚠️  Sistema parcialmente operacional (apenas E5)")
-        elif phi3_loaded:
-            print("⚠️  Sistema parcialmente operacional (apenas Phi-3-Mini)")
+        elif gemini_loaded:
+            print("⚠️  Sistema parcialmente operacional (apenas Gemini)")
         else:
             print("❌ Nenhum modelo foi carregado - sistema em modo degradado")
 
     @staticmethod
     def get_status() -> Dict:
-        """Retorna status dos modelos"""
+        """Retorna status dos modelos e uso da API"""
+        gemini_status = GeminiSalesAgent.get_usage_status() if GeminiSalesAgent.is_ready() else None
+        cache_status = GeminiSalesAgent.get_cache_status() if GeminiSalesAgent.is_ready() else None
+
         return {
             "e5_loaded": AIService._model is not None,
-            "phi3_loaded": Phi3SalesAgent.is_ready(),
+            "gemini_ready": GeminiSalesAgent.is_ready(),
+            "gemini_usage": gemini_status,
+            "gemini_cache": cache_status,
             "system_ready": (
                 AIService._model is not None and
-                Phi3SalesAgent.is_ready()
+                GeminiSalesAgent.is_ready()
             )
         }

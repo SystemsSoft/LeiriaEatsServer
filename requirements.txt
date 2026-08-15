@@ -10,7 +10,6 @@ transformers
 numpy
 scikit-learn
 pymysql
-python-dotenv
 python-multipart
 passlib
 bcrypt
@@ -19,5 +18,4 @@ boto3
 botocore
 starlette
 tzdata
-accelerate
-bitsandbytes
+google-genai
