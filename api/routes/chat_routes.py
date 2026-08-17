@@ -102,6 +102,7 @@ def clear_cart(session_id: str):
     if not session:
         return {"error": "Sessão não encontrada ou expirada"}
     session.clear_cart()
+    SessionManager.save(session)
     return {"message": "Carrinho limpo com sucesso", "session_id": session_id}
 
 

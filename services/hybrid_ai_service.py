@@ -355,6 +355,9 @@ class HybridAIService:
         if order_confirmed:
             session.reset_session()
 
+        # Salvar estado final da sessão (CRÍTICO para Redis)
+        SessionManager.save(session)
+
         print(f"✅ Resposta final gerada")
 
         return {

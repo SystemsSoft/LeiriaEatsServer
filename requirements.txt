@@ -19,3 +19,4 @@ botocore
 starlette
 tzdata
 google-genai
+redis
