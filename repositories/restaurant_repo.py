@@ -31,6 +31,7 @@ class RestaurantRepository:
             password=company.password,
             license=company.license,
             plan=company.plan,
+            gid=company.gid,
             status="PENDING"  # Status inicial
         )
 

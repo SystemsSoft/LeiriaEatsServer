@@ -45,6 +45,7 @@ class CompanyCreateRequest(BaseModel):
     license: str
 
     plan: Optional[str] = None
+    gid: Optional[str] = None
 
 class CompanyUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -54,6 +55,7 @@ class CompanyUpdateRequest(BaseModel):
     image_url: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    gid: Optional[str] = None
 
 
 class UsesPlatformCourierRequest(BaseModel):
@@ -107,6 +109,7 @@ class CompanyResponse(BaseModel):
     plan: Optional[str] = None
     use_own_delivery: bool = False
     status: str = "PENDING"  # PENDING | STRIPE_PENDING | ACTIVE | INACTIVE
+    gid: Optional[str] = None
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 

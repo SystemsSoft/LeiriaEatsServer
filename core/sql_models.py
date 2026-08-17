@@ -28,6 +28,7 @@ class RestaurantDB(Base):
     stripe_onboarding_completed = Column(Boolean, default=False)
     use_own_delivery = Column(Boolean, nullable=False, default=False)
     status = Column(String(50), default="PENDING")  # PENDING | STRIPE_PENDING | ACTIVE | INACTIVE
+    gid = Column(String(255), nullable=True, unique=True)
 
     products = relationship("ProductDB", back_populates="restaurant")
     hours = relationship("RestaurantHourDB", back_populates="restaurant")
