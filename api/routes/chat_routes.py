@@ -41,6 +41,7 @@ class ProductItem(BaseModel):
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
     restaurant_id: Optional[int] = None
+    quantity: int = 0
 
 
 class ChatResponse(BaseModel):

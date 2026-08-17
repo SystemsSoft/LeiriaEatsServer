@@ -397,6 +397,15 @@ class HybridAIService:
 
         # Filtrar: retornar apenas produtos que a IA mencionou na resposta
         mentioned_products = HybridAIService._filter_mentioned_products(ai_response, found_products)
+        
+        # ⭐ NOVO: Sincronizar quantidade do carrinho nos produtos retornados
+        # Se um produto mencionado já estiver no carrinho, injetamos a quantidade atual
+        cart_summary = session.get_cart_summary()
+        cart_item_map = {item["product_id"]: item["quantity"] for item in cart_summary["items"]}
+        
+        for p in mentioned_products:
+            p["quantity"] = cart_item_map.get(p["id"], 0)
+            
         print(f"📦 [Products] {len(mentioned_products)}/{len(found_products)} produtos mencionados na resposta")
 
         # Salvar resposta da IA no histórico da sessão
@@ -404,9 +413,6 @@ class HybridAIService:
 
         # ⭐ NOVO: Guardar os IDs dos produtos mencionados para a PRÓXIMA mensagem
         session.last_suggested_ids = [p["id"] for p in mentioned_products]
-
-        # Capturar o resumo do carrinho ANTES de limpar a sessão (caso confirmado)
-        cart_summary = session.get_cart_summary()
 
         # ⭐ NOVO: Limpar histórico e carrinho sempre que o pedido é finalizado
         if order_confirmed:
