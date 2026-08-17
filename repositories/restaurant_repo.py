@@ -3,6 +3,7 @@ from typing import List
 from core.sql_models import RestaurantDB, ProductDB
 from schemas.company import CompanyCreateRequest
 from schemas.product import ProductCreateRequest
+from ulid import ULID
 
 class RestaurantRepository:
 
@@ -31,7 +32,7 @@ class RestaurantRepository:
             password=company.password,
             license=company.license,
             plan=company.plan,
-            gid=company.gid,
+            gid=str(ULID()), # Gera um novo ULID para o restaurante
             status="PENDING"  # Status inicial
         )
 

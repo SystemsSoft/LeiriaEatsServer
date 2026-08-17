@@ -20,3 +20,4 @@ starlette
 tzdata
 google-genai
 redis
+python-ulid
