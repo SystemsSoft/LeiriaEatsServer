@@ -67,23 +67,7 @@ class HybridAIService:
         "mousse", "brigadeiro", "açaí", "acai", "brownie"
     }
 
-    # Palavras que indicam confirmação/finalização do pedido
-    _ORDER_CONFIRMATION = {
-        "sim", "confirma", "confirmar", "confirmado", "pode mandar", "pode fechar",
-        "fecha o pedido", "finaliza", "finalizar", "finalizado", "quero confirmar",
-        "pode confirmar", "tá bom", "ta bom", "ok", "isso mesmo", "perfeito",
-        "pode ir", "manda", "quero esse", "quero esses", "aceito", "fechado",
-        "pode fazer", "faz o pedido", "faz", "vai", "bora", "pode"
-    }
 
-    @staticmethod
-    def _detect_order_confirmation(message: str, session) -> bool:
-        """
-        Detecta se o usuário está confirmando o pedido.
-        Retorna True se a mensagem indicar confirmação, independente do carrinho.
-        """
-        msg_lower = message.lower().strip()
-        return any(word in msg_lower for word in HybridAIService._ORDER_CONFIRMATION)
 
     @staticmethod
     def _detect_intent_type(message: str) -> Dict:
@@ -301,11 +285,6 @@ class HybridAIService:
         # FASE 3: Gemini SEMPRE responde (generativo completo via API)
         print(f"🤖 [Gemini] Gerando resposta conversacional...")
 
-        # ── DETECÇÃO DE CONFIRMAÇÃO DE PEDIDO ─────────────────────────────
-        order_confirmed = HybridAIService._detect_order_confirmation(user_message, session)
-        if order_confirmed:
-            print(f"🎉 [Session] Pedido confirmado pelo usuário!")
-
         # Preparar contexto COMPLETO para Gemini (produtos + sessão + histórico)
         context = {
             "products": found_products,
@@ -314,7 +293,7 @@ class HybridAIService:
             "has_results": len(found_products) > 0,
             "history_text": session.get_history_text(),
             "session_context": session.context,
-            "order_confirmed": order_confirmed,
+            "order_confirmed": False, # IA agora decide a confirmação
 
             # ⭐ Passar informações de intent para guiar o modelo
             "intent_type": intent_type,
@@ -325,12 +304,21 @@ class HybridAIService:
         }
 
         # ⭐ USAR GEMINI SEMPRE (API cloud - sem peso no servidor)
+        order_confirmed = False
         try:
             if GeminiSalesAgent.is_ready():
                 ai_response = GeminiSalesAgent.generate_response(
                     user_message=user_message,
                     context=context
                 )
+                
+                # 🔍 DETECÇÃO DE CONFIRMAÇÃO VIA TAG DO GEMINI
+                if "[[CONFIRM_ORDER]]" in ai_response:
+                    print(f"🎉 [Gemini] Pedido CONFIRMADO via tag!")
+                    order_confirmed = True
+                    # Limpar a tag da resposta final para o usuário
+                    ai_response = ai_response.replace("[[CONFIRM_ORDER]]", "").strip()
+                
                 print(f"✅ [Gemini] Resposta gerada!")
                 used_ai = True
             else:

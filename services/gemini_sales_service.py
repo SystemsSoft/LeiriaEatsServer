@@ -222,12 +222,16 @@ REGRAS OBRIGATÓRIAS:
 9. Se o cliente pedir algo que não está na lista, informe: "Não temos essa opção disponível de momento."
 10. Quando o cliente pedir DETALHES de um produto, use TODOS os campos disponíveis: descrição, ingredientes, alérgenos, calorias, tempo de preparo, tags dietéticas, nível de picância, porção — mostre o que for relevante.
 11. Se o produto tiver alérgenos e o cliente tiver restrição alimentar, avise proativamente.
-12. Quando o cliente confirmar o pedido:
-    - Use o HISTÓRICO DA CONVERSA para fazer um RESUMO completo do que foi discutido/escolhido durante a conversa.
-    - Calcule o total baseado nos produtos mencionados no histórico.
-    - SEMPRE informe que os detalhes serão apresentados no ecrã para efetuar o pagamento.
-    - Exemplo: "Perfeito! Aqui está o seu pedido: 🛒\n• Pizza Calabresa x1 - € 38,00\nTotal: € 38,00\n\nVou apresentar os detalhes para que possa efetuar o pagamento! 💳"
-    - Se o histórico não tiver nenhum produto específico escolhido, informe: "Para finalizar a encomenda, preciso de saber o que gostaria de pedir. O que vai desejar?"
+12. Fluxo de Finalização e Confirmação:
+    - Se o cliente demonstrar desejo de finalizar (ex: "quero fechar", "quanto fica", "pode terminar"):
+        - Identifique a intenção e peça uma confirmação explícita (ex: "Deseja que eu finalize o seu pedido agora?").
+        - NÃO inclua a tag [[CONFIRM_ORDER]] nesta fase.
+    - Se o cliente responder POSITIVAMENTE à sua pergunta de confirmação (ex: "Sim", "Pode ser", "Com certeza"):
+        - Faça um RESUMO completo do pedido (itens e total).
+        - Informe que os detalhes serão apresentados no ecrã para pagamento.
+        - OBRIGATORIAMENTE inclua a tag [[CONFIRM_ORDER]] no final da sua resposta.
+    - Exemplo de resposta final: "Perfeito! O seu pedido está confirmado: 🛒\n• Pizza Calabresa x1 - € 15,00\nTotal: € 15,00\n\nVou apresentar os detalhes para que possa efetuar o pagamento! 💳 [[CONFIRM_ORDER]]"
+    - Se o cliente responder NEGATIVAMENTE, continue a conversa normalmente.
 13. NUNCA diga que o pedido foi enviado para a cozinha — isso é feito apenas após o pagamento pelo sistema.
 14. Seja natural, amigável e conciso (máximo 100 palavras, ou mais se o cliente pedir detalhes).
 15. NÃO fale sobre você mesmo.
@@ -294,6 +298,18 @@ Você: "Perfeito! O seu pedido: 🛒\n• Pizza Calabresa x1 - € 38,00\nTotal:
         else:
             products_text = "\n\n⚠️ NENHUM PRODUTO DISPONÍVEL NO MOMENTO. Informe o cliente educadamente."
 
+        # Carrinho atual do cliente (CRÍTICO para finalização)
+        cart_items = context.get("cart", [])
+        cart_section = ""
+        if cart_items:
+            cart_section = "\n\n🛒 CARRINHO ATUAL (O que o cliente já escolheu):\n"
+            for item in cart_items:
+                cart_section += f"• {item['name']} x{item['quantity']} - € {item['price']:.2f}\n"
+            total = sum(i['price'] * i['quantity'] for i in cart_items)
+            cart_section += f"Total: € {total:.2f}"
+        else:
+            cart_section = "\n\n🛒 CARRINHO VAZIO."
+
         # Histórico da conversa
         history_section = ""
         if history_text:
@@ -309,15 +325,15 @@ Você: "Perfeito! O seu pedido: 🛒\n• Pizza Calabresa x1 - € 38,00\nTotal:
             ctx_parts.append(f"a aguardar decisão sobre: {session_context['aguardando']}")
         session_section = ""
         if ctx_parts:
-            session_section = f"\n\n🧠 CONTEXTO ATUAL: {' | '.join(ctx_parts)}"
+            session_section = f"\n\n🧠 CONTEXTO EXTRA: {' | '.join(ctx_parts)}"
 
         # Prompt final - nota de confirmação
         order_note = ""
         if context.get("order_confirmed"):
-            order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA acima para fazer o resumo completo do que foi discutido/escolhido e informe que os detalhes serão apresentados para o pagamento. NÃO diga que foi enviado para a cozinha."
+            order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
         prompt = f"""{system}
-{products_text}{history_section}{session_section}{order_note}
+{products_text}{cart_section}{history_section}{session_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"
