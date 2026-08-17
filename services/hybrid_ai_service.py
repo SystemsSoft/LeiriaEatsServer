@@ -348,6 +348,13 @@ class HybridAIService:
         # Salvar resposta da IA no histórico da sessão
         session.add_message("assistant", ai_response)
 
+        # Capturar o resumo do carrinho ANTES de limpar a sessão (caso confirmado)
+        cart_summary = session.get_cart_summary()
+
+        # ⭐ NOVO: Limpar histórico e carrinho sempre que o pedido é finalizado
+        if order_confirmed:
+            session.reset_session()
+
         print(f"✅ Resposta final gerada")
 
         return {
@@ -358,7 +365,7 @@ class HybridAIService:
             "ai_generated": used_ai,
             "needs_mapped": intent_info["details"],
             "session_id": session.session_id,
-            "cart": session.get_cart_summary(),
+            "cart": cart_summary,
             "order_confirmed": order_confirmed,
             "restaurant_id": session.restaurant_id,
         }

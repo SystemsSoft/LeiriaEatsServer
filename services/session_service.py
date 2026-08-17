@@ -97,6 +97,17 @@ class UserSession:
         """Limpa o carrinho"""
         self.cart = []
 
+    def reset_session(self):
+        """Limpa histórico e carrinho (pós-venda)"""
+        self.cart = []
+        self.history = []
+        self.context = {
+            "pessoas": None,
+            "categoria_atual": None,
+            "aguardando": None,
+        }
+        print(f"🧹 [Session] Dados limpos para a sessão: {self.session_id[:8]}...")
+
     def get_cart_summary(self) -> Dict:
         """Resumo do carrinho com total"""
         items = [item.to_dict() for item in self.cart]
