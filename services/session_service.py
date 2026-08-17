@@ -7,13 +7,14 @@ from core.config import settings
 
 
 class CartItem:
-    def __init__(self, product_id: int, name: str, price: float, quantity: int = 1,
-                 serves_people: int = 1, category: str = ""):
+    def __init__(self, product_id: int, name: str, price: float, restaurant_id: int,
+                 quantity: int = 1, serves_people: Optional[int] = 1, category: str = ""):
         self.product_id = product_id
         self.name = name
         self.price = price
+        self.restaurant_id = restaurant_id
         self.quantity = quantity
-        self.serves_people = serves_people
+        self.serves_people = serves_people if serves_people is not None else 1
         self.category = category
 
     def to_dict(self) -> Dict:
@@ -21,6 +22,7 @@ class CartItem:
             "product_id": self.product_id,
             "name": self.name,
             "price": self.price,
+            "restaurant_id": self.restaurant_id,
             "quantity": self.quantity,
             "serves_people": self.serves_people,
             "category": self.category,
@@ -33,8 +35,9 @@ class CartItem:
             product_id=data["product_id"],
             name=data["name"],
             price=data["price"],
+            restaurant_id=data.get("restaurant_id", 0),
             quantity=data["quantity"],
-            serves_people=data.get("serves_people", 1),
+            serves_people=data.get("serves_people") if data.get("serves_people") is not None else 1,
             category=data.get("category", "")
         )
 
@@ -62,6 +65,7 @@ class UserSession:
             "cart": [item.to_dict() for item in self.cart],
             "history": self.history,
             "context": self.context,
+            "last_suggested_ids": getattr(self, 'last_suggested_ids', []),
             "created_at": self.created_at,
             "last_active": self.last_active
         }
@@ -76,6 +80,7 @@ class UserSession:
             "categoria_atual": None,
             "aguardando": None,
         })
+        session.last_suggested_ids = data.get("last_suggested_ids", [])
         session.created_at = data.get("created_at", time.time())
         session.last_active = data.get("last_active", time.time())
         return session
@@ -108,7 +113,7 @@ class UserSession:
 
     # ── Carrinho ───────────────────────────────────────────────────────────
 
-    def add_to_cart(self, product_id: int, name: str, price: float,
+    def add_to_cart(self, product_id: int, name: str, price: float, restaurant_id: int,
                     quantity: int = 1, serves_people: int = 1, category: str = "") -> str:
         """Adiciona ou incrementa item no carrinho"""
         for item in self.cart:
@@ -116,7 +121,7 @@ class UserSession:
                 item.quantity += quantity
                 return f"Quantidade de {name} atualizada para {item.quantity}"
 
-        self.cart.append(CartItem(product_id, name, price, quantity, serves_people, category))
+        self.cart.append(CartItem(product_id, name, price, restaurant_id, quantity, serves_people, category))
         return f"{name} adicionado ao carrinho"
 
     def remove_from_cart(self, product_id: int) -> bool:
@@ -145,7 +150,7 @@ class UserSession:
         items = [item.to_dict() for item in self.cart]
         total = sum(i["subtotal"] for i in items)
         total_pessoas = sum(
-            item.serves_people * item.quantity for item in self.cart
+            (item.serves_people or 1) * item.quantity for item in self.cart
         )
         return {
             "items": items,

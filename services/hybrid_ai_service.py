@@ -7,6 +7,7 @@ from services.gemini_sales_service import GeminiSalesAgent
 from services.session_service import SessionManager, UserSession
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
+import json
 
 
 class HybridAIService:
@@ -201,6 +202,7 @@ class HybridAIService:
 
             # Mapear IDs dos resultados E5 para ter os scores de relevância
             e5_scores = {}
+            seen_ids_local = set()
             for p in search_results.productResults:
                 e5_scores[p.id] = True  # marcador de relevância E5
 
@@ -210,6 +212,7 @@ class HybridAIService:
             other_products = []  # demais produtos do restaurante
 
             for db_prod in db_products:
+                seen_ids_local.add(db_prod.id)
                 # Encontrar o objeto Product no cache do AIService
                 cached = next((p for p in AIService._product_obj_cache if p.id == db_prod.id), None)
                 if cached:
@@ -220,24 +223,38 @@ class HybridAIService:
 
             # Priorizar produtos relevantes pelo E5, depois os demais do restaurante
             all_products = e5_relevant + other_products
+            
+            # ⭐ NOVO: Adicionar também os resultados globais do E5 que não são deste restaurante
+            # Isso permite que o usuário peça produtos de outros locais
+            for global_prod in search_results.productResults:
+                if global_prod.id not in seen_ids_local:
+                    all_products.append(global_prod)
         else:
             all_products = search_results.productResults
 
         # ⭐ NOVO: Unir resultados da busca com itens que já estão no carrinho
-        # Isso garante que a IA possa falar e retornar produtos de múltiplos restaurantes
+        # E também com produtos sugeridos na última interação (Memória de Sugestões)
         candidate_pool = []
         seen_ids = set()
 
-        # 1. Prioridade para itens do carrinho (para que a IA sempre tenha os dados completos deles)
+        # 1. Prioridade para itens do carrinho
         for item in session.cart:
             if item.product_id not in seen_ids:
-                # Buscar objeto completo no cache do AIService
                 full_product = next((p for p in AIService._product_obj_cache if p.id == item.product_id), None)
                 if full_product:
                     candidate_pool.append(full_product)
                     seen_ids.add(item.product_id)
+        
+        # 2. Prioridade para produtos sugeridos na mensagem anterior
+        last_suggested = getattr(session, 'last_suggested_ids', [])
+        for prod_id in last_suggested:
+            if prod_id not in seen_ids:
+                full_product = next((p for p in AIService._product_obj_cache if p.id == prod_id), None)
+                if full_product:
+                    candidate_pool.append(full_product)
+                    seen_ids.add(prod_id)
 
-        # 2. Adicionar resultados da busca
+        # 3. Adicionar resultados da busca atual
         for product in all_products:
             if product.id not in seen_ids:
                 candidate_pool.append(product)
@@ -312,12 +329,49 @@ class HybridAIService:
                     context=context
                 )
                 
-                # 🔍 DETECÇÃO DE CONFIRMAÇÃO VIA TAG DO GEMINI
+                print(f"🤖 [Gemini] Resposta bruta: {ai_response}")
+
+                # 🔍 1. DETECÇÃO DE ADIÇÃO AO CARRINHO VIA TAG DO GEMINI
+                import re
+                add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:(\d+):(\d+)\]\]", ai_response)
+                
+                if add_to_cart_matches:
+                    print(f"🛒 [Gemini] Tags de adição encontradas: {add_to_cart_matches}")
+                
+                for prod_id_str, qty_str in add_to_cart_matches:
+                    prod_id = int(prod_id_str)
+                    qty = int(qty_str)
+                    
+                    # Buscar detalhes do produto no pool encontrado
+                    product_info = next((p for p in found_products if p["id"] == prod_id), None)
+                    if product_info:
+                        print(f"🛒 [Gemini] Adicionando ao carrinho: {product_info['name']} x{qty}")
+                        session.add_to_cart(
+                            product_id=prod_id,
+                            name=product_info["name"],
+                            price=product_info["price"],
+                            restaurant_id=product_info["restaurant_id"],
+                            quantity=qty,
+                            serves_people=product_info.get("serves_people") or 1,
+                            category=product_info.get("category", "")
+                        )
+                    else:
+                        print(f"⚠️ [Gemini] Produto ID {prod_id} não encontrado no pool de contexto!")
+                    
+                    # Limpar a tag da resposta
+                    ai_response = ai_response.replace(f"[[ADD_TO_CART:{prod_id_str}:{qty_str}]]", "")
+
+                # 🔍 2. DETECÇÃO DE CONFIRMAÇÃO VIA TAG DO GEMINI
                 if "[[CONFIRM_ORDER]]" in ai_response:
                     print(f"🎉 [Gemini] Pedido CONFIRMADO via tag!")
                     order_confirmed = True
                     # Limpar a tag da resposta final para o usuário
-                    ai_response = ai_response.replace("[[CONFIRM_ORDER]]", "").strip()
+                    ai_response = ai_response.replace("[[CONFIRM_ORDER]]", "")
+                
+                # Limpeza final de espaços duplos resultantes da remoção de tags
+                ai_response = ' '.join(ai_response.split()).strip()
+                
+                print(f"✅ [Gemini] Resposta final processada: {ai_response}")
                 
                 print(f"✅ [Gemini] Resposta gerada!")
                 used_ai = True
@@ -348,6 +402,9 @@ class HybridAIService:
         # Salvar resposta da IA no histórico da sessão
         session.add_message("assistant", ai_response)
 
+        # ⭐ NOVO: Guardar os IDs dos produtos mencionados para a PRÓXIMA mensagem
+        session.last_suggested_ids = [p["id"] for p in mentioned_products]
+
         # Capturar o resumo do carrinho ANTES de limpar a sessão (caso confirmado)
         cart_summary = session.get_cart_summary()
 
@@ -359,6 +416,11 @@ class HybridAIService:
         SessionManager.save(session)
 
         print(f"✅ Resposta final gerada")
+        
+        # 📋 LOG DO CARRINHO (JSON formatado para debug)
+        print("\n--- [DEBUG] JSON DE RETORNO (CART) ---")
+        print(json.dumps(cart_summary, indent=2, ensure_ascii=False))
+        print("--------------------------------------\n")
 
         return {
             "response": ai_response,
