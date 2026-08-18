@@ -28,6 +28,7 @@ class ProductCreateRequest(BaseModel):
 class ProductResponse(BaseModel):
     id: int
     name: str
+    gid: Optional[str] = ""
     description: str
     price: float
     image_url: Optional[str]

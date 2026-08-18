@@ -282,6 +282,7 @@ class HybridAIService:
 
             product_data = {
                 "id": product.id,
+                "gid": _get("gid", ""),
                 "name": product.name,
                 "price": float(product.price),
                 "restaurant_gid": (getattr(product, "restaurant_gid", "") or restaurant_gid) or "", # Garantir que nunca retorne null

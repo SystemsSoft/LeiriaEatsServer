@@ -4,6 +4,7 @@ from typing import List, Optional
 # --- MODELO DO PRODUTO ---
 class Product(BaseModel):
     id: int
+    gid: Optional[str] = ""
     restaurant_gid: Optional[str] = ""
     name: str
     price: float

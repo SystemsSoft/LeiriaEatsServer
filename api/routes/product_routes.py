@@ -10,6 +10,7 @@ from core.sql_models import ProductDB, RestaurantDB, ProductRatingDB
 # 2. IMPORTAMOS O SCHEMA DE DADOS
 from schemas.product import ProductCreateRequest, ProductResponse
 from services.ai_service import AIService
+from ulid import ULID
 
 router = APIRouter()
 
@@ -26,6 +27,7 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
 
     # Cria o objeto ProductDB (Banco de Dados)
     new_product = ProductDB(
+        gid=str(ULID()), # Gera um novo ULID para o produto
         name=product_data.name,
         description=product_data.description,
         price=product_data.price,

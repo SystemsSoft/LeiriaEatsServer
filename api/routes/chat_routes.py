@@ -21,6 +21,7 @@ class ChatRequest(BaseModel):
 
 class ProductItem(BaseModel):
     id: int
+    gid: Optional[str] = ""
     name: str
     price: float
     image_url: Optional[str] = None

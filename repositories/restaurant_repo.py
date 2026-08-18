@@ -50,6 +50,7 @@ class RestaurantRepository:
     @staticmethod
     def create_product(db: Session, product: ProductCreateRequest):
         db_product = ProductDB(
+            gid=str(ULID()), # Gera um novo ULID para o produto
             name=product.name,
             description=product.description,
             price=product.price,

@@ -39,6 +39,7 @@ class ProductDB(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
+    gid = Column(String(255), nullable=True, unique=True)
     name = Column(String(255))
     description = Column(Text)
     price = Column(Float)
