@@ -5,6 +5,7 @@ Integra busca semântica (E5) com conversação natural (Google Gemini 1.5 Flash
 from services.ai_service import AIService
 from services.gemini_sales_service import GeminiSalesAgent
 from services.session_service import SessionManager, UserSession
+from repositories.restaurant_repo import RestaurantRepository
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 import json
@@ -146,7 +147,7 @@ class HybridAIService:
     @staticmethod
     def process_sales_chat(
         user_message: str,
-        restaurant_id: Optional[int],
+        restaurant_gid: Optional[str],
         cart: List[Dict],
         db: Session,
         session_id: Optional[str] = None
@@ -159,13 +160,20 @@ class HybridAIService:
         print(f"💬 [Chat] Mensagem recebida: '{user_message}'")
 
         # ── SESSÃO ────────────────────────────────────────────────────────
-        session = SessionManager.get_or_create(session_id, restaurant_id)
+        session = SessionManager.get_or_create(session_id, restaurant_gid)
         
-        # Sincronizar restaurant_id caso tenha sido omitido na request mas já exista na sessão
-        if not restaurant_id and session.restaurant_id:
-            restaurant_id = session.restaurant_id
+        # Sincronizar restaurant_gid caso tenha sido omitido na request mas já exista na sessão
+        if not restaurant_gid and session.restaurant_gid:
+            restaurant_gid = session.restaurant_gid
             
-        print(f"👤 [Session] ID: {session.session_id[:8]}... | Restaurante: {restaurant_id} | Carrinho: {len(session.cart)} item(s) | Histórico: {len(session.history)} msg(s)")
+        print(f"👤 [Session] ID: {session.session_id[:8]}... | Restaurante GID: {restaurant_gid} | Carrinho: {len(session.cart)} item(s) | Histórico: {len(session.history)} msg(s)")
+
+        # Converter GID para ID interno para consultas SQL
+        restaurant_id = None
+        if restaurant_gid:
+            res_db = RestaurantRepository.get_by_gid(db, restaurant_gid)
+            if res_db:
+                restaurant_id = res_db.id
 
         # Adicionar mensagem do usuário ao histórico
         session.add_message("user", user_message)
@@ -195,8 +203,9 @@ class HybridAIService:
 
         if restaurant_id:
             from core.sql_models import ProductDB as ProductDBModel
-            # Buscar todos os produtos do restaurante diretamente do banco
-            db_products = db.query(ProductDBModel).filter(
+            from sqlalchemy.orm import joinedload
+            # Buscar todos os produtos do restaurante diretamente do banco com o GID carregado
+            db_products = db.query(ProductDBModel).options(joinedload(ProductDBModel.restaurant)).filter(
                 ProductDBModel.restaurant_id == restaurant_id
             ).all()
 
@@ -224,13 +233,17 @@ class HybridAIService:
             # Priorizar produtos relevantes pelo E5, depois os demais do restaurante
             all_products = e5_relevant + other_products
             
-            # ⭐ NOVO: Adicionar também os resultados globais do E5 que não são deste restaurante
-            # Isso permite que o usuário peça produtos de outros locais
+            # Adicionar também os resultados globais do E5 que não são deste restaurante
             for global_prod in search_results.productResults:
                 if global_prod.id not in seen_ids_local:
                     all_products.append(global_prod)
         else:
-            all_products = search_results.productResults
+            # ⭐ MELHORIA: Em busca global, se o número de produtos total for pequeno,
+            # enviamos todos para a IA ter contexto completo.
+            if len(AIService._product_obj_cache) <= 50:
+                all_products = AIService._product_obj_cache
+            else:
+                all_products = search_results.productResults
 
         # ⭐ NOVO: Unir resultados da busca com itens que já estão no carrinho
         # E também com produtos sugeridos na última interação (Memória de Sugestões)
@@ -271,7 +284,7 @@ class HybridAIService:
                 "id": product.id,
                 "name": product.name,
                 "price": float(product.price),
-                "restaurant_id": _get("restaurant_id"),
+                "restaurant_gid": (getattr(product, "restaurant_gid", "") or restaurant_gid) or "", # Garantir que nunca retorne null
                 "image_url": _get("image_url"),
                 "description": _get("description", ""),
                 "category": _get("category", ""),
@@ -350,7 +363,7 @@ class HybridAIService:
                             product_id=prod_id,
                             name=product_info["name"],
                             price=product_info["price"],
-                            restaurant_id=product_info["restaurant_id"],
+                            restaurant_gid=product_info["restaurant_gid"],
                             quantity=qty,
                             serves_people=product_info.get("serves_people") or 1,
                             category=product_info.get("category", "")
@@ -438,7 +451,7 @@ class HybridAIService:
             "session_id": session.session_id,
             "cart": cart_summary,
             "order_confirmed": order_confirmed,
-            "restaurant_id": session.restaurant_id,
+            "restaurant_gid": session.restaurant_gid,
         }
 
     @staticmethod
@@ -450,9 +463,10 @@ class HybridAIService:
         import unicodedata
 
         def normalize(text: str) -> str:
-            """Remove acentos e converte para minúsculas"""
+            """Remove acentos, converte para minúsculas e limpa espaços"""
+            if not text: return ""
             return ''.join(
-                c for c in unicodedata.normalize('NFD', text.lower())
+                c for c in unicodedata.normalize('NFD', text.lower().strip())
                 if unicodedata.category(c) != 'Mn'
             )
 

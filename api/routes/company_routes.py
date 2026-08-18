@@ -57,17 +57,17 @@ def register_company(company_data: CompanyCreateRequest, db: Session = Depends(g
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/companies/{company_id}", response_model=CompanyResponse)
-def get_company(company_id: int, db: Session = Depends(get_db)):
-    db_company = RestaurantRepository.get_by_id(db, company_id)
+@router.get("/companies/{gid}", response_model=CompanyResponse)
+def get_company(gid: str, db: Session = Depends(get_db)):
+    db_company = RestaurantRepository.get_by_gid(db, gid)
     if db_company is None:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
     return db_company
 
 
-@router.put("/companies/{company_id}", response_model=CompanyResponse)
-def update_company(company_id: int, company_update: CompanyUpdateRequest, db: Session = Depends(get_db)):
-    db_company = RestaurantRepository.get_by_id(db, company_id)
+@router.put("/companies/{gid}", response_model=CompanyResponse)
+def update_company(gid: str, company_update: CompanyUpdateRequest, db: Session = Depends(get_db)):
+    db_company = RestaurantRepository.get_by_gid(db, gid)
     if not db_company:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
@@ -89,10 +89,10 @@ def update_company(company_id: int, company_update: CompanyUpdateRequest, db: Se
 # 🔗 ROTAS DO STRIPE CONNECT (ONBOARDING)
 # ==========================================
 
-@router.post("/connect/onboarding/{restaurant_id}")
-def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
+@router.post("/connect/onboarding/{gid}")
+def create_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
     # 1. Busca o restaurante no banco
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
@@ -123,11 +123,11 @@ def create_stripe_onboarding(restaurant_id: int, db: Session = Depends(get_db)):
             db.commit()
             print(f"✅ Conta Stripe Criada: {account.id} → status=STRIPE_PENDING")
 
-        # 3. Gera o Link Mágico com URLs de produção (incluindo restaurant_id)
+        # 3. Gera o Link Mágico com URLs de produção (incluindo gid)
         account_link = stripe.AccountLink.create(
             account=restaurant.stripe_account_id,
-            refresh_url=f"https://api.leiriaeats.com/connect/onboarding-refresh?restaurant_id={restaurant_id}",
-            return_url=f"https://api.leiriaeats.com/connect/onboarding-success?restaurant_id={restaurant_id}",
+            refresh_url=f"https://api.leiriaeats.com/connect/onboarding-refresh?gid={gid}",
+            return_url=f"https://api.leiriaeats.com/connect/onboarding-success?gid={gid}",
             type="account_onboarding",
         )
 
@@ -297,21 +297,21 @@ def onboarding_success():
             }
         </style>
         <script>
-            // Extrai restaurant_id da URL
+            // Extrai gid da URL
             const urlParams = new URLSearchParams(window.location.search);
-            const restaurantId = urlParams.get('restaurant_id');
+            const restaurantGid = urlParams.get('gid');
             
             // Função para atualizar status automaticamente
             async function updateStatus() {
-                if (!restaurantId) {
-                    console.error('Restaurant ID não encontrado na URL');
+                if (!restaurantGid) {
+                    console.error('Restaurant GID não encontrado na URL');
                     return;
                 }
                 
                 try {
-                    console.log('🔄 Verificando status do restaurante', restaurantId);
+                    console.log('🔄 Verificando status do restaurante', restaurantGid);
                     
-                    const response = await fetch(`/connect/check-status/${restaurantId}`, {
+                    const response = await fetch(`/connect/check-status/${restaurantGid}`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -549,13 +549,13 @@ def onboarding_refresh():
     return HTMLResponse(content=html_content)
 
 
-@router.post("/connect/check-status/{restaurant_id}")
-def check_stripe_status(restaurant_id: int, db: Session = Depends(get_db)):
+@router.post("/connect/check-status/{gid}")
+def check_stripe_status(gid: str, db: Session = Depends(get_db)):
     """
     Verifica manualmente o status do onboarding Stripe e atualiza o banco.
     Útil quando o webhook não dispara ou demora muito.
     """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
@@ -598,7 +598,7 @@ def check_stripe_status(restaurant_id: int, db: Session = Depends(get_db)):
             print(f"⚠️ Status mantido: {restaurant.status} (onboarding incomplete)")
 
         return {
-            "restaurant_id": restaurant_id,
+            "gid": gid,
             "stripe_account_id": restaurant.stripe_account_id,
             "details_submitted": details_submitted,
             "charges_enabled": charges_enabled,
@@ -614,13 +614,13 @@ def check_stripe_status(restaurant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/connect/dashboard/{restaurant_id}")
-def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
+@router.get("/connect/dashboard/{gid}")
+def get_stripe_dashboard_url(gid: str, db: Session = Depends(get_db)):
     """
     Gera um link de acesso ao dashboard financeiro da Stripe para o restaurante.
     Verifica o estado real do onboarding na API da Stripe e sincroniza o campo local.
     """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
@@ -641,7 +641,7 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
         if is_complete and restaurant.status != "ACTIVE":
             restaurant.status = "ACTIVE"  # Onboarding completo → restaurante ativo
             restaurant.license = "ATIVO"  # Sincroniza o campo license
-            print(f"✅ Status atualizado para ACTIVE e license para ATIVO (restaurante {restaurant_id})")
+            print(f"✅ Status atualizado para ACTIVE e license para ATIVO (restaurante {gid})")
             db.commit()
 
             # Recarrega o cache do AIService após ativar o restaurante
@@ -657,7 +657,7 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
             )
 
         login_link = stripe.Account.create_login_link(restaurant.stripe_account_id)
-        print(f"✅ Dashboard Stripe gerado para restaurante {restaurant_id}")
+        print(f"✅ Dashboard Stripe gerado para restaurante {gid}")
         return {"url": login_link.url}
 
     except HTTPException:
@@ -672,7 +672,7 @@ def get_stripe_dashboard_url(restaurant_id: int, db: Session = Depends(get_db)):
 @router.post("/checkout/create-session")
 def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends(get_db)):
 
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == request.restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, request.restaurant_gid)
 
     if not restaurant or not restaurant.stripe_account_id:
         raise HTTPException(status_code=400, detail="Restaurante não configurou pagamentos.")
@@ -728,9 +728,9 @@ def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends
 # 🕐 ROTAS DE HORÁRIOS DE FUNCIONAMENTO
 # ==========================================
 
-@router.post("/restaurant/{restaurant_id}/hours", response_model=List[RestaurantHourResponse], status_code=201)
+@router.post("/restaurant/{gid}/hours", response_model=List[RestaurantHourResponse], status_code=201)
 def save_restaurant_hours(
-    restaurant_id: int,
+    gid: str,
     hours: List[RestaurantHourRequest],
     db: Session = Depends(get_db)
 ):
@@ -739,20 +739,20 @@ def save_restaurant_hours(
     substitui (upsert) os registos existentes no banco de dados.
     """
     # Valida se o restaurante existe
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
-    print(f"📥 Recebendo {len(hours)} horários para o restaurante {restaurant_id}")
+    print(f"📥 Recebendo {len(hours)} horários para o restaurante {gid}")
 
     # Remove todos os horários anteriores deste restaurante (substituição completa)
-    db.query(RestaurantHourDB).filter(RestaurantHourDB.restaurant_id == restaurant_id).delete()
+    db.query(RestaurantHourDB).filter(RestaurantHourDB.restaurant_id == restaurant.id).delete()
 
     # Insere os novos horários
     new_hours = []
     for h in hours:
         hour_db = RestaurantHourDB(
-            restaurant_id=restaurant_id,
+            restaurant_id=restaurant.id,
             day_of_week=h.day_of_week,
             open_time=h.open_time,
             close_time=h.close_time,
@@ -765,22 +765,22 @@ def save_restaurant_hours(
     for h in new_hours:
         db.refresh(h)
 
-    print(f"✅ {len(new_hours)} horários salvos com sucesso para o restaurante {restaurant_id}")
+    print(f"✅ {len(new_hours)} horários salvos com sucesso para o restaurante {gid}")
     return new_hours
 
 
-@router.get("/restaurant/{restaurant_id}/hours", response_model=List[RestaurantHourResponse])
-def get_restaurant_hours(restaurant_id: int, db: Session = Depends(get_db)):
+@router.get("/restaurant/{gid}/hours", response_model=List[RestaurantHourResponse])
+def get_restaurant_hours(gid: str, db: Session = Depends(get_db)):
     """
     Retorna os horários de funcionamento do restaurante ordenados por dia.
     """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
     hours = (
         db.query(RestaurantHourDB)
-        .filter(RestaurantHourDB.restaurant_id == restaurant_id)
+        .filter(RestaurantHourDB.restaurant_id == restaurant.id)
         .order_by(RestaurantHourDB.day_of_week)
         .all()
     )
@@ -791,27 +791,27 @@ def get_restaurant_hours(restaurant_id: int, db: Session = Depends(get_db)):
 # 🚴 ROTA DE ESTAFETA PRÓPRIO
 # ==========================================
 
-@router.get("/restaurant/{restaurant_id}/courier-preference")
+@router.get("/restaurant/{gid}/courier-preference")
 def get_courier_preference(
-    restaurant_id: int,
+    gid: str,
     db: Session = Depends(get_db),
 ):
     """
     Retorna se o restaurante utiliza estafeta próprio ou da plataforma.
     """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
     return {
-        "restaurant_id": restaurant_id,
+        "gid": gid,
         "use_own_delivery": restaurant.use_own_delivery,
     }
 
 
-@router.patch("/restaurant/{restaurant_id}/courier-preference")
+@router.patch("/restaurant/{gid}/courier-preference")
 def update_courier_preference(
-    restaurant_id: int,
+    gid: str,
     body: UsesPlatformCourierRequest,
     db: Session = Depends(get_db),
 ):
@@ -819,7 +819,7 @@ def update_courier_preference(
     Atualiza se o restaurante utiliza estafeta próprio (True)
     ou os estafetas da plataforma (False).
     """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
@@ -827,8 +827,8 @@ def update_courier_preference(
     db.commit()
     db.refresh(restaurant)
 
-    print(f"✅ Restaurante {restaurant_id} — use_own_delivery={restaurant.use_own_delivery}")
+    print(f"✅ Restaurante {gid} — use_own_delivery={restaurant.use_own_delivery}")
     return {
-        "restaurant_id": restaurant_id,
+        "gid": gid,
         "use_own_delivery": restaurant.use_own_delivery,
     }

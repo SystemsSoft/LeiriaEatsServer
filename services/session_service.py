@@ -7,12 +7,12 @@ from core.config import settings
 
 
 class CartItem:
-    def __init__(self, product_id: int, name: str, price: float, restaurant_id: int,
+    def __init__(self, product_id: int, name: str, price: float, restaurant_gid: str,
                  quantity: int = 1, serves_people: Optional[int] = 1, category: str = ""):
         self.product_id = product_id
         self.name = name
         self.price = price
-        self.restaurant_id = restaurant_id
+        self.restaurant_gid = restaurant_gid
         self.quantity = quantity
         self.serves_people = serves_people if serves_people is not None else 1
         self.category = category
@@ -22,7 +22,7 @@ class CartItem:
             "product_id": self.product_id,
             "name": self.name,
             "price": self.price,
-            "restaurant_id": self.restaurant_id,
+            "restaurant_gid": self.restaurant_gid,
             "quantity": self.quantity,
             "serves_people": self.serves_people,
             "category": self.category,
@@ -35,7 +35,7 @@ class CartItem:
             product_id=data["product_id"],
             name=data["name"],
             price=data["price"],
-            restaurant_id=data.get("restaurant_id", 0),
+            restaurant_gid=data.get("restaurant_gid") or "",
             quantity=data["quantity"],
             serves_people=data.get("serves_people") if data.get("serves_people") is not None else 1,
             category=data.get("category", "")
@@ -45,9 +45,9 @@ class CartItem:
 class UserSession:
     """Sessão de um usuário com carrinho e histórico de conversa"""
 
-    def __init__(self, session_id: str, restaurant_id: Optional[int] = None):
+    def __init__(self, session_id: str, restaurant_gid: Optional[str] = None):
         self.session_id = session_id
-        self.restaurant_id = restaurant_id
+        self.restaurant_gid = restaurant_gid
         self.cart: List[CartItem] = []
         self.history: List[Dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
         self.context: Dict = {
@@ -61,7 +61,7 @@ class UserSession:
     def to_dict(self) -> Dict:
         return {
             "session_id": self.session_id,
-            "restaurant_id": self.restaurant_id,
+            "restaurant_gid": self.restaurant_gid,
             "cart": [item.to_dict() for item in self.cart],
             "history": self.history,
             "context": self.context,
@@ -72,7 +72,7 @@ class UserSession:
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'UserSession':
-        session = cls(data["session_id"], data.get("restaurant_id"))
+        session = cls(data["session_id"], data.get("restaurant_gid"))
         session.cart = [CartItem.from_dict(item) for item in data.get("cart", [])]
         session.history = data.get("history", [])
         session.context = data.get("context", {
@@ -113,7 +113,7 @@ class UserSession:
 
     # ── Carrinho ───────────────────────────────────────────────────────────
 
-    def add_to_cart(self, product_id: int, name: str, price: float, restaurant_id: int,
+    def add_to_cart(self, product_id: int, name: str, price: float, restaurant_gid: str,
                     quantity: int = 1, serves_people: int = 1, category: str = "") -> str:
         """Adiciona ou incrementa item no carrinho"""
         for item in self.cart:
@@ -121,7 +121,7 @@ class UserSession:
                 item.quantity += quantity
                 return f"Quantidade de {name} atualizada para {item.quantity}"
 
-        self.cart.append(CartItem(product_id, name, price, restaurant_id, quantity, serves_people, category))
+        self.cart.append(CartItem(product_id, name, price, restaurant_gid, quantity, serves_people, category))
         return f"{name} adicionado ao carrinho"
 
     def remove_from_cart(self, product_id: int) -> bool:
@@ -219,7 +219,7 @@ class SessionManager:
 
     @classmethod
     def get_or_create(cls, session_id: Optional[str],
-                      restaurant_id: Optional[int] = None) -> UserSession:
+                      restaurant_gid: Optional[str] = None) -> UserSession:
         """Retorna sessão existente ou cria nova"""
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -227,11 +227,11 @@ class SessionManager:
         session = cls.get(session_id)
         
         if not session:
-            session = UserSession(session_id, restaurant_id)
+            session = UserSession(session_id, restaurant_gid)
             print(f"🆕 [Session] Nova sessão criada: {session_id[:8]}...")
         else:
-            if restaurant_id and not session.restaurant_id:
-                session.restaurant_id = restaurant_id
+            if restaurant_gid and not session.restaurant_gid:
+                session.restaurant_gid = restaurant_gid
         
         # Salvar imediatamente para garantir persistência inicial
         cls.save(session)

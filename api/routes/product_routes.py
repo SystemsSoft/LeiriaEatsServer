@@ -20,7 +20,7 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
     print(f"🍔 Criando produto: {product_data.name}")
 
     # Verifica se o restaurante existe usando RestaurantDB
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == product_data.restaurant_id).first()
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.gid == product_data.restaurant_gid).first()
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado.")
 
@@ -30,7 +30,7 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
         description=product_data.description,
         price=product_data.price,
         image_url=product_data.image_url,
-        restaurant_id=product_data.restaurant_id,
+        restaurant_id=restaurant.id,
         category=product_data.category,
         preparation_time=product_data.preparation_time
     )
@@ -52,10 +52,14 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
 
 
 # --- LISTAR (Onde estava o erro) ---
-@router.get("/products/restaurant/{restaurant_id}", response_model=List[ProductResponse])
-def get_products_by_restaurant(restaurant_id: int, db: Session = Depends(get_db)):
+@router.get("/products/restaurant/{gid}", response_model=List[ProductResponse])
+def get_products_by_restaurant(gid: str, db: Session = Depends(get_db)):
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.gid == gid).first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
     # 3. USAMOS EXPLICITAMENTE ProductDB AQUI
-    products = db.query(ProductDB).filter(ProductDB.restaurant_id == restaurant_id).all()
+    products = db.query(ProductDB).filter(ProductDB.restaurant_id == restaurant.id).all()
 
     # Calcula a média de rating para cada produto, filtrado pelo restaurante
     avg_ratings = dict(
@@ -63,13 +67,14 @@ def get_products_by_restaurant(restaurant_id: int, db: Session = Depends(get_db)
             ProductRatingDB.product_id,
             func.avg(ProductRatingDB.rating)
         )
-        .filter(ProductRatingDB.restaurant_id == restaurant_id)
+        .filter(ProductRatingDB.restaurant_id == restaurant.id)
         .group_by(ProductRatingDB.product_id)
         .all()
     )
 
     for product in products:
         product.rating = avg_ratings.get(product.id)
+        product.restaurant_gid = gid # Injetar o GID na resposta
 
     return products
 

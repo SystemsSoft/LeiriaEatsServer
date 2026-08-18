@@ -1,7 +1,6 @@
-# Arquivo: schemas/company.py (ou onde você guarda os schemas)
+# Arquivo: schemas/payment.py
 from pydantic import BaseModel
 
-# Adicione esta classe
 class PaymentIntentRequest(BaseModel):
     amount_euros: float
-    restaurant_id: int
+    restaurant_gid: str

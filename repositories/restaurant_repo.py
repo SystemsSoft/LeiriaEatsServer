@@ -9,11 +9,17 @@ class RestaurantRepository:
 
     @staticmethod
     def get_all(db: Session) -> List[RestaurantDB]:
-        return db.query(RestaurantDB).options(joinedload(RestaurantDB.products)).all()
+        return db.query(RestaurantDB).options(
+            joinedload(RestaurantDB.products).joinedload(ProductDB.restaurant)
+        ).all()
 
     @staticmethod
     def get_by_id(db: Session, restaurant_id: int) -> RestaurantDB:
         return db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+
+    @staticmethod
+    def get_by_gid(db: Session, gid: str) -> RestaurantDB:
+        return db.query(RestaurantDB).filter(RestaurantDB.gid == gid).first()
 
     @staticmethod
     def create_company(db: Session, company: CompanyCreateRequest):

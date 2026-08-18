@@ -90,6 +90,10 @@ class ProductDB(Base):
 
     restaurant = relationship("RestaurantDB", back_populates="products")
 
+    @property
+    def restaurant_gid(self) -> str:
+        return self.restaurant.gid if self.restaurant else ""
+
 
 class OrderDB(Base):
     __tablename__ = "orders"
@@ -132,6 +136,10 @@ class OrderDB(Base):
 
     restaurant = relationship("RestaurantDB")
     items = relationship("OrderItemDB", back_populates="order")
+
+    @property
+    def restaurant_gid(self) -> str:
+        return self.restaurant.gid if self.restaurant else ""
 
 
 class OrderItemDB(Base):

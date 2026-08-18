@@ -4,7 +4,7 @@ from typing import List, Optional
 # --- MODELO DO PRODUTO ---
 class Product(BaseModel):
     id: int
-    restaurant_id: int
+    restaurant_gid: Optional[str] = ""
     name: str
     price: float
     description: str
@@ -19,7 +19,8 @@ class Product(BaseModel):
 
 # --- MODELO DO RESTAURANTE ---
 class Restaurant(BaseModel):
-    id: int
+    id: int # ID interno para JOINs
+    gid: Optional[str] = "" # Global ID para o Frontend
     name: str
     category: str
     rating: Optional[float] = None
@@ -28,7 +29,6 @@ class Restaurant(BaseModel):
     is_closed: Optional[bool] = None  # Estado de encerramento do restaurante no dia/hora atual
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    gid: Optional[str] = None
 
     # O nome aqui deve ser 'products' para bater com o banco de dados
     products: List[Product] = []
@@ -67,7 +67,7 @@ class OrderCreate(BaseModel):
     user_phone: str
     delivery_latitude:  Optional[float] = None   # coordenadas do endereço de entrega
     delivery_longitude: Optional[float] = None
-    restaurant_id: int
+    restaurant_gid: str
     restaurant_name: str
     restaurant_category: str
     restaurant_image_url: Optional[str] = None
@@ -100,6 +100,7 @@ class OrderResponse(BaseModel):
     delivery_address: str
     total: float
     status: str
+    restaurant_gid: Optional[str] = ""
     restaurant_name: str
     restaurant_category: str
     restaurant_image_url: Optional[str] = None
@@ -138,7 +139,7 @@ class RatingItemRequest(BaseModel):
 
 class RatingRequest(BaseModel):
     order_id: str
-    restaurant_id: int
+    restaurant_gid: str
     ratings: List[RatingItemRequest]
 
 class LoginRequest(BaseModel):
@@ -149,7 +150,7 @@ class LoginResponse(BaseModel):
         id: int
 
 class DeliveryFeeRequest(BaseModel):
-    restaurant_id: int
+    restaurant_gid: str
     customer_latitude: float
     customer_longitude: float
     restaurant_latitude: float

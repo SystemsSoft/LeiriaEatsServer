@@ -7,7 +7,7 @@ class ProductCreateRequest(BaseModel):
     description: str
     price: float
     image_url: Optional[str] = None
-    restaurant_id: int
+    restaurant_gid: str
     category: str
     preparation_time: Optional[str] = None
 
@@ -31,7 +31,7 @@ class ProductResponse(BaseModel):
     description: str
     price: float
     image_url: Optional[str]
-    restaurant_id: int
+    restaurant_gid: Optional[str] = ""
     category: str
     preparation_time: Optional[str]
     rating: Optional[float] = None

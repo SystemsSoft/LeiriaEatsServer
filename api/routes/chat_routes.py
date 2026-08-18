@@ -15,7 +15,7 @@ router = APIRouter()
 # Schema para chat com IA conversacional
 class ChatRequest(BaseModel):
     message: str
-    restaurant_id: Optional[int] = None
+    restaurant_gid: Optional[str] = None
     session_id: Optional[str] = None
 
 
@@ -40,7 +40,7 @@ class ProductItem(BaseModel):
     calories: Optional[int] = None
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
-    restaurant_id: Optional[int] = None
+    restaurant_gid: Optional[str] = None
     quantity: int = 0
 
 
@@ -69,7 +69,7 @@ def chat_sales(request: ChatRequest, db: Session = Depends(get_db)):
     """
     result = HybridAIService.process_sales_chat(
         user_message=request.message,
-        restaurant_id=request.restaurant_id,
+        restaurant_gid=request.restaurant_gid,
         cart=[],
         db=db,
         session_id=request.session_id

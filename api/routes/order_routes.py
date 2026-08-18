@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from core import config
 from core.database import get_db, SessionLocal
 from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB
+from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest
 
 router = APIRouter()
@@ -109,7 +110,7 @@ def calculate_delivery_fee(payload: DeliveryFeeRequest, db: Session = Depends(ge
     definido nas zonas de entrega (delivery_zones).
     Caso contrário, aplica os escalões padrão da plataforma.
     """
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == payload.restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, payload.restaurant_gid)
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado.")
 
@@ -245,7 +246,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
                 raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
     # ── Busca o restaurante antes de criar o pedido ────────────────────────
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == order_data.restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, order_data.restaurant_gid)
     if not restaurant or not restaurant.stripe_account_id:
         raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
 
@@ -387,7 +388,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     print(f"👤 Buscando histórico de: {user_id}")
 
-    orders_query = db.query(OrderDB).filter_by(
+    from sqlalchemy.orm import joinedload
+    orders_query = db.query(OrderDB).options(joinedload(OrderDB.restaurant)).filter_by(
         user_id=user_id
     ).order_by(OrderDB.id.desc()).all()
 
@@ -400,6 +402,7 @@ def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
             "delivery_address": order.delivery_address,
             "total": order.total,
             "status": order.status,
+            "restaurant_gid": order.restaurant_gid,
             "restaurant_name": order.restaurant_name,
             "restaurant_category": order.restaurant_category,
             "restaurant_image_url": order.restaurant_image_url,
@@ -437,13 +440,18 @@ def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     return result
 
 
-@router.get("/orders/{restaurant_id}", response_model=List[OrderResponse])
-def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
-    print(f"🔎 Buscando pedidos para o Restaurante ID {restaurant_id}")
+@router.get("/orders/{gid}", response_model=List[OrderResponse])
+def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
+    print(f"🔎 Buscando pedidos para o Restaurante GID {gid}")
 
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+
+    from sqlalchemy.orm import joinedload
     # Busca no banco filtrando pelo ID do restaurante, com join no driver
-    orders_query = db.query(OrderDB).filter(
-        OrderDB.restaurant_id == restaurant_id
+    orders_query = db.query(OrderDB).options(joinedload(OrderDB.restaurant)).filter(
+        OrderDB.restaurant_id == restaurant.id
     ).order_by(OrderDB.id.desc()).all()
 
     # Popula os campos do driver manualmente
@@ -455,6 +463,7 @@ def get_restaurant_orders(restaurant_id: int, db: Session = Depends(get_db)):
             "delivery_address": order.delivery_address,
             "total": order.total,
             "status": order.status,
+            "restaurant_gid": order.restaurant_gid,
             "restaurant_name": order.restaurant_name,
             "restaurant_category": order.restaurant_category,
             "restaurant_image_url": order.restaurant_image_url,
@@ -930,11 +939,11 @@ def delete_saved_payment_method(user_id: str, method_id: int, db: Session = Depe
     return {"message": "Método de pagamento deletado com sucesso"}
 
 
-@router.get("/restaurant/{restaurant_id}/finance-summary")
-def get_restaurant_finance_summary(restaurant_id: int, db: Session = Depends(get_db)):
-    print(f"💰 Buscando resumo financeiro para o Restaurante ID: {restaurant_id}")
+@router.get("/restaurant/{gid}/finance-summary")
+def get_restaurant_finance_summary(gid: str, db: Session = Depends(get_db)):
+    print(f"💰 Buscando resumo financeiro para o Restaurante GID: {gid}")
 
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == restaurant_id).first()
+    restaurant = RestaurantRepository.get_by_gid(db, gid)
 
     if not restaurant or not restaurant.stripe_account_id:
         raise HTTPException(status_code=404, detail="Restaurante não configurado para pagamentos.")
@@ -1306,8 +1315,9 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
 
-    if order.restaurant_id != payload.restaurant_id:
-        raise HTTPException(status_code=400, detail="restaurant_id não corresponde ao pedido")
+    restaurant = RestaurantRepository.get_by_gid(db, payload.restaurant_gid)
+    if not restaurant or order.restaurant_id != restaurant.id:
+        raise HTTPException(status_code=400, detail="restaurant_gid não corresponde ao pedido")
 
     saved_ratings = []
     for item in payload.ratings:
@@ -1333,7 +1343,7 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
             new_rating = ProductRatingDB(
                 order_id=order_id_int,
                 product_id=item.product_id,
-                restaurant_id=payload.restaurant_id,
+                restaurant_id=restaurant.id,
                 rating=item.rating,
             )
             db.add(new_rating)
@@ -1346,7 +1356,7 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
     for product_id in saved_ratings:
         all_ratings = db.query(ProductRatingDB).filter(
             ProductRatingDB.product_id == product_id,
-            ProductRatingDB.restaurant_id == payload.restaurant_id
+            ProductRatingDB.restaurant_id == restaurant.id
         ).all()
         if all_ratings:
             avg = sum(r.rating for r in all_ratings) / len(all_ratings)
