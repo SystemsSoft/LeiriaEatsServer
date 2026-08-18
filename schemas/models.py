@@ -57,7 +57,7 @@ class RestaurantCreate(BaseModel):
 
 # --- MODELOS DE PEDIDO (ORDER) ---
 class OrderItemCreate(BaseModel):
-    product_id: int
+    product_gid: str
     quantity: int
     observation: Optional[str] = None
 
@@ -135,7 +135,7 @@ class OrderStatusResponse(BaseModel):
     tracking_code: Optional[str] = None
 
 class RatingItemRequest(BaseModel):
-    product_id: int
+    product_gid: str
     rating: int  # 1–5
 
 class RatingRequest(BaseModel):

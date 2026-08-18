@@ -82,9 +82,9 @@ def get_products_by_restaurant(gid: str, db: Session = Depends(get_db)):
 
 
 # --- ATUALIZAR ---
-@router.put("/product/{product_id}", response_model=ProductResponse)
-def update_product(product_id: int, product_data: ProductCreateRequest, db: Session = Depends(get_db)):
-    db_product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+@router.put("/product/{gid}", response_model=ProductResponse)
+def update_product(gid: str, product_data: ProductCreateRequest, db: Session = Depends(get_db)):
+    db_product = db.query(ProductDB).filter(ProductDB.gid == gid).first()
 
     if not db_product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
@@ -103,10 +103,11 @@ def update_product(product_id: int, product_data: ProductCreateRequest, db: Sess
 
     # Calcula a média de rating filtrada por restaurante
     avg = db.query(func.avg(ProductRatingDB.rating)).filter(
-        ProductRatingDB.product_id == product_id,
+        ProductRatingDB.product_id == db_product.id,
         ProductRatingDB.restaurant_id == db_product.restaurant_id
     ).scalar()
     db_product.rating = avg
+    db_product.restaurant_gid = product_data.restaurant_gid
 
     # Recarrega o cache do AIService para atualizar o produto nas buscas
     AIService.reload_data(db)
@@ -116,9 +117,9 @@ def update_product(product_id: int, product_data: ProductCreateRequest, db: Sess
 
 
 # --- DELETAR ---
-@router.delete("/product/{product_id}")
-def delete_product(product_id: int, db: Session = Depends(get_db)):
-    db_product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+@router.delete("/product/{gid}")
+def delete_product(gid: str, db: Session = Depends(get_db)):
+    db_product = db.query(ProductDB).filter(ProductDB.gid == gid).first()
 
     if not db_product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")

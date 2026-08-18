@@ -216,11 +216,11 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
     valid_items = []
     total_price = 0.0
     for item in order_data.items:
-        product = db.query(ProductDB).filter(ProductDB.id == item.product_id).first()
+        product = db.query(ProductDB).filter(ProductDB.gid == item.product_gid).first()
         if product:
             total_price += product.price * item.quantity
         else:
-            raise HTTPException(status_code=404, detail=f"Produto com id {item.product_id} não encontrado")
+            raise HTTPException(status_code=404, detail=f"Produto com GID {item.product_gid} não encontrado")
 
         valid_items.append((product, item))
 
@@ -1324,17 +1324,17 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
         if not (1 <= item.rating <= 5):
             raise HTTPException(
                 status_code=422,
-                detail=f"Rating inválido ({item.rating}) para produto {item.product_id}. Deve ser entre 1 e 5."
+                detail=f"Rating inválido ({item.rating}) para produto {item.product_gid}. Deve ser entre 1 e 5."
             )
 
-        product = db.query(ProductDB).filter(ProductDB.id == item.product_id).first()
+        product = db.query(ProductDB).filter(ProductDB.gid == item.product_gid).first()
         if not product:
-            raise HTTPException(status_code=404, detail=f"Produto {item.product_id} não encontrado")
+            raise HTTPException(status_code=404, detail=f"Produto {item.product_gid} não encontrado")
 
         # Evita duplicatas por pedido+produto (upsert manual)
         existing = db.query(ProductRatingDB).filter(
             ProductRatingDB.order_id == order_id_int,
-            ProductRatingDB.product_id == item.product_id,
+            ProductRatingDB.product_id == product.id,
         ).first()
 
         if existing:
@@ -1342,13 +1342,13 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
         else:
             new_rating = ProductRatingDB(
                 order_id=order_id_int,
-                product_id=item.product_id,
+                product_id=product.id,
                 restaurant_id=restaurant.id,
                 rating=item.rating,
             )
             db.add(new_rating)
 
-        saved_ratings.append(item.product_id)
+        saved_ratings.append(product.id)
 
     db.commit()
 

@@ -224,10 +224,10 @@ REGRAS OBRIGATÓRIAS:
 11. Se o produto tiver alérgenos e o cliente tiver restrição alimentar, avise proativamente.
 12. Gestão do Carrinho (ADICIONAR PRODUTOS):
     - Se o cliente quiser pedir, encomendar ou adicionar algo (ex: "quero uma pizza", "pode adicionar 2 sumos"):
-        - Identifique o produto na lista "PRODUTOS DISPONÍVEIS" pelo seu ID numérico.
-        - OBRIGATORIAMENTE inclua a tag [[ADD_TO_CART:ID:QUANTIDADE]] na sua resposta para cada item solicitado.
-        - Substitua ID pelo número do produto e QUANTIDADE pelo número pedido (ou 1 se não especificado).
-        - Exemplo: "Com certeza! Vou adicionar 2 Pizzas Calabresa ao seu carrinho. 😊 [[ADD_TO_CART:123:2]]"
+        - Identifique o produto na lista "PRODUTOS DISPONÍVEIS" pelo seu GID (Global ID).
+        - OBRIGATORIAMENTE inclua a tag [[ADD_TO_CART:GID:QUANTIDADE]] na sua resposta para cada item solicitado.
+        - Substitua GID pelo código do produto e QUANTIDADE pelo número pedido (ou 1 se não especificado).
+        - Exemplo: "Com certeza! Vou adicionar 2 Pizzas Calabresa ao seu carrinho. 😊 [[ADD_TO_CART:01M0AG...:2]]"
         - Se não tiver certeza absoluta do produto, peça esclarecimentos antes de adicionar a tag.
         - SEMPRE que disser que adicionou algo, a tag DEVE estar presente.
 13. Fluxo de Finalização e Confirmação:
@@ -251,7 +251,7 @@ Cliente: "quero uma pizza"
 Você: "Temos [X] opções: 🍕 [Nome1] (€ XX), [Nome2] (€ XX). Qual prefere? É para quantas pessoas?"
 
 Cliente: "calabresa" (após perguntar sobre pizza)
-Você: "Ótima escolha! Pizza Calabresa anotada! 🍕 [[ADD_TO_CART:123:1]] Deseja adicionar uma bebida ou sobremesa?"
+Você: "Ótima escolha! Pizza Calabresa anotada! 🍕 [[ADD_TO_CART:01M0AG...:1]] Deseja adicionar uma bebida ou sobremesa?"
 
 Cliente: "pode fechar o pedido" (se tiver itens no carrinho)
 Você: "Com certeza! Deseja que eu finalize a sua encomenda agora? 😊"
@@ -263,9 +263,9 @@ Você: "Perfeito! O seu pedido está confirmado: 🛒\n• Pizza Calabresa x1 - 
         # Produtos disponíveis
         products_text = ""
         if products:
-            products_text = "\n\n📦 PRODUTOS DISPONÍVEIS (Use o ID para adicionar ao carrinho):\n"
+            products_text = "\n\n📦 PRODUTOS DISPONÍVEIS (Use o CÓDIGO GID para adicionar ao carrinho):\n"
             for p in products[:15]:
-                line = f"• [ID: {p['id']}] {p['name']} - € {p['price']:.2f}"
+                line = f"• [CÓDIGO: {p['gid']}] {p['name']} - € {p['price']:.2f}"
 
                 # Detalhes complementares
                 extras = []

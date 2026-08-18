@@ -281,8 +281,8 @@ class HybridAIService:
                 return getattr(product, attr, default)
 
             product_data = {
-                "id": product.id,
-                "gid": _get("gid", ""),
+                "id": product.id, # ID interno para o servidor
+                "gid": _get("gid", ""), # GID para a IA e Frontend
                 "name": product.name,
                 "price": float(product.price),
                 "restaurant_gid": (getattr(product, "restaurant_gid", "") or restaurant_gid) or "", # Garantir que nunca retorne null
@@ -347,21 +347,20 @@ class HybridAIService:
 
                 # 🔍 1. DETECÇÃO DE ADIÇÃO AO CARRINHO VIA TAG DO GEMINI
                 import re
-                add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:(\d+):(\d+)\]\]", ai_response)
+                add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(\d+)\]\]", ai_response)
                 
                 if add_to_cart_matches:
                     print(f"🛒 [Gemini] Tags de adição encontradas: {add_to_cart_matches}")
                 
-                for prod_id_str, qty_str in add_to_cart_matches:
-                    prod_id = int(prod_id_str)
+                for prod_gid, qty_str in add_to_cart_matches:
                     qty = int(qty_str)
                     
-                    # Buscar detalhes do produto no pool encontrado
-                    product_info = next((p for p in found_products if p["id"] == prod_id), None)
+                    # Buscar detalhes do produto no pool encontrado via GID
+                    product_info = next((p for p in found_products if p["gid"] == prod_gid), None)
                     if product_info:
                         print(f"🛒 [Gemini] Adicionando ao carrinho: {product_info['name']} x{qty}")
                         session.add_to_cart(
-                            product_id=prod_id,
+                            product_id=product_info["id"], # Mantemos o ID interno na sessão para performance
                             name=product_info["name"],
                             price=product_info["price"],
                             restaurant_gid=product_info["restaurant_gid"],
@@ -370,10 +369,10 @@ class HybridAIService:
                             category=product_info.get("category", "")
                         )
                     else:
-                        print(f"⚠️ [Gemini] Produto ID {prod_id} não encontrado no pool de contexto!")
+                        print(f"⚠️ [Gemini] Produto GID {prod_gid} não encontrado no pool de contexto!")
                     
                     # Limpar a tag da resposta
-                    ai_response = ai_response.replace(f"[[ADD_TO_CART:{prod_id_str}:{qty_str}]]", "")
+                    ai_response = ai_response.replace(f"[[ADD_TO_CART:{prod_gid}:{qty_str}]]", "")
 
                 # 🔍 2. DETECÇÃO DE CONFIRMAÇÃO VIA TAG DO GEMINI
                 if "[[CONFIRM_ORDER]]" in ai_response:
