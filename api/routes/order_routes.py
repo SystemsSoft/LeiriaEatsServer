@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 
 from core import config
 from core.database import get_db, SessionLocal
-from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB
+from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB, SubOrderDB
 from repositories.restaurant_repo import RestaurantRepository
-from schemas.models import OrderCreate, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest
+from schemas.models import OrderRequest, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest, SubOrderResponse, OrderItemResponse
 
 router = APIRouter()
 
@@ -207,25 +207,18 @@ def _try_automatic_payment_with_saved_card(
 
 
 @router.post("/orders/initiate-checkout")
-def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Session = Depends(get_db)):
+def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Session = Depends(get_db)):
     """
-    Cria pedido com status de pagamento pendente.
-    - Se houver cartão salvo e save_payment_method=true, tenta cobrança automática off-session.
-    - Se não for possível cobrar automaticamente, cria Checkout Session (fallback).
+    Cria pedido Master com seus respectivos Sub-Pedidos por restaurante.
+    - Suporta múltiplos restaurantes num único checkout.
+    - Se houver cartão salvo e save_payment_method=true, tenta cobrança automática.
     """
-    valid_items = []
-    total_price = 0.0
-    for item in order_data.items:
-        product = db.query(ProductDB).filter(ProductDB.gid == item.product_gid).first()
-        if product:
-            total_price += product.price * item.quantity
-        else:
-            raise HTTPException(status_code=404, detail=f"Produto com GID {item.product_gid} não encontrado")
-
-        valid_items.append((product, item))
-
-    existing_saved_method = None
+    from ulid import ULID
+    master_order_gid = order_data.gid if order_data.gid else str(ULID())
+    
+    # ── 1. Cliente Stripe ──────────────────────────────────────────────────
     stripe_customer_id = None
+    existing_saved_method = None
 
     if order_data.save_payment_method:
         existing_saved_method = db.query(SavedPaymentMethodDB).filter(
@@ -245,104 +238,110 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
-    # ── Busca o restaurante antes de criar o pedido ────────────────────────
-    restaurant = RestaurantRepository.get_by_gid(db, order_data.restaurant_gid)
-    if not restaurant or not restaurant.stripe_account_id:
-        raise HTTPException(status_code=400, detail="Restaurante não configurado para pagamentos.")
-
-    # ── Recalcula delivery_fee no servidor se use_own_delivery=True ────────
-    delivery_fee = order_data.delivery_fee or 0.0
-    if restaurant.use_own_delivery and order_data.delivery_latitude and order_data.delivery_longitude and restaurant.latitude and restaurant.longitude:
-        distance_km = _haversine_km(
-            order_data.delivery_latitude,
-            order_data.delivery_longitude,
-            restaurant.latitude,
-            restaurant.longitude,
-        )
-        print(f"📍 [Checkout] Distância calculada: {distance_km:.2f} km — recalculando taxa com zonas do restaurante")
-        fee_result = _resolve_delivery_fee(db=db, restaurant=restaurant, distance_km=distance_km)
-        delivery_fee = fee_result["delivery_fee"]
-        print(f"💰 [Checkout] Taxa de entrega recalculada: {delivery_fee} €")
-
-    service_fee = order_data.service_fee or 0.0
-
-    new_order = OrderDB(
+    # ── 2. Criar Master Order ───────────────────────────────────────────────
+    new_master_order = OrderDB(
+        gid=master_order_gid,
         customer_name=order_data.user_name,
         delivery_address=order_data.user_address,
         delivery_latitude=order_data.delivery_latitude,
         delivery_longitude=order_data.delivery_longitude,
         status="PENDING_PAYMENT",
-        total=total_price,
-        restaurant_id=restaurant.id,
+        total=0.0, # Será calculado abaixo
         user_id=order_data.user_id,
-        restaurant_name=order_data.restaurant_name,
-        restaurant_category=order_data.restaurant_category,
-        restaurant_image_url=order_data.restaurant_image_url,
         stripe_customer_id=stripe_customer_id,
         tracking_code=order_data.tracking_code,
         delivery_type=order_data.delivery_type,
-        base_time=order_data.base_time,
-        delivery_fee=delivery_fee,
-        service_fee=service_fee,
+        total_delivery_fee=order_data.total_delivery_fee,
+        total_service_fee=order_data.total_service_fee,
     )
-
-    db.add(new_order)
+    db.add(new_master_order)
     db.commit()
-    db.refresh(new_order)
+    db.refresh(new_master_order)
 
-    # Copia as coordenadas do restaurante para o pedido (evita JOIN futuro)
-    new_order.restaurant_latitude  = restaurant.latitude
-    new_order.restaurant_longitude = restaurant.longitude
-    db.commit()
-    print(f"📍 Coordenadas do restaurante gravadas no pedido #{new_order.id}: lat={restaurant.latitude}, lng={restaurant.longitude}")
+    total_products_price = 0.0
+    
+    # ── 3. Criar Sub-Pedidos (um para cada restaurante) ─────────────────────
+    first_restaurant = None # Usado para o transfer_data (limitação do Stripe Checkout)
 
-    for product, item_data in valid_items:
-        db_item = OrderItemDB(
-            order_id=new_order.id,
-            product_name=product.name,
-            price=product.price,
-            quantity=item_data.quantity,
-            observation=item_data.observation,
-            image_url=product.image_url,
-            description=product.description
+    for sub_req in order_data.sub_orders:
+        restaurant = RestaurantRepository.get_by_gid(db, sub_req.restaurant_gid)
+        if not restaurant:
+            raise HTTPException(status_code=404, detail=f"Restaurante {sub_req.restaurant_name} não encontrado")
+        
+        if not first_restaurant:
+            first_restaurant = restaurant
+
+        sub_total_products = 0.0
+        
+        new_sub_order = SubOrderDB(
+            gid=sub_req.gid if sub_req.gid else str(ULID()),
+            master_order_gid=new_master_order.gid,
+            restaurant_gid=restaurant.gid,
+            restaurant_name=restaurant.name,
+            restaurant_category=restaurant.category,
+            restaurant_image_url=restaurant.image_url,
+            restaurant_latitude=restaurant.latitude,
+            restaurant_longitude=restaurant.longitude,
+            status="PENDING_PAYMENT",
+            delivery_fee=sub_req.delivery_fee,
+            base_time=sub_req.base_time,
+            total=0.0 # Calculado com os itens
         )
-        db.add(db_item)
+        db.add(new_sub_order)
+        db.commit()
+        db.refresh(new_sub_order)
+
+        # Criar itens do sub-pedido
+        for item_req in sub_req.items:
+            product = db.query(ProductDB).filter(ProductDB.gid == item_req.product_gid).first()
+            if not product:
+                raise HTTPException(status_code=404, detail=f"Produto {item_req.product_gid} não encontrado")
+            
+            sub_total_products += product.price * item_req.quantity
+            
+            db_item = OrderItemDB(
+                sub_order_gid=new_sub_order.gid,
+                product_name=product.name,
+                price=product.price,
+                quantity=item_req.quantity,
+                observation=item_req.observation,
+                image_url=product.image_url,
+                description=product.description
+            )
+            db.add(db_item)
+        
+        new_sub_order.total = sub_total_products + sub_req.delivery_fee
+        total_products_price += sub_total_products
+        db.commit()
+
+    # Atualizar total da Master Order
+    new_master_order.total = total_products_price + order_data.total_delivery_fee + order_data.total_service_fee
     db.commit()
 
-    amount_cents = int((total_price + delivery_fee + service_fee) * 100)
-    commission_rate = get_commission_rate(restaurant.plan, use_own_delivery=restaurant.use_own_delivery or False)
-    # Comissão aplicada apenas sobre o valor dos produtos (total_price)
-    commission_on_products = int(total_price * 100 * commission_rate)
-    # Se o restaurante usa entrega própria, a taxa de entrega vai para o restaurante (não para a plataforma)
-    # Caso contrário, a plataforma retém: comissão dos produtos + 100% da taxa de entrega + 100% da taxa de serviço
-    if restaurant.use_own_delivery:
-        platform_fee = commission_on_products + int(service_fee * 100)
-        print(f"🚚 use_own_delivery=True → delivery_fee ({delivery_fee} €) vai para o restaurante. platform_fee={platform_fee / 100:.2f} €")
-    else:
-        platform_fee = commission_on_products + int(delivery_fee * 100) + int(service_fee * 100)
-        print(f"📦 use_own_delivery=False → delivery_fee ({delivery_fee} €) vai para a plataforma. platform_fee={platform_fee / 100:.2f} €")
-    # Tenta cobrança automática apenas se houver cartão salvo válido
-    if (order_data.save_payment_method and
-        existing_saved_method is not None and
-        existing_saved_method.stripe_customer_id and
-        restaurant is not None):
-        auto_payment_result = _try_automatic_payment_with_saved_card(
-            db=db,
-            new_order=new_order,
-            saved_method=existing_saved_method,
-            restaurant=restaurant,
-            amount_cents=amount_cents,
-            platform_fee=platform_fee,
-        )
-        if auto_payment_result:
-            return auto_payment_result
+    # ── 4. Pagamento Stripe ────────────────────────────────────────────────
+    amount_cents = int(new_master_order.total * 100)
+    
+    # ⚠️ NOTA: Stripe Checkout só suporta 1 destino em transfer_data.
+    # Em pedidos multi-restaurante, o dinheiro cai na conta da PLATAFORMA
+    # e deve ser distribuído via Transfer API no webhook após o sucesso.
+    
+    is_multi_restaurant = len(order_data.sub_orders) > 1
+    
+    payment_intent_data = {}
+    if not is_multi_restaurant and first_restaurant and first_restaurant.stripe_account_id:
+        # Se for apenas 1 restaurante, mantemos a lógica de repasse direto
+        commission_rate = get_commission_rate(first_restaurant.plan, use_own_delivery=first_restaurant.use_own_delivery)
+        platform_fee = int((total_products_price * commission_rate + order_data.total_service_fee) * 100)
+        
+        if not first_restaurant.use_own_delivery:
+            platform_fee += int(order_data.total_delivery_fee * 100)
 
-    try:
-        payment_intent_data: Dict[str, Any] = {
+        payment_intent_data = {
             "application_fee_amount": platform_fee,
-            "transfer_data": {"destination": restaurant.stripe_account_id},
+            "transfer_data": {"destination": first_restaurant.stripe_account_id},
         }
 
+    try:
         if order_data.save_payment_method:
             payment_intent_data["setup_future_usage"] = "off_session"
 
@@ -350,19 +349,20 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
             "line_items": [{
                 "price_data": {
                     "currency": "eur",
-                    "product_data": {"name": f"Pedido para {restaurant.name}"},
+                    "product_data": {"name": f"Pedido Koma - {len(order_data.sub_orders)} restaurante(s)"},
                     "unit_amount": amount_cents,
                 },
                 "quantity": 1,
             }],
             "mode": "payment",
-            "success_url": f"https://api.leiriaeats.com/payment-success?order_id={new_order.id}",
+            "success_url": f"https://api.leiriaeats.com/payment-success?order_id={new_master_order.id}",
             "cancel_url": "http://localhost/cancel",
             "payment_intent_data": payment_intent_data,
             "metadata": {
-                "order_id": str(new_order.id),
+                "order_id": str(new_master_order.id),
+                "master_gid": master_order_gid,
                 "user_id": order_data.user_id,
-                "save_payment_method": str(order_data.save_payment_method).lower(),
+                "is_multi_restaurant": str(is_multi_restaurant).lower(),
             }
         }
 
@@ -371,76 +371,79 @@ def initiate_order_and_create_checkout_session(order_data: OrderCreate, db: Sess
 
         checkout_session = stripe.checkout.Session.create(**checkout_payload)
 
-        new_order.checkout_session_id = checkout_session.id
+        new_master_order.checkout_session_id = checkout_session.id
         db.commit()
 
         return {
             "url": checkout_session.url,
             "auto_paid": False,
-            "order_id": new_order.id,
+            "order_id": new_master_order.id,
+            "gid": master_order_gid
         }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
 @router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     print(f"👤 Buscando histórico de: {user_id}")
 
     from sqlalchemy.orm import joinedload
-    orders_query = db.query(OrderDB).options(joinedload(OrderDB.restaurant)).filter_by(
-        user_id=user_id
-    ).order_by(OrderDB.id.desc()).all()
+    master_orders = db.query(OrderDB).options(
+        joinedload(OrderDB.sub_orders).joinedload(SubOrderDB.items),
+        joinedload(OrderDB.sub_orders).joinedload(SubOrderDB.restaurant)
+    ).filter(OrderDB.user_id == user_id).order_by(OrderDB.id.desc()).all()
 
-    # Popula os campos do driver manualmente
     result = []
-    for order in orders_query:
-        order_dict = {
-            "id": order.id,
-            "customer_name": order.customer_name,
-            "delivery_address": order.delivery_address,
-            "total": order.total,
-            "status": order.status,
-            "restaurant_gid": order.restaurant_gid,
-            "restaurant_name": order.restaurant_name,
-            "restaurant_category": order.restaurant_category,
-            "restaurant_image_url": order.restaurant_image_url,
-            "tracking_code": order.tracking_code,
-            "delivery_type": order.delivery_type,
-            "base_time": order.base_time,
-            "delivery_latitude": order.delivery_latitude,
-            "delivery_longitude": order.delivery_longitude,
-            "restaurant_latitude": order.restaurant_latitude,
-            "restaurant_longitude": order.restaurant_longitude,
-            "delivery_fee": order.delivery_fee,
-            "service_fee": order.service_fee,
-            "items": order.items,
-            "driver_name": None,
-            "driver_phone": None,
-            "vehicle_type": None,
-            "vehicle_model": None,
-            "vehicle_plate": None,
-            "vehicle_color": None,
-        }
-        
-        # Se o pedido tem um driver atribuído, busca as informações do veículo
-        if order.driver_id:
-            driver = db.query(DriverDB).filter(DriverDB.id == order.driver_id).first()
-            if driver:
-                order_dict["driver_name"] = driver.name
-                order_dict["driver_phone"] = driver.phone
-                order_dict["vehicle_type"] = driver.vehicle_type
-                order_dict["vehicle_model"] = driver.vehicle_model
-                order_dict["vehicle_plate"] = driver.vehicle_plate
-                order_dict["vehicle_color"] = driver.vehicle_color
-        
-        result.append(OrderResponse(**order_dict))
+    for order in master_orders:
+        sub_orders_resp = []
+        for sub in order.sub_orders:
+            items_resp = [
+                OrderItemResponse(
+                    product_name=item.product_name,
+                    quantity=item.quantity,
+                    description=item.description,
+                    image_url=item.image_url,
+                    price=item.price,
+                    observation=item.observation
+                ) for item in sub.items
+            ]
+            
+            sub_orders_resp.append(SubOrderResponse(
+                id=sub.id,
+                gid=sub.gid,
+                restaurant_gid=sub.restaurant_gid,
+                restaurant_name=sub.restaurant_name,
+                restaurant_category=sub.restaurant_category,
+                restaurant_image_url=sub.restaurant_image_url,
+                status=sub.status,
+                total=sub.total,
+                delivery_fee=sub.delivery_fee,
+                base_time=sub.base_time,
+                driver_name=sub.driver_name,
+                # Outros campos do driver podem ser buscados se necessário
+                items=items_resp
+            ))
+
+        result.append(OrderResponse(
+            id=order.id,
+            gid=order.gid if order.gid else "",
+            customer_name=order.customer_name,
+            delivery_address=order.delivery_address,
+            total=order.total,
+            status=order.status,
+            tracking_code=order.tracking_code,
+            delivery_type=order.delivery_type,
+            delivery_latitude=order.delivery_latitude,
+            delivery_longitude=order.delivery_longitude,
+            total_delivery_fee=order.total_delivery_fee,
+            total_service_fee=order.total_service_fee,
+            sub_orders=sub_orders_resp
+        ))
 
     return result
 
 
-@router.get("/orders/{gid}", response_model=List[OrderResponse])
+@router.get("/orders/{gid}", response_model=List[SubOrderResponse])
 def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
     print(f"🔎 Buscando pedidos para o Restaurante GID {gid}")
 
@@ -449,54 +452,38 @@ def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
     from sqlalchemy.orm import joinedload
-    # Busca no banco filtrando pelo ID do restaurante, com join no driver
-    orders_query = db.query(OrderDB).options(joinedload(OrderDB.restaurant)).filter(
-        OrderDB.restaurant_id == restaurant.id
-    ).order_by(OrderDB.id.desc()).all()
+    # Busca apenas os sub-pedidos deste restaurante
+    sub_orders = db.query(SubOrderDB).options(
+        joinedload(SubOrderDB.items)
+    ).filter(SubOrderDB.restaurant_id == restaurant.id).order_by(SubOrderDB.id.desc()).all()
 
-    # Popula os campos do driver manualmente
     result = []
-    for order in orders_query:
-        order_dict = {
-            "id": order.id,
-            "customer_name": order.customer_name,
-            "delivery_address": order.delivery_address,
-            "total": order.total,
-            "status": order.status,
-            "restaurant_gid": order.restaurant_gid,
-            "restaurant_name": order.restaurant_name,
-            "restaurant_category": order.restaurant_category,
-            "restaurant_image_url": order.restaurant_image_url,
-            "tracking_code": order.tracking_code,
-            "delivery_type": order.delivery_type,
-            "base_time": order.base_time,
-            "delivery_latitude": order.delivery_latitude,
-            "delivery_longitude": order.delivery_longitude,
-            "restaurant_latitude": order.restaurant_latitude,
-            "restaurant_longitude": order.restaurant_longitude,
-            "delivery_fee": order.delivery_fee,
-            "service_fee": order.service_fee,
-            "items": order.items,
-            "driver_name": None,
-            "driver_phone": None,
-            "vehicle_type": None,
-            "vehicle_model": None,
-            "vehicle_plate": None,
-            "vehicle_color": None,
-        }
+    for sub in sub_orders:
+        items_resp = [
+            OrderItemResponse(
+                product_name=item.product_name,
+                quantity=item.quantity,
+                description=item.description,
+                image_url=item.image_url,
+                price=item.price,
+                observation=item.observation
+            ) for item in sub.items
+        ]
         
-        # Se o pedido tem um driver atribuído, busca as informações do veículo
-        if order.driver_id:
-            driver = db.query(DriverDB).filter(DriverDB.id == order.driver_id).first()
-            if driver:
-                order_dict["driver_name"] = driver.name
-                order_dict["driver_phone"] = driver.phone
-                order_dict["vehicle_type"] = driver.vehicle_type
-                order_dict["vehicle_model"] = driver.vehicle_model
-                order_dict["vehicle_plate"] = driver.vehicle_plate
-                order_dict["vehicle_color"] = driver.vehicle_color
-        
-        result.append(OrderResponse(**order_dict))
+        result.append(SubOrderResponse(
+            id=sub.id,
+            gid=sub.gid,
+            restaurant_gid=gid,
+            restaurant_name=sub.restaurant_name,
+            restaurant_category=sub.restaurant_category,
+            restaurant_image_url=sub.restaurant_image_url,
+            status=sub.status,
+            total=sub.total,
+            delivery_fee=sub.delivery_fee,
+            base_time=sub.base_time,
+            driver_name=sub.driver_name,
+            items=items_resp
+        ))
 
     return result
 

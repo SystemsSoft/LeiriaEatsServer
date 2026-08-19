@@ -56,31 +56,37 @@ class RestaurantCreate(BaseModel):
     rating: float = 5.0
 
 # --- MODELOS DE PEDIDO (ORDER) ---
-class OrderItemCreate(BaseModel):
+class OrderItemRequest(BaseModel):
     product_gid: str
     quantity: int
     observation: Optional[str] = None
 
-class OrderCreate(BaseModel):
+class SubOrderRequest(BaseModel):
+    gid: str = ""
+    order_gid: str = ""
+    restaurant_gid: str
+    restaurant_name: str
+    restaurant_image_url: Optional[str] = None
+    restaurant_category: str
+    items: List[OrderItemRequest]
+    delivery_fee: float = 0.0
+    base_time: int = 0
+
+class OrderRequest(BaseModel):
+    gid: str = ""
     user_id: str
     user_name: str
     user_address: str
     user_phone: str
-    delivery_latitude:  Optional[float] = None   # coordenadas do endereço de entrega
-    delivery_longitude: Optional[float] = None
-    restaurant_gid: str
-    restaurant_name: str
-    restaurant_category: str
-    restaurant_image_url: Optional[str] = None
-    payment_intent_id: Optional[str] = None
     save_payment_method: bool = False
     search_query: str = ""
     tracking_code: str = ""
-    delivery_type: Optional[str] = None
-    base_time: int = 0        # opcional — restaurante define depois via PATCH
-    delivery_fee: Optional[float] = 0.0   # taxa de entrega
-    service_fee: Optional[float] = 0.0    # taxa de serviço
-    items: List[OrderItemCreate]
+    delivery_type: str = ""
+    delivery_latitude: Optional[float] = None
+    delivery_longitude: Optional[float] = None
+    total_delivery_fee: float = 0.0
+    total_service_fee: float = 0.0
+    sub_orders: List[SubOrderRequest] = []
 
 
 class OrderItemResponse(BaseModel):
@@ -95,25 +101,17 @@ class OrderItemResponse(BaseModel):
         from_attributes = True
 
 
-class OrderResponse(BaseModel):
+class SubOrderResponse(BaseModel):
     id: int
-    customer_name: str
-    delivery_address: str
-    total: float
-    status: str
-    restaurant_gid: Optional[str] = ""
+    gid: str
+    restaurant_gid: str
     restaurant_name: str
     restaurant_category: str
     restaurant_image_url: Optional[str] = None
-    tracking_code: Optional[str] = ""
-    delivery_type: Optional[str] = ""
-    base_time: Optional[int] = None
-    delivery_latitude: Optional[float] = None
-    delivery_longitude: Optional[float] = None
-    restaurant_latitude: Optional[float] = None
-    restaurant_longitude: Optional[float] = None
-    delivery_fee: Optional[float] = 0.0
-    service_fee: Optional[float] = 0.0
+    status: str
+    total: float
+    delivery_fee: float
+    base_time: int
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     vehicle_type: Optional[str] = None
@@ -121,6 +119,24 @@ class OrderResponse(BaseModel):
     vehicle_plate: Optional[str] = None
     vehicle_color: Optional[str] = None
     items: List[OrderItemResponse]
+
+    class Config:
+        from_attributes = True
+
+class OrderResponse(BaseModel):
+    id: int
+    gid: str
+    customer_name: str
+    delivery_address: str
+    total: float
+    status: str
+    tracking_code: Optional[str] = ""
+    delivery_type: Optional[str] = ""
+    delivery_latitude: Optional[float] = None
+    delivery_longitude: Optional[float] = None
+    total_delivery_fee: float = 0.0
+    total_service_fee: float = 0.0
+    sub_orders: List[SubOrderResponse] = []
 
     class Config:
         from_attributes = True

@@ -102,56 +102,67 @@ class OrderDB(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
+    gid = Column(String(255), nullable=True, unique=True) # Master Order GID
     customer_name = Column(String(255))
     delivery_address = Column(String(500))
     status = Column(String(50), default="Pendente")
     total = Column(Float)
-    restaurant_id = Column(Integer, ForeignKey("restaurants.id"))
     user_id = Column(String(255))
-    restaurant_name = Column(String(255))
     payment_intent_id = Column(String(255), nullable=True)
     checkout_session_id = Column(String(255), nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
-    restaurant_category = Column(String(100))
-    restaurant_image_url = Column(String(500))
     tracking_code = Column(String(100), nullable=True, default="")
     delivery_type = Column(String(50), nullable=True)
-    base_time = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
-    # ── Estafeta atribuído automaticamente pelo worker ──────────
-    driver_id   = Column(Integer, ForeignKey("drivers.id"), nullable=True)
-    driver_name = Column(String(255), nullable=True)
-
-    # ── Coordenadas do endereço de entrega (preenchidas na criação) ─────────
+    # ── Coordenadas do endereço de entrega ─────────
     delivery_latitude  = Column(Float, nullable=True)
     delivery_longitude = Column(Float, nullable=True)
 
-    # ── Coordenadas do restaurante (copiadas na criação para evitar JOIN) ───
+    # ── Taxas Totais ─────────────────────────────────────────────────────────
+    total_delivery_fee = Column(Float, nullable=True, default=0.0)
+    total_service_fee  = Column(Float, nullable=True, default=0.0)
+
+    sub_orders = relationship("SubOrderDB", back_populates="master_order", cascade="all, delete-orphan", foreign_keys="SubOrderDB.master_order_gid", primaryjoin="OrderDB.gid == SubOrderDB.master_order_gid")
+
+
+class SubOrderDB(Base):
+    __tablename__ = "sub_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gid = Column(String(255), nullable=True, unique=True)
+    master_order_gid = Column(String(255), ForeignKey("orders.gid"), nullable=False)
+    
+    restaurant_gid = Column(String(255), ForeignKey("restaurants.gid"))
+    restaurant_name = Column(String(255))
+    restaurant_category = Column(String(100))
+    restaurant_image_url = Column(String(500))
+    
+    status = Column(String(50), default="Pendente")
+    total = Column(Float)
+    delivery_fee = Column(Float, default=0.0)
+    base_time = Column(Integer, default=0)
+    
+    # ── Estafeta atribuído (específico por sub-pedido/restaurante) ──────────
+    driver_id   = Column(Integer, ForeignKey("drivers.id"), nullable=True)
+    driver_name = Column(String(255), nullable=True)
+    driver_delivery_fee = Column(Float, nullable=True, default=None)
+    driver_payment_transfer_id = Column(String(255), nullable=True, default=None)
+
+    # ── Coordenadas do restaurante ───
     restaurant_latitude  = Column(Float, nullable=True)
     restaurant_longitude = Column(Float, nullable=True)
 
-    # ── Taxas ────────────────────────────────────────────────────────────────
-    delivery_fee              = Column(Float,        nullable=True, default=0.0)
-    service_fee               = Column(Float,        nullable=True, default=0.0)
-    driver_delivery_fee       = Column(Float,        nullable=True, default=None)  # valor a pagar ao estafeta
-    driver_payment_transfer_id = Column(String(255), nullable=True, default=None)  # ID do Transfer Stripe ao estafeta
-
-    restaurant = relationship("RestaurantDB")
-    items = relationship("OrderItemDB", back_populates="order")
-
-    @property
-    def restaurant_gid(self) -> str:
-        if self.restaurant and self.restaurant.gid:
-            return self.restaurant.gid
-        return ""
+    master_order = relationship("OrderDB", back_populates="sub_orders", foreign_keys=[master_order_gid], primaryjoin="SubOrderDB.master_order_gid == OrderDB.gid")
+    restaurant = relationship("RestaurantDB", foreign_keys=[restaurant_gid], primaryjoin="SubOrderDB.restaurant_gid == RestaurantDB.gid")
+    items = relationship("OrderItemDB", back_populates="sub_order", cascade="all, delete-orphan", foreign_keys="OrderItemDB.sub_order_gid", primaryjoin="SubOrderDB.gid == OrderItemDB.sub_order_gid")
 
 
 class OrderItemDB(Base):
     __tablename__ = "order_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id"))
+    sub_order_gid = Column(String(255), ForeignKey("sub_orders.gid"))
 
     observation = Column(String(500), nullable=True)
     product_name = Column(String(255))
@@ -160,7 +171,7 @@ class OrderItemDB(Base):
     description = Column(Text)
     image_url = Column(String(500))
 
-    order = relationship("OrderDB", back_populates="items")
+    sub_order = relationship("SubOrderDB", back_populates="items", foreign_keys=[sub_order_gid], primaryjoin="OrderItemDB.sub_order_gid == SubOrderDB.gid")
 
 
 class SavedPaymentMethodDB(Base):
