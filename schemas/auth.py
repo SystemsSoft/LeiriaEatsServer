@@ -8,5 +8,6 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     authenticated: bool
     restaurant_id: int
+    gid: str
     name: str
     message: str

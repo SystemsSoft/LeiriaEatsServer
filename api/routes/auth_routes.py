@@ -27,6 +27,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         return {
             "authenticated": False,
             "restaurant_id": 0,
+            "gid": "",
             "name": "",
             "message": "Sua licença não está ATIVA. Contate o suporte."
         }
@@ -35,6 +36,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     return {
         "authenticated": True,
         "restaurant_id": user.id,
+        "gid": user.gid if user.gid else "",
         "name": user.name,
         "message": "Login realizado com sucesso"
     }
