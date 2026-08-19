@@ -600,6 +600,89 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
         }
     }
 
+
+@router.post("/orders/sub-order/{sub_id}/cancel")
+def cancel_sub_order_and_partial_refund(sub_id: int, db: Session = Depends(get_db)):
+    """
+    Cancela apenas um sub-pedido específico de um restaurante e processa o 
+    reembolso parcial proporcional ao valor desse restaurante.
+    """
+    print(f"🚫 Solicitação de cancelamento para o sub-pedido #{sub_id}")
+
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+
+    if sub.status == "Cancelado":
+        raise HTTPException(status_code=400, detail="Sub-pedido já está cancelado")
+
+    master = sub.master_order
+    if not master:
+        raise HTTPException(status_code=404, detail="Pedido principal não encontrado")
+
+    refund_id = None
+    refund_status = None
+    refund_error = None
+
+    payment_intent_id = master.payment_intent_id
+
+    # 1. Recuperar PaymentIntent se necessário (fallback via session)
+    if not payment_intent_id and master.checkout_session_id:
+        try:
+            session = stripe.checkout.Session.retrieve(master.checkout_session_id)
+            if session.payment_intent:
+                payment_intent_id = session.payment_intent
+                master.payment_intent_id = payment_intent_id
+                db.commit()
+        except Exception: pass
+
+    # 2. Processar reembolso parcial no Stripe
+    if payment_intent_id:
+        try:
+            pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+            if pi.status == "succeeded":
+                # Montante a reembolsar (total do sub-pedido em cêntimos)
+                refund_amount = int(sub.total * 100)
+                
+                refund = stripe.Refund.create(
+                    payment_intent=payment_intent_id,
+                    amount=refund_amount,
+                    reason="requested_by_customer",
+                    reverse_transfer=True, # Reverte repasse ao restaurante se houver
+                    refund_application_fee=True,
+                    metadata={"sub_order_id": str(sub_id), "master_order_id": str(master.id)},
+                )
+                refund_id = refund.id
+                refund_status = refund.status
+                print(f"✅ Reembolso parcial criado! Valor: {sub.total} €, ID: {refund_id}")
+
+        except stripe.error.StripeError as e:
+            print(f"❌ Erro ao processar reembolso parcial: {str(e)}")
+            refund_error = str(e)
+
+    # 3. Atualizar status na base de dados
+    sub.status = "Cancelado"
+    
+    # 4. Verificar se TODOS os sub-pedidos da master foram cancelados
+    all_cancelled = all(s.status == "Cancelado" for s in master.sub_orders)
+    if all_cancelled:
+        master.status = "Cancelado"
+        print(f"ℹ️ Todos os sub-pedidos do Master #{master.id} foram cancelados. Master atualizado.")
+    
+    db.commit()
+
+    return {
+        "message": "Sub-pedido cancelado com sucesso",
+        "sub_order_id": sub_id,
+        "master_status": master.status,
+        "refund": {
+            "amount": sub.total,
+            "processed": refund_id is not None,
+            "refund_id": refund_id,
+            "error": refund_error
+        }
+    }
+
 @router.patch("/orders/{order_id}/base_time")
 def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)):
     order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
@@ -654,26 +737,40 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
 
     if status_data.status == "Cancelado":
-        if order.payment_intent_id and order.status != "Cancelado":
-            try:
-                print(f"💸 Iniciando estorno na Stripe para: {order.payment_intent_id}")
-                stripe.Refund.create(
-                    payment_intent=order.payment_intent_id,
-                )
-                print("✅ Estorno realizado com sucesso na Stripe!")
-            except stripe.error.StripeError as e:
-                print(f"❌ Erro ao estornar: {e}")
-                raise HTTPException(status_code=400, detail=f"Erro ao processar reembolso: {str(e)}")
+        # Se cancelar o master, usa a lógica de cancelamento total
+        return cancel_order_and_refund(order_id, db)
 
     order.status = status_data.status
-    # Propaga status para as sub-orders apenas se for uma mudança global (ex: Cancelado)
-    if status_data.status == "Cancelado":
-        for sub in order.sub_orders:
-            sub.status = "Cancelado"
-            
     db.commit()
 
-    return {"message": "Status atualizado", "status": order.status, "driver_name": order.driver_name, "tracking_code": order.tracking_code}
+    return {"message": "Status atualizado", "status": order.status, "driver_name": None, "tracking_code": order.tracking_code}
+
+
+@router.put("/orders/sub-order/{sub_id}/status", response_model=OrderStatusResponse)
+def update_sub_order_status(sub_id: int, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
+    """
+    Atualiza o status de um sub-pedido específico (usado pelo restaurante).
+    """
+    print(f"🔄 Atualizando sub-pedido #{sub_id} para: {status_data.status}")
+
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+
+    if status_data.status == "Cancelado":
+        # Se o restaurante cancela, usa a lógica de reembolso parcial
+        res = cancel_sub_order_and_partial_refund(sub_id, db)
+        return {"message": res["message"], "status": "Cancelado", "driver_name": sub.driver_name}
+
+    sub.status = status_data.status
+    
+    # Lógica simples de propagação reversa: 
+    # Se algum sub-pedido está "A caminho", o Master pode ficar "A caminho" etc.
+    # Por agora, mantemos independente para não confundir o cliente.
+    
+    db.commit()
+
+    return {"message": "Status do sub-pedido atualizado", "status": sub.status, "driver_name": sub.driver_name}
 
 
 @router.post("/stripe-webhook")
