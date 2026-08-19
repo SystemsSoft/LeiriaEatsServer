@@ -187,6 +187,8 @@ def _try_automatic_payment_with_saved_card(
         new_order.payment_intent_id = payment_intent.id
         new_order.stripe_customer_id = saved_method.stripe_customer_id
         new_order.status = "Pendente"
+        for sub in new_order.sub_orders:
+            sub.status = "Pendente"
         db.commit()
 
         return {
@@ -582,6 +584,8 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
         print(f"ℹ️ Pedido #{order_id} sem PaymentIntent associado — sem reembolso a processar")
 
     order.status = "Cancelado"
+    for sub in order.sub_orders:
+        sub.status = "Cancelado"
     db.commit()
 
     return {
@@ -662,6 +666,11 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
                 raise HTTPException(status_code=400, detail=f"Erro ao processar reembolso: {str(e)}")
 
     order.status = status_data.status
+    # Propaga status para as sub-orders apenas se for uma mudança global (ex: Cancelado)
+    if status_data.status == "Cancelado":
+        for sub in order.sub_orders:
+            sub.status = "Cancelado"
+            
     db.commit()
 
     return {"message": "Status atualizado", "status": order.status, "driver_name": order.driver_name, "tracking_code": order.tracking_code}
@@ -720,7 +729,10 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
 
                     if db_order.status == "PENDING_PAYMENT":
                         db_order.status = "Pendente"
-                        print(f"✅ Status atualizado para: Pendente")
+                        # Propaga o status para as sub-orders
+                        for sub in db_order.sub_orders:
+                            sub.status = "Pendente"
+                        print(f"✅ Status atualizado para: Pendente (Master + {len(db_order.sub_orders)} Sub-orders)")
                 else:
                     print(f"❌ Pedido {order_id} não encontrado no banco!")
 
@@ -1029,8 +1041,10 @@ def check_order_payment_status(order_id: int, db: Session = Depends(get_db)):
             if pi.status == "succeeded":
                 # Pagamento confirmado → atualiza para Pendente
                 order.status = "Pendente"
+                for sub in order.sub_orders:
+                    sub.status = "Pendente"
                 db.commit()
-                print(f"✅ Pedido #{order_id} atualizado: PENDING_PAYMENT → Pendente")
+                print(f"✅ Pedido #{order_id} atualizado: PENDING_PAYMENT → Pendente (com sub-orders)")
 
                 return {
                     "order_id": order_id,
