@@ -109,7 +109,7 @@ class CompanyResponse(BaseModel):
     plan: Optional[str] = None
     use_own_delivery: bool = False
     status: str = "PENDING"  # PENDING | STRIPE_PENDING | ACTIVE | INACTIVE
-    gid: Optional[str] = None
+    gid: Optional[str] = ""
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 

@@ -93,7 +93,9 @@ class ProductDB(Base):
 
     @property
     def restaurant_gid(self) -> str:
-        return self.restaurant.gid if self.restaurant else ""
+        if self.restaurant and self.restaurant.gid:
+            return self.restaurant.gid
+        return ""
 
 
 class OrderDB(Base):
@@ -140,7 +142,9 @@ class OrderDB(Base):
 
     @property
     def restaurant_gid(self) -> str:
-        return self.restaurant.gid if self.restaurant else ""
+        if self.restaurant and self.restaurant.gid:
+            return self.restaurant.gid
+        return ""
 
 
 class OrderItemDB(Base):
