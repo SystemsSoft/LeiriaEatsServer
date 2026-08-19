@@ -387,107 +387,119 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
         raise HTTPException(status_code=400, detail=str(e))
 @router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
-    print(f"👤 Buscando histórico de: {user_id}")
+    try:
+        print(f"👤 Buscando histórico de: {user_id}")
 
-    from sqlalchemy.orm import joinedload
-    master_orders = db.query(OrderDB).options(
-        joinedload(OrderDB.sub_orders).joinedload(SubOrderDB.items),
-        joinedload(OrderDB.sub_orders).joinedload(SubOrderDB.restaurant)
-    ).filter(OrderDB.user_id == user_id).order_by(OrderDB.id.desc()).all()
+        from sqlalchemy.orm import joinedload
+        master_orders = db.query(OrderDB).options(
+            joinedload(OrderDB.sub_orders).joinedload(SubOrderDB.items),
+            joinedload(OrderDB.sub_orders).joinedload(SubOrderDB.restaurant)
+        ).filter(OrderDB.user_id == user_id).order_by(OrderDB.id.desc()).all()
 
-    result = []
-    for order in master_orders:
-        sub_orders_resp = []
-        for sub in order.sub_orders:
-            items_resp = [
-                OrderItemResponse(
-                    product_name=item.product_name,
-                    quantity=item.quantity,
-                    description=item.description,
-                    image_url=item.image_url,
-                    price=item.price,
-                    observation=item.observation
-                ) for item in sub.items
-            ]
-            
-            sub_orders_resp.append(SubOrderResponse(
-                id=sub.id,
-                gid=sub.gid,
-                restaurant_gid=sub.restaurant_gid,
-                restaurant_name=sub.restaurant_name,
-                restaurant_category=sub.restaurant_category,
-                restaurant_image_url=sub.restaurant_image_url,
-                status=sub.status,
-                total=sub.total,
-                delivery_fee=sub.delivery_fee,
-                base_time=sub.base_time,
-                driver_name=sub.driver_name,
-                # Outros campos do driver podem ser buscados se necessário
-                items=items_resp
+        result = []
+        for order in master_orders:
+            sub_orders_resp = []
+            for sub in order.sub_orders:
+                items_resp = [
+                    OrderItemResponse(
+                        product_name=item.product_name if item.product_name else "Produto",
+                        quantity=item.quantity if item.quantity else 1,
+                        description=item.description,
+                        image_url=item.image_url,
+                        price=item.price if item.price else 0.0,
+                        observation=item.observation
+                    ) for item in sub.items
+                ]
+                
+                sub_orders_resp.append(SubOrderResponse(
+                    id=sub.id,
+                    gid=sub.gid if sub.gid else "",
+                    restaurant_gid=sub.restaurant_gid if sub.restaurant_gid else "",
+                    restaurant_name=sub.restaurant_name if sub.restaurant_name else "",
+                    restaurant_category=sub.restaurant_category if sub.restaurant_category else "",
+                    restaurant_image_url=sub.restaurant_image_url,
+                    status=sub.status,
+                    total=sub.total if sub.total else 0.0,
+                    delivery_fee=sub.delivery_fee if sub.delivery_fee else 0.0,
+                    base_time=sub.base_time if sub.base_time else 0,
+                    driver_name=sub.driver_name,
+                    # Outros campos do driver podem ser buscados se necessário
+                    items=items_resp
+                ))
+
+            result.append(OrderResponse(
+                id=order.id,
+                gid=order.gid if order.gid else "",
+                customer_name=order.customer_name,
+                delivery_address=order.delivery_address,
+                total=order.total,
+                status=order.status,
+                tracking_code=order.tracking_code,
+                delivery_type=order.delivery_type,
+                delivery_latitude=order.delivery_latitude,
+                delivery_longitude=order.delivery_longitude,
+                total_delivery_fee=order.total_delivery_fee,
+                total_service_fee=order.total_service_fee,
+                sub_orders=sub_orders_resp
             ))
 
-        result.append(OrderResponse(
-            id=order.id,
-            gid=order.gid if order.gid else "",
-            customer_name=order.customer_name,
-            delivery_address=order.delivery_address,
-            total=order.total,
-            status=order.status,
-            tracking_code=order.tracking_code,
-            delivery_type=order.delivery_type,
-            delivery_latitude=order.delivery_latitude,
-            delivery_longitude=order.delivery_longitude,
-            total_delivery_fee=order.total_delivery_fee,
-            total_service_fee=order.total_service_fee,
-            sub_orders=sub_orders_resp
-        ))
-
-    return result
+        return result
+    except Exception as e:
+        print(f"❌ Erro em get_customer_orders: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/orders/{gid}", response_model=List[SubOrderResponse])
 def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
-    print(f"🔎 Buscando pedidos para o Restaurante GID {gid}")
+    try:
+        print(f"🔎 Buscando pedidos para o Restaurante GID {gid}")
 
-    restaurant = RestaurantRepository.get_by_gid(db, gid)
-    if not restaurant:
-        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+        restaurant = RestaurantRepository.get_by_gid(db, gid)
+        if not restaurant:
+            raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
-    from sqlalchemy.orm import joinedload
-    # Busca apenas os sub-pedidos deste restaurante
-    sub_orders = db.query(SubOrderDB).options(
-        joinedload(SubOrderDB.items)
-    ).filter(SubOrderDB.restaurant_id == restaurant.id).order_by(SubOrderDB.id.desc()).all()
+        from sqlalchemy.orm import joinedload
+        # Busca apenas os sub-pedidos deste restaurante
+        sub_orders = db.query(SubOrderDB).options(
+            joinedload(SubOrderDB.items)
+        ).filter(SubOrderDB.restaurant_gid == gid).order_by(SubOrderDB.id.desc()).all()
 
-    result = []
-    for sub in sub_orders:
-        items_resp = [
-            OrderItemResponse(
-                product_name=item.product_name,
-                quantity=item.quantity,
-                description=item.description,
-                image_url=item.image_url,
-                price=item.price,
-                observation=item.observation
-            ) for item in sub.items
-        ]
-        
-        result.append(SubOrderResponse(
-            id=sub.id,
-            gid=sub.gid,
-            restaurant_gid=gid,
-            restaurant_name=sub.restaurant_name,
-            restaurant_category=sub.restaurant_category,
-            restaurant_image_url=sub.restaurant_image_url,
-            status=sub.status,
-            total=sub.total,
-            delivery_fee=sub.delivery_fee,
-            base_time=sub.base_time,
-            driver_name=sub.driver_name,
-            items=items_resp
-        ))
+        result = []
+        for sub in sub_orders:
+            items_resp = [
+                OrderItemResponse(
+                    product_name=item.product_name if item.product_name else "Produto",
+                    quantity=item.quantity if item.quantity else 1,
+                    description=item.description,
+                    image_url=item.image_url,
+                    price=item.price if item.price else 0.0,
+                    observation=item.observation
+                ) for item in sub.items
+            ]
+            
+            result.append(SubOrderResponse(
+                id=sub.id,
+                gid=sub.gid if sub.gid else "",
+                restaurant_gid=gid,
+                restaurant_name=sub.restaurant_name if sub.restaurant_name else "",
+                restaurant_category=sub.restaurant_category if sub.restaurant_category else "",
+                restaurant_image_url=sub.restaurant_image_url,
+                status=sub.status,
+                total=sub.total if sub.total else 0.0,
+                delivery_fee=sub.delivery_fee if sub.delivery_fee else 0.0,
+                base_time=sub.base_time if sub.base_time else 0,
+                driver_name=sub.driver_name,
+                items=items_resp
+            ))
 
-    return result
+        return result
+    except Exception as e:
+        print(f"❌ Erro em get_restaurant_orders: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/orders/{order_id}/cancel")
@@ -1414,8 +1426,11 @@ def submit_order_ratings(payload: RatingRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
 
     restaurant = RestaurantRepository.get_by_gid(db, payload.restaurant_gid)
-    if not restaurant or order.restaurant_id != restaurant.id:
-        raise HTTPException(status_code=400, detail="restaurant_gid não corresponde ao pedido")
+    # Verifica se este restaurante faz parte do pedido Master através de uma Sub-Order
+    is_part_of_order = any(sub.restaurant_gid == payload.restaurant_gid for sub in order.sub_orders)
+    
+    if not restaurant or not is_part_of_order:
+        raise HTTPException(status_code=400, detail="restaurant_gid não corresponde a nenhum sub-pedido desta encomenda")
 
     saved_ratings = []
     for item in payload.ratings:

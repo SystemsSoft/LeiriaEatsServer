@@ -92,8 +92,8 @@ class OrderRequest(BaseModel):
 class OrderItemResponse(BaseModel):
     product_name: str
     quantity: int
-    description: str
-    image_url: str
+    description: Optional[str] = None
+    image_url: Optional[str] = None
     price: float
     observation: Optional[str] = None
 

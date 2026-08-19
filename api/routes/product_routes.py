@@ -76,7 +76,6 @@ def get_products_by_restaurant(gid: str, db: Session = Depends(get_db)):
 
     for product in products:
         product.rating = avg_ratings.get(product.id)
-        product.restaurant_gid = gid # Injetar o GID na resposta
 
     return products
 
@@ -107,7 +106,6 @@ def update_product(gid: str, product_data: ProductCreateRequest, db: Session = D
         ProductRatingDB.restaurant_id == db_product.restaurant_id
     ).scalar()
     db_product.rating = avg
-    db_product.restaurant_gid = product_data.restaurant_gid
 
     # Recarrega o cache do AIService para atualizar o produto nas buscas
     AIService.reload_data(db)
