@@ -56,28 +56,39 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
 # --- LISTAR (Onde estava o erro) ---
 @router.get("/products/restaurant/{gid}", response_model=List[ProductResponse])
 def get_products_by_restaurant(gid: str, db: Session = Depends(get_db)):
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.gid == gid).first()
-    if not restaurant:
-        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+    try:
+        print(f"🔎 Buscando produtos para restaurante GID: {gid}")
+        restaurant = db.query(RestaurantDB).filter(RestaurantDB.gid == gid).first()
+        if not restaurant:
+            raise HTTPException(status_code=404, detail="Restaurante não encontrado")
 
-    # 3. USAMOS EXPLICITAMENTE ProductDB AQUI
-    products = db.query(ProductDB).filter(ProductDB.restaurant_id == restaurant.id).all()
+        from sqlalchemy.orm import joinedload
+        # Usamos joinedload para carregar o restaurante e permitir o acesso à propriedade restaurant_gid
+        products = db.query(ProductDB).options(joinedload(ProductDB.restaurant)).filter(
+            ProductDB.restaurant_id == restaurant.id
+        ).all()
 
-    # Calcula a média de rating para cada produto, filtrado pelo restaurante
-    avg_ratings = dict(
-        db.query(
-            ProductRatingDB.product_id,
-            func.avg(ProductRatingDB.rating)
+        # Calcula a média de rating para cada produto, filtrado pelo restaurante
+        avg_ratings = dict(
+            db.query(
+                ProductRatingDB.product_id,
+                func.avg(ProductRatingDB.rating)
+            )
+            .filter(ProductRatingDB.restaurant_id == restaurant.id)
+            .group_by(ProductRatingDB.product_id)
+            .all()
         )
-        .filter(ProductRatingDB.restaurant_id == restaurant.id)
-        .group_by(ProductRatingDB.product_id)
-        .all()
-    )
 
-    for product in products:
-        product.rating = avg_ratings.get(product.id)
+        for product in products:
+            # Atribui o rating calculado (não persistido) para a resposta
+            product.rating = avg_ratings.get(product.id)
 
-    return products
+        return products
+    except Exception as e:
+        print(f"❌ Erro em get_products_by_restaurant: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- ATUALIZAR ---

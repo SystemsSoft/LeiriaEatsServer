@@ -248,7 +248,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
         delivery_latitude=order_data.delivery_latitude,
         delivery_longitude=order_data.delivery_longitude,
         status="PENDING_PAYMENT",
-        total=0.0, # Será calculado abaixo
+        total=0.0,  # Será calculado abaixo
         user_id=order_data.user_id,
         stripe_customer_id=stripe_customer_id,
         tracking_code=order_data.tracking_code,
@@ -385,6 +385,8 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
 def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
     try:
@@ -555,13 +557,25 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
 
             if pi.status == "succeeded":
                 # Pagamento capturado → estorna e reverte o repasse ao restaurante
-                refund = stripe.Refund.create(
-                    payment_intent=payment_intent_id,
-                    reason="requested_by_customer",
-                    reverse_transfer=True,       # reverte o repasse ao restaurante
-                    refund_application_fee=True, # devolve a comissão da plataforma
-                    metadata={"order_id": str(order_id)},
-                )
+                try:
+                    refund = stripe.Refund.create(
+                        payment_intent=payment_intent_id,
+                        reason="requested_by_customer",
+                        reverse_transfer=True,       # tenta reverter repasse automático
+                        refund_application_fee=True, # tenta devolver a comissão da plataforma
+                        metadata={"order_id": str(order_id)},
+                    )
+                except stripe.error.StripeError as e:
+                    # Se falhar por causa de transfer ou application_fee, tenta o estorno básico do valor
+                    print(f"ℹ️ Retentando estorno simplificado devido a erro: {str(e)}")
+                    refund = stripe.Refund.create(
+                        payment_intent=payment_intent_id,
+                        reason="requested_by_customer",
+                        reverse_transfer=False,
+                        refund_application_fee=False,
+                        metadata={"order_id": str(order_id)},
+                    )
+
                 refund_id = refund.id
                 refund_status = refund.status
                 print(f"✅ Reembolso criado! ID: {refund_id}, Status: {refund_status}")
@@ -613,15 +627,15 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/orders/sub-order/{sub_id}/cancel")
-def cancel_sub_order_and_partial_refund(sub_id: int, db: Session = Depends(get_db)):
+@router.post("/orders/sub-order/{gid}/cancel")
+def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db)):
     """
-    Cancela apenas um sub-pedido específico de um restaurante e processa o 
+    Cancela apenas um sub-pedido específico de um restaurante via GID e processa o 
     reembolso parcial proporcional ao valor desse restaurante.
     """
-    print(f"🚫 Solicitação de cancelamento para o sub-pedido #{sub_id}")
+    print(f"🚫 Solicitação de cancelamento para the sub-pedido GID: {gid}")
 
-    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_id).first()
+    sub = db.query(SubOrderDB).filter(SubOrderDB.gid == gid).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
 
@@ -646,7 +660,8 @@ def cancel_sub_order_and_partial_refund(sub_id: int, db: Session = Depends(get_d
                 payment_intent_id = session.payment_intent
                 master.payment_intent_id = payment_intent_id
                 db.commit()
-        except Exception: pass
+        except Exception:
+            pass
 
     # 2. Processar reembolso parcial no Stripe
     if payment_intent_id:
@@ -656,14 +671,36 @@ def cancel_sub_order_and_partial_refund(sub_id: int, db: Session = Depends(get_d
                 # Montante a reembolsar (total do sub-pedido em cêntimos)
                 refund_amount = int(sub.total * 100)
                 
-                refund = stripe.Refund.create(
-                    payment_intent=payment_intent_id,
-                    amount=refund_amount,
-                    reason="requested_by_customer",
-                    reverse_transfer=True, # Reverte repasse ao restaurante se houver
-                    refund_application_fee=True,
-                    metadata={"sub_order_id": str(sub_id), "master_order_id": str(master.id)},
-                )
+                try:
+                    refund = stripe.Refund.create(
+                        payment_intent=payment_intent_id,
+                        amount=refund_amount,
+                        reason="requested_by_customer",
+                        reverse_transfer=True, # Tenta reverter repasse automático
+                        refund_application_fee=True, # Tenta devolver comissão
+                        metadata={
+                            "sub_order_id": str(sub.id), 
+                            "sub_order_gid": gid,
+                            "master_order_id": str(master.id),
+                            "master_order_gid": master.gid
+                        },
+                    )
+                except stripe.error.StripeError as e:
+                    print(f"ℹ️ Retentando estorno parcial simplificado devido a erro: {str(e)}")
+                    refund = stripe.Refund.create(
+                        payment_intent=payment_intent_id,
+                        amount=refund_amount,
+                        reason="requested_by_customer",
+                        reverse_transfer=False,
+                        refund_application_fee=False,
+                        metadata={
+                            "sub_order_id": str(sub.id), 
+                            "sub_order_gid": gid,
+                            "master_order_id": str(master.id),
+                            "master_order_gid": master.gid
+                        },
+                    )
+
                 refund_id = refund.id
                 refund_status = refund.status
                 print(f"✅ Reembolso parcial criado! Valor: {sub.total} €, ID: {refund_id}")
@@ -685,7 +722,7 @@ def cancel_sub_order_and_partial_refund(sub_id: int, db: Session = Depends(get_d
 
     return {
         "message": "Sub-pedido cancelado com sucesso",
-        "sub_order_id": sub_id,
+        "sub_order_gid": gid,
         "master_status": master.status,
         "refund": {
             "amount": sub.total,
@@ -694,6 +731,7 @@ def cancel_sub_order_and_partial_refund(sub_id: int, db: Session = Depends(get_d
             "error": refund_error
         }
     }
+
 
 @router.patch("/orders/{order_id}/base_time")
 def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)):
@@ -758,28 +796,23 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
     return {"message": "Status atualizado", "status": order.status, "driver_name": None, "tracking_code": order.tracking_code}
 
 
-@router.put("/orders/sub-order/{sub_id}/status", response_model=OrderStatusResponse)
-def update_sub_order_status(sub_id: int, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
+@router.put("/orders/sub-order/{gid}/status", response_model=OrderStatusResponse)
+def update_sub_order_status(gid: str, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
     """
-    Atualiza o status de um sub-pedido específico (usado pelo restaurante).
+    Atualiza o status de um sub-pedido específico via GID (usado pelo restaurante).
     """
-    print(f"🔄 Atualizando sub-pedido #{sub_id} para: {status_data.status}")
+    print(f"🔄 Atualizando sub-pedido GID: {gid} para: {status_data.status}")
 
-    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_id).first()
+    sub = db.query(SubOrderDB).filter(SubOrderDB.gid == gid).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
 
     if status_data.status == "Cancelado":
         # Se o restaurante cancela, usa a lógica de reembolso parcial
-        res = cancel_sub_order_and_partial_refund(sub_id, db)
+        res = cancel_sub_order_and_partial_refund(gid, db)
         return {"message": res["message"], "status": "Cancelado", "driver_name": sub.driver_name}
 
     sub.status = status_data.status
-    
-    # Lógica simples de propagação reversa: 
-    # Se algum sub-pedido está "A caminho", o Master pode ficar "A caminho" etc.
-    # Por agora, mantemos independente para não confundir o cliente.
-    
     db.commit()
 
     return {"message": "Status do sub-pedido atualizado", "status": sub.status, "driver_name": sub.driver_name}
