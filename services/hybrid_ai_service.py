@@ -293,25 +293,51 @@ class HybridAIService:
                 clean_response = clean_response.replace(f"[[ADD_TO_CART:{m[0]}:{m[1]}]]", "")
             clean_response = ' '.join(clean_response.split()).strip()
 
-            mentioned_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+            # 🛠️ CAPTURA DE DADOS ANTES DO RESET
+            final_cart_summary = session.get_cart_summary()
+
+            # Filtrar mencionados ou retornar todos do carrinho se confirmado
+            if order_confirmed:
+                # Se confirmado, garantimos que todos os produtos do carrinho retornam no JSON
+                cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
+                mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
+            else:
+                mentioned_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+            
             session.add_message("assistant", clean_response)
             session.last_suggested_ids = [p["id"] for p in mentioned_products]
             
-            if order_confirmed: session.reset_session()
+            # 🚀 O RESET É O ÚLTIMO PASSO: 
+            if order_confirmed: 
+                session.reset_session()
+            
             SessionManager.save(session)
 
             # Enviar metadados finais
             yield {
                 "type": "final",
                 "session_id": session.session_id,
-                "cart": session.get_cart_summary(),
+                "cart": final_cart_summary,
                 "products": mentioned_products,
                 "order_confirmed": order_confirmed
             }
 
         except Exception as e:
             print(f"❌ [Stream Error]: {e}")
+            import traceback
+            traceback.print_exc()
             yield {"type": "error", "message": str(e)}
+            
+            # 🛡️ PROTEÇÃO DE DADOS: Mesmo em erro, tenta enviar o estado atual do carrinho
+            try:
+                yield {
+                    "type": "final",
+                    "session_id": session.session_id,
+                    "cart": session.get_cart_summary(),
+                    "products": [],
+                    "order_confirmed": False
+                }
+            except: pass
 
     @staticmethod
     def process_sales_chat(
@@ -598,18 +624,25 @@ class HybridAIService:
         # ⭐ NOVO: Guardar os IDs dos produtos mencionados para a PRÓXIMA mensagem
         session.last_suggested_ids = [p["id"] for p in mentioned_products]
 
-        # ⭐ NOVO: Limpar histórico e carrinho sempre que o pedido é finalizado
+        # 🛠️ CAPTURA DE DADOS ANTES DO RESET
+        final_cart_summary = session.get_cart_summary()
+
+        # Se confirmado, garantimos que todos os produtos do carrinho retornam no JSON
+        if order_confirmed:
+            cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
+            mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
+
+        # 🚀 O RESET É O ÚLTIMO PASSO: 
         if order_confirmed:
             session.reset_session()
 
-        # Salvar estado final da sessão (CRÍTICO para Redis)
         SessionManager.save(session)
 
         print(f"✅ Resposta final gerada")
         
         # 📋 LOG DO CARRINHO (JSON formatado para debug)
         print("\n--- [DEBUG] JSON DE RETORNO (CART) ---")
-        print(json.dumps(cart_summary, indent=2, ensure_ascii=False))
+        print(json.dumps(final_cart_summary, indent=2, ensure_ascii=False))
         print("--------------------------------------\n")
 
         return {
@@ -620,7 +653,7 @@ class HybridAIService:
             "ai_generated": used_ai,
             "needs_mapped": intent_info["details"],
             "session_id": session.session_id,
-            "cart": cart_summary,
+            "cart": final_cart_summary,
             "order_confirmed": order_confirmed,
             "restaurant_gid": session.restaurant_gid,
         }

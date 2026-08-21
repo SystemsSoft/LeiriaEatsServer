@@ -219,26 +219,25 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     master_order_gid = order_data.gid if order_data.gid else str(ULID())
     
     # ── 1. Cliente Stripe ──────────────────────────────────────────────────
+    # Para o SDK Nativo (PaymentSheet), precisamos SEMPRE de um Customer ID
     stripe_customer_id = None
-    existing_saved_method = None
+    
+    existing_saved_method = db.query(SavedPaymentMethodDB).filter(
+        SavedPaymentMethodDB.user_id == order_data.user_id
+    ).order_by(SavedPaymentMethodDB.id.desc()).first()
 
-    if order_data.save_payment_method:
-        existing_saved_method = db.query(SavedPaymentMethodDB).filter(
-            SavedPaymentMethodDB.user_id == order_data.user_id
-        ).order_by(SavedPaymentMethodDB.id.desc()).first()
-
-        if existing_saved_method:
-            stripe_customer_id = existing_saved_method.stripe_customer_id
-        else:
-            try:
-                customer = stripe.Customer.create(
-                    name=order_data.user_name,
-                    phone=order_data.user_phone,
-                    metadata={"user_id": order_data.user_id}
-                )
-                stripe_customer_id = customer.id
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
+    if existing_saved_method:
+        stripe_customer_id = existing_saved_method.stripe_customer_id
+    else:
+        try:
+            customer = stripe.Customer.create(
+                name=order_data.user_name,
+                phone=order_data.user_phone,
+                metadata={"user_id": order_data.user_id}
+            )
+            stripe_customer_id = customer.id
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
     # ── 2. Criar Master Order ───────────────────────────────────────────────
     new_master_order = OrderDB(
@@ -344,22 +343,19 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
         }
 
     try:
-        if order_data.save_payment_method:
-            payment_intent_data["setup_future_usage"] = "off_session"
+        # 4.1 Ephemeral Key (Para exibir cartões salvos no SDK)
+        ephemeral_key = stripe.EphemeralKey.create(
+            customer=stripe_customer_id,
+            stripe_version='2022-11-15', # Versão recomendada para o SDK
+        )
 
-        checkout_payload = {
-            "line_items": [{
-                "price_data": {
-                    "currency": "eur",
-                    "product_data": {"name": f"Pedido Koma - {len(order_data.sub_orders)} restaurante(s)"},
-                    "unit_amount": amount_cents,
-                },
-                "quantity": 1,
-            }],
-            "mode": "payment",
-            "success_url": f"https://api.leiriaeats.com/payment-success?order_id={new_master_order.id}",
-            "cancel_url": "http://localhost/cancel",
-            "payment_intent_data": payment_intent_data,
+        # 4.2 Criar PaymentIntent centralizado
+        # Incluímos as taxas de aplicação e transferência (apenas para restaurante único)
+        payment_intent_params = {
+            "amount": amount_cents,
+            "currency": "eur",
+            "customer": stripe_customer_id,
+            "automatic_payment_methods": {'enabled': True},
             "metadata": {
                 "order_id": str(new_master_order.id),
                 "master_gid": master_order_gid,
@@ -368,22 +364,31 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
             }
         }
 
-        if stripe_customer_id:
-            checkout_payload["customer"] = stripe_customer_id
+        # Adicionar taxas se houver apenas um restaurante
+        if payment_intent_data:
+            payment_intent_params.update(payment_intent_data)
+        
+        # Se o usuário quer salvar o cartão, instruímos o Stripe
+        if order_data.save_payment_method:
+            payment_intent_params["setup_future_usage"] = "off_session"
 
-        checkout_session = stripe.checkout.Session.create(**checkout_payload)
+        payment_intent = stripe.PaymentIntent.create(**payment_intent_params)
 
-        new_master_order.checkout_session_id = checkout_session.id
+        new_master_order.payment_intent_id = payment_intent.id
         db.commit()
 
         return {
-            "url": checkout_session.url,
-            "auto_paid": False,
             "order_id": new_master_order.id,
-            "gid": master_order_gid
+            "gid": master_order_gid,
+            "clientSecret": payment_intent.client_secret,
+            "customerId": stripe_customer_id,
+            "ephemeralKey": ephemeral_key.secret,
+            "publishableKey": config.settings.STRIPE_PUBLIC_KEY,
+            "auto_paid": False
         }
 
     except Exception as e:
+        print(f"❌ [Stripe SDK Error]: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 

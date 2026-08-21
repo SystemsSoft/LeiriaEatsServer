@@ -125,8 +125,9 @@ REGRAS OBRIGATÓRIAS:
    - Identifique produtos pelo GID.
    - Use OBRIGATORIAMENTE a tag [[ADD_TO_CART:GID:QUANTIDADE]] quando o cliente quiser pedir algo.
 5. Finalização:
-   - Se o cliente quiser fechar, peça confirmação.
-   - Após a confirmação, informe que irá mostrar a sacola com o resumo do pedido para validar os detalhes, taxas e confirmar o pagamento.
+   - Se o cliente quiser fechar, peça confirmação sem a tag [[CONFIRM_ORDER]].
+   - Se ele confirmar (Sim), faça o resumo e use a tag [[CONFIRM_ORDER]].
+   - Informe que irá mostrar a sacola com o resumo do pedido para validar os detalhes, taxas e confirmar o pagamento.
    - NUNCA diga que o valor atual é o "total do pedido", refira-se como "subtotal dos produtos".
 6. Seja natural, amigável e conciso (máximo 100 palavras)."""
 
@@ -155,39 +156,51 @@ REGRAS OBRIGATÓRIAS:
             yield cls._generate_fallback_response(user_message, context)
             return
 
-        # 3. Gerar stream com Gemini
-        try:
-            products = context.get("products", [])
-            history_text = context.get("history_text", "")
-            session_context = context.get("session_context", {})
+        # 3. Gerar stream com Gemini com Auto-Retry
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                products = context.get("products", [])
+                history_text = context.get("history_text", "")
+                session_context = context.get("session_context", {})
 
-            prompt = cls._build_prompt(user_message, products, context,
-                                       history_text, session_context)
+                prompt = cls._build_prompt(user_message, products, context,
+                                           history_text, session_context)
 
-            # Usar generate_content_stream
-            stream = cls._model.models.generate_content_stream(
-                model='gemini-flash-lite-latest',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=cls._system_instruction,
-                    temperature=0.7,
-                    top_p=0.9,
-                    top_k=40,
-                    max_output_tokens=250,
-                    response_modalities=['TEXT'],
+                # Usar generate_content_stream
+                stream = cls._model.models.generate_content_stream(
+                    model='gemini-flash-lite-latest',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=cls._system_instruction,
+                        temperature=0.7,
+                        top_p=0.9,
+                        top_k=40,
+                        max_output_tokens=250,
+                        response_modalities=['TEXT'],
+                    )
                 )
-            )
 
-            # Registrar uso (contamos como 1 req)
-            cls._usage_monitor.record_request()
+                # Registrar uso (contamos como 1 req)
+                cls._usage_monitor.record_request()
 
-            for chunk in stream:
-                if chunk.text:
-                    yield chunk.text
+                for chunk in stream:
+                    if chunk.text:
+                        yield chunk.text
+                
+                return # Sucesso, sai do loop de retry
 
-        except Exception as e:
-            print(f"❌ [Gemini Stream] Erro: {e}")
-            yield cls._generate_fallback_response(user_message, context)
+            except Exception as e:
+                is_unavailable = "503" in str(e) or "UNAVAILABLE" in str(e)
+                if is_unavailable and attempt < max_retries:
+                    wait_time = 1.5 * (attempt + 1)
+                    print(f"⚠️ [Gemini Stream] 503 detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                
+                print(f"❌ [Gemini Stream] Erro final após {attempt} retentativas: {e}")
+                yield cls._generate_fallback_response(user_message, context)
+                return
 
     @classmethod
     def generate_response(cls, user_message: str, context: Dict) -> str:
