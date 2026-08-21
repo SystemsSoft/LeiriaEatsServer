@@ -86,6 +86,28 @@ def chat_sales(request: ChatRequest, db: Session = Depends(get_db)):
     )
 
 
+from fastapi.responses import StreamingResponse
+import json
+
+@router.post("/chat/sales/stream")
+def chat_sales_stream(request: ChatRequest, db: Session = Depends(get_db)):
+    """
+    Chat em tempo real (Streaming) usando SSE (Server-Sent Events)
+    O texto aparece à medida que é gerado pela IA.
+    """
+    def event_generator():
+        for chunk in HybridAIService.process_sales_chat_stream(
+            user_message=request.message,
+            restaurant_gid=request.restaurant_gid,
+            db=db,
+            session_id=request.session_id
+        ):
+            # Formato standard SSE: data: <payload>\n\n
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 # Endpoint para consultar o carrinho da sessão
 @router.get("/chat/cart/{session_id}")
 def get_cart(session_id: str):

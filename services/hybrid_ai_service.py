@@ -145,6 +145,142 @@ class HybridAIService:
         }
 
     @staticmethod
+    def process_sales_chat_stream(
+        user_message: str,
+        restaurant_gid: Optional[str],
+        db: Session,
+        session_id: Optional[str] = None
+    ):
+        """Versão em STREAMING do pipeline híbrido"""
+        print(f"🌊 [Chat Stream] Mensagem recebida: '{user_message}'")
+
+        # 1. Preparação idêntica à síncrona
+        session = SessionManager.get_or_create(session_id, restaurant_gid)
+        if not restaurant_gid and session.restaurant_gid:
+            restaurant_gid = session.restaurant_gid
+        
+        restaurant_id = None
+        if restaurant_gid:
+            from repositories.restaurant_repo import RestaurantRepository
+            res_db = RestaurantRepository.get_by_gid(db, restaurant_gid)
+            if res_db:
+                restaurant_id = res_db.id
+
+        session.add_message("user", user_message)
+        intent_info = HybridAIService._detect_intent_type(user_message)
+        intent_type = intent_info["type"]
+
+        # 2. Pool de produtos (Consistente com a versão síncrona)
+        from services.ai_service import AIService
+        search_results = AIService.process_search(user_query=user_message, db=db, scope="product")
+        
+        all_products = []
+        if restaurant_id:
+            from core.sql_models import ProductDB as ProductDBModel
+            from sqlalchemy.orm import joinedload
+            db_products = db.query(ProductDBModel).options(joinedload(ProductDBModel.restaurant)).filter(
+                ProductDBModel.restaurant_id == restaurant_id
+            ).all()
+            
+            seen_ids_local = set()
+            e5_ids = {p.id for p in search_results.productResults}
+            
+            e5_relevant = []
+            other_products = []
+            for db_prod in db_products:
+                seen_ids_local.add(db_prod.id)
+                cached = next((p for p in AIService._product_obj_cache if p.id == db_prod.id), None)
+                if cached:
+                    if db_prod.id in e5_ids: e5_relevant.append(cached)
+                    else: other_products.append(cached)
+            
+            all_products = e5_relevant + other_products
+            for gp in search_results.productResults:
+                if gp.id not in seen_ids_local: all_products.append(gp)
+        else:
+            all_products = AIService._product_obj_cache if len(AIService._product_obj_cache) <= 50 else search_results.productResults
+
+        candidate_pool = []
+        seen_ids = set()
+        # Itens do carrinho e sugestões anteriores têm prioridade no contexto
+        for item in session.cart:
+            if item.product_id not in seen_ids:
+                p = next((p for p in AIService._product_obj_cache if p.id == item.product_id), None)
+                if p: candidate_pool.append(p); seen_ids.add(p.id)
+        
+        for pid in getattr(session, 'last_suggested_ids', []):
+            if pid not in seen_ids:
+                p = next((p for p in AIService._product_obj_cache if p.id == pid), None)
+                if p: candidate_pool.append(p); seen_ids.add(p.id)
+
+        for product in all_products:
+            if product.id not in seen_ids:
+                candidate_pool.append(product); seen_ids.add(product.id)
+
+        found_products = []
+        for product in candidate_pool[:15]:
+            found_products.append({
+                "id": product.id, "gid": getattr(product, "gid", ""), "name": product.name,
+                "price": float(product.price), "restaurant_gid": getattr(product, "restaurant_gid", "") or restaurant_gid or "",
+                "description": getattr(product, "description", ""), "category": getattr(product, "category", ""),
+                "serves_people": getattr(product, "serves_people", 1)
+            })
+
+        context = {
+            "products": found_products, "cart": session.get_cart_as_list(),
+            "history_text": session.get_history_text(), "session_context": session.context,
+            "intent_type": intent_type, "user_needs": intent_info.get("details", {})
+        }
+
+        # 3. Iniciar Stream
+        full_ai_response = ""
+        try:
+            for text_chunk in GeminiSalesAgent.generate_response_stream(user_message, context):
+                full_ai_response += text_chunk
+                yield {"type": "chunk", "text": text_chunk}
+
+            # 3. Pós-processamento (tags, carrinho, confirmação)
+            import re
+            order_confirmed = "[[CONFIRM_ORDER]]" in full_ai_response
+            add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(\d+)\]\]", full_ai_response)
+            
+            for prod_gid, qty_str in add_to_cart_matches:
+                qty = int(qty_str)
+                product_info = next((p for p in found_products if p["gid"] == prod_gid), None)
+                if product_info:
+                    session.add_to_cart(
+                        product_id=product_info["id"], name=product_info["name"],
+                        price=product_info["price"], restaurant_gid=product_info["restaurant_gid"],
+                        quantity=qty, serves_people=product_info.get("serves_people") or 1
+                    )
+            
+            # Limpar tags da resposta para o histórico
+            clean_response = full_ai_response.replace("[[CONFIRM_ORDER]]", "")
+            for m in add_to_cart_matches:
+                clean_response = clean_response.replace(f"[[ADD_TO_CART:{m[0]}:{m[1]}]]", "")
+            clean_response = ' '.join(clean_response.split()).strip()
+
+            mentioned_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+            session.add_message("assistant", clean_response)
+            session.last_suggested_ids = [p["id"] for p in mentioned_products]
+            
+            if order_confirmed: session.reset_session()
+            SessionManager.save(session)
+
+            # Enviar metadados finais
+            yield {
+                "type": "final",
+                "session_id": session.session_id,
+                "cart": session.get_cart_summary(),
+                "products": mentioned_products,
+                "order_confirmed": order_confirmed
+            }
+
+        except Exception as e:
+            print(f"❌ [Stream Error]: {e}")
+            yield {"type": "error", "message": str(e)}
+
+    @staticmethod
     def process_sales_chat(
         user_message: str,
         restaurant_gid: Optional[str],

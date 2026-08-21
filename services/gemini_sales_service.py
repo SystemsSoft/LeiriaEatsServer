@@ -109,6 +109,25 @@ class GeminiSalesAgent:
 
             # Configurar cliente com API key
             cls._model = genai.Client(api_key=settings.GEMINI_API_KEY)
+            
+            # 🚀 Pré-configurar regras do sistema (System Instructions)
+            # Isso torna a geração mais rápida e o prompt mais curto
+            cls._system_instruction = """Você é um CONSULTOR DE VENDAS especialista em delivery de comida em Portugal.
+MISSÃO: Entender o que o cliente quer e ajudá-lo a montar o melhor pedido baseando-se no HISTÓRICO DA CONVERSA.
+
+REGRAS OBRIGATÓRIAS:
+1. Comunique SEMPRE em Português de Portugal (PT-PT).
+   - Use infinitivo em vez de gerúndio (ex: "a preparar" em vez de "preparando").
+   - Use vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
+2. Use APENAS produtos listados na seção "PRODUTOS DISPONÍVEIS". NUNCA invente itens.
+3. SEMPRE pergunte "para quantas pessoas?" se não souber a quantidade.
+4. Gestão do Carrinho:
+   - Identifique produtos pelo GID.
+   - Use OBRIGATORIAMENTE a tag [[ADD_TO_CART:GID:QUANTIDADE]] quando o cliente quiser pedir algo.
+5. Finalização:
+   - Se o cliente quiser fechar, peça confirmação sem a tag [[CONFIRM_ORDER]].
+   - Se ele confirmar (Sim), faça o resumo e use a tag [[CONFIRM_ORDER]].
+6. Seja natural, amigável e conciso (máximo 100 palavras)."""
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -117,6 +136,57 @@ class GeminiSalesAgent:
         except Exception as e:
             print(f"❌ [Gemini] Erro ao configurar: {e}")
             raise
+
+    @classmethod
+    def generate_response_stream(cls, user_message: str, context: Dict):
+        """Gera resposta em stream usando Gemini"""
+        if not cls.is_ready():
+            cls.initialize()
+
+        # 1. Verificar respostas estáticas (não stream, mas retorna um chunk único)
+        msg_lower = user_message.lower().strip()
+        if msg_lower in cls._STATIC_RESPONSES:
+            yield cls._STATIC_RESPONSES[msg_lower]
+            return
+
+        # 2. Verificar limite de requisições
+        if not cls._usage_monitor.can_make_request():
+            yield cls._generate_fallback_response(user_message, context)
+            return
+
+        # 3. Gerar stream com Gemini
+        try:
+            products = context.get("products", [])
+            history_text = context.get("history_text", "")
+            session_context = context.get("session_context", {})
+
+            prompt = cls._build_prompt(user_message, products, context,
+                                       history_text, session_context)
+
+            # Usar generate_content_stream
+            stream = cls._model.models.generate_content_stream(
+                model='gemini-flash-lite-latest',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=cls._system_instruction,
+                    temperature=0.7,
+                    top_p=0.9,
+                    top_k=40,
+                    max_output_tokens=250,
+                    response_modalities=['TEXT'],
+                )
+            )
+
+            # Registrar uso (contamos como 1 req)
+            cls._usage_monitor.record_request()
+
+            for chunk in stream:
+                if chunk.text:
+                    yield chunk.text
+
+        except Exception as e:
+            print(f"❌ [Gemini Stream] Erro: {e}")
+            yield cls._generate_fallback_response(user_message, context)
 
     @classmethod
     def generate_response(cls, user_message: str, context: Dict) -> str:
@@ -159,10 +229,11 @@ class GeminiSalesAgent:
                 model='gemini-flash-lite-latest',
                 contents=prompt,
                 config=types.GenerateContentConfig(
+                    system_instruction=cls._system_instruction,
                     temperature=0.7,
                     top_p=0.9,
                     top_k=40,
-                    max_output_tokens=200,
+                    max_output_tokens=250,
                     response_modalities=['TEXT'],
                 )
             )
@@ -195,70 +266,9 @@ class GeminiSalesAgent:
         history_text: str = "",
         session_context: Optional[Dict] = None
     ) -> str:
-        """
-        Constrói prompt otimizado para Gemini
-        Inclui regras específicas para o idioma de Portugal
-        """
+        """Constrói prompt otimizado"""
         if session_context is None:
             session_context = {}
-
-        # Sistema base
-        system = """Você é um CONSULTOR DE VENDAS especialista em delivery de comida em Portugal.
-
-MISSÃO: Entender o que o cliente quer e ajudá-lo a montar o melhor pedido baseando-se no HISTÓRICO DA CONVERSA.
-
-REGRAS OBRIGATÓRIAS:
-1. Comunique SEMPRE em Português de Portugal (PT-PT).
-   - Evite gerúndios onde o infinitivo for mais natural (ex: use "estou a preparar" em vez de "estou preparando").
-   - Use vocabulário local (ex: "estafeta" em vez de "entregador", "sumo" em vez de "suco", "encomenda" ou "pedido", "ecrã" em vez de "tela").
-   - Trate o cliente de forma educada, preferencialmente na terceira pessoa (ex: "Como posso ajudar?" ou "O que gostaria?" em vez do uso excessivo de "você").
-2. Use APENAS e EXCLUSIVAMENTE os produtos listados na seção "PRODUTOS DISPONÍVEIS" abaixo — NUNCA invente, mencione ou sugira produtos que não estejam nessa lista.
-3. Se o cliente menciona uma categoria (pizza, hambúrguer, salada): liste TODAS as opções daquela categoria que existem na lista de produtos.
-4. Se o cliente pede "outro sabor" ou "outra opção": liste outras opções que estão na lista de produtos.
-5. Use o HISTÓRICO DA CONVERSA para entender TODO o contexto — nunca esqueça o que foi combinado antes.
-6. Use o HISTÓRICO DA CONVERSA para saber o que já foi pedido e sugerir complementos coerentes.
-7. SEMPRE pergunte "para quantas pessoas?" se não souber a quantidade.
-8. Após escolher o prato principal, verifique se há bebidas ou sobremesas na lista e sugira-as. Se não houver, NÃO mencione.
-9. Se o cliente pedir algo que não está na lista, informe: "Não temos essa opção disponível de momento."
-10. Quando o cliente pedir DETALHES de um produto, use TODOS os campos disponíveis: descrição, ingredientes, alérgenos, calorias, tempo de preparo, tags dietéticas, nível de picância, porção — mostre o que for relevante.
-11. Se o produto tiver alérgenos e o cliente tiver restrição alimentar, avise proativamente.
-12. Gestão do Carrinho (ADICIONAR PRODUTOS):
-    - Se o cliente quiser pedir, encomendar ou adicionar algo (ex: "quero uma pizza", "pode adicionar 2 sumos"):
-        - Identifique o produto na lista "PRODUTOS DISPONÍVEIS" pelo seu GID (Global ID).
-        - OBRIGATORIAMENTE inclua a tag [[ADD_TO_CART:GID:QUANTIDADE]] na sua resposta para cada item solicitado.
-        - Substitua GID pelo código do produto e QUANTIDADE pelo número pedido (ou 1 se não especificado).
-        - Exemplo: "Com certeza! Vou adicionar 2 Pizzas Calabresa ao seu carrinho. 😊 [[ADD_TO_CART:01M0AG...:2]]"
-        - Se não tiver certeza absoluta do produto, peça esclarecimentos antes de adicionar a tag.
-        - SEMPRE que disser que adicionou algo, a tag DEVE estar presente.
-13. Fluxo de Finalização e Confirmação:
-    - Se o cliente demonstrar desejo de finalizar (ex: "quero fechar", "quanto fica", "pode terminar"):
-        - Verifique a seção "🛒 CARRINHO ATUAL" abaixo.
-        - Se o carrinho estiver VAZIO: Informe educadamente que o carrinho está vazio e convide-o a escolher algo da lista de produtos.
-        - Se o carrinho TIVER ITENS: Peça uma confirmação explícita (ex: "Deseja que eu finalize o seu pedido agora?"). NÃO inclua a tag [[CONFIRM_ORDER]] nesta fase.
-    - Se o cliente responder POSITIVAMENTE à sua pergunta de confirmação (ex: "Sim", "Pode ser", "Com certeza"):
-        - Use os dados da seção "🛒 CARRINHO ATUAL" para fazer um RESUMO completo (itens e total).
-        - Informe que os detalhes serão apresentados no ecrã para pagamento.
-        - OBRIGATORIAMENTE inclua a tag [[CONFIRM_ORDER]] no final da sua resposta.
-    - Exemplo de resposta final: "Perfeito! O seu pedido está confirmado: 🛒\n• Pizza Calabresa x1 - € 15,00\nTotal: € 15,00\n\nVou apresentar os detalhes para que possa efetuar o pagamento! 💳 [[CONFIRM_ORDER]]"
-    - Se o cliente responder NEGATIVAMENTE, continue a conversa normalmente.
-14. NUNCA diga que o pedido foi enviado para a cozinha — isso é feito apenas após o pagamento pelo sistema.
-15. Seja natural, amigável e conciso (máximo 100 palavras, ou mais se o cliente pedir detalhes).
-16. NÃO fale sobre você mesmo.
-
-EXEMPLOS DE COMO RESPONDER (use nomes reais da lista):
-
-Cliente: "quero uma pizza"
-Você: "Temos [X] opções: 🍕 [Nome1] (€ XX), [Nome2] (€ XX). Qual prefere? É para quantas pessoas?"
-
-Cliente: "calabresa" (após perguntar sobre pizza)
-Você: "Ótima escolha! Pizza Calabresa anotada! 🍕 [[ADD_TO_CART:01M0AG...:1]] Deseja adicionar uma bebida ou sobremesa?"
-
-Cliente: "pode fechar o pedido" (se tiver itens no carrinho)
-Você: "Com certeza! Deseja que eu finalize a sua encomenda agora? 😊"
-
-Cliente: "sim" (após perguntar sobre finalizar)
-Você: "Perfeito! O seu pedido está confirmado: 🛒\n• Pizza Calabresa x1 - € 15,00\nTotal: € 15,00\n\nVou apresentar os detalhes para que possa efetuar o pagamento! 💳 [[CONFIRM_ORDER]]"
-"""
 
         # Produtos disponíveis
         products_text = ""
@@ -344,8 +354,7 @@ Você: "Perfeito! O seu pedido está confirmado: 🛒\n• Pizza Calabresa x1 - 
         if context.get("order_confirmed"):
             order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
-        prompt = f"""{system}
-{products_text}{cart_section}{history_section}{session_section}{order_note}
+        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"
