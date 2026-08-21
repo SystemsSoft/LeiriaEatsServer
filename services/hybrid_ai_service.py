@@ -218,8 +218,8 @@ class HybridAIService:
                 candidate_pool.append(product); seen_ids.add(product.id)
 
         found_products = []
-        for product in candidate_pool[:15]:
-            found_products.append({
+        for product in candidate_pool[:20]: # Aumentado para 20 para segurança
+            p_data = {
                 "id": product.id,
                 "gid": getattr(product, "gid", ""),
                 "name": product.name,
@@ -231,13 +231,24 @@ class HybridAIService:
                 "rating": getattr(product, "rating", None),
                 "is_popular": getattr(product, "is_popular", False),
                 "is_available": getattr(product, "is_available", True),
-                "serves_people": getattr(product, "serves_people", 1)
-            })
+                "serves_people": getattr(product, "serves_people", 1),
+                "quantity": 0 # Valor base
+            }
+            found_products.append(p_data)
+
+        # Injetar quantidades reais do carrinho no found_products
+        cart_map = {item.product_id: item.quantity for item in session.cart}
+        for p in found_products:
+            if p["id"] in cart_map:
+                p["quantity"] = cart_map[p["id"]]
 
         context = {
-            "products": found_products, "cart": session.get_cart_as_list(),
-            "history_text": session.get_history_text(), "session_context": session.context,
-            "intent_type": intent_type, "user_needs": intent_info.get("details", {})
+            "products": found_products, 
+            "cart": session.get_cart_as_list(),
+            "history_text": session.get_history_text(), 
+            "session_context": session.context,
+            "intent_type": intent_type, 
+            "user_needs": intent_info.get("details", {})
         }
 
         # 3. Iniciar Stream com Filtro de Tags
@@ -296,11 +307,24 @@ class HybridAIService:
             # 🛠️ CAPTURA DE DADOS ANTES DO RESET
             final_cart_summary = session.get_cart_summary()
 
-            # Filtrar mencionados ou retornar todos do carrinho se confirmado
+            # 🛠️ CORREÇÃO ROBUSTA: Se confirmado, garantimos que os produtos do carrinho retornam
             if order_confirmed:
-                # Se confirmado, garantimos que todos os produtos do carrinho retornam no JSON
                 cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
+                # Filtramos do pool encontrado OU buscamos no cache global se faltar
                 mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
+                
+                # Se ainda faltar algo (segurança extra), busca no cache
+                found_ids = {p["id"] for p in mentioned_products}
+                for cp_id in cart_prod_ids:
+                    if cp_id not in found_ids:
+                        full_p = next((p for p in AIService._product_obj_cache if p.id == cp_id), None)
+                        if full_p:
+                            mentioned_products.append({
+                                "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
+                                "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
+                                "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
+                                "category": getattr(full_p, "category", ""), "quantity": cart_map.get(full_p.id, 1)
+                            })
             else:
                 mentioned_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
             
@@ -309,11 +333,13 @@ class HybridAIService:
             
             # 🚀 O RESET É O ÚLTIMO PASSO: 
             if order_confirmed: 
+                print(f"🎉 [Stream] Pedido confirmado. Limpando sessão {session.session_id[:8]}...")
                 session.reset_session()
             
             SessionManager.save(session)
 
             # Enviar metadados finais
+            print(f"📦 [Stream] Enviando {len(mentioned_products)} produtos no chunk final.")
             yield {
                 "type": "final",
                 "session_id": session.session_id,

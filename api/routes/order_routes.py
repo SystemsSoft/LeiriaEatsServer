@@ -932,11 +932,24 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
     if event['type'] == 'payment_intent.succeeded':
         pi = event['data']['object']
         payment_intent_id = pi.get('id')
-        print(f"💳 Evento payment_intent.succeeded recebido: {payment_intent_id}")
+        order_id = pi.get('metadata', {}).get('order_id')
+        print(f"💳 Evento payment_intent.succeeded recebido: {payment_intent_id} | Order ID: {order_id}")
 
         db = SessionLocal()
         try:
-            # Verifica se o pedido associado foi cancelado enquanto o pagamento estava em "processing"
+            # 🚀 ATUALIZAÇÃO DE STATUS PARA SDK NATIVO
+            # Quando usa o SDK, o evento principal é este succeeded, não o checkout.session
+            if order_id:
+                db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+                if db_order and db_order.status == "PENDING_PAYMENT":
+                    print(f"✅ [SDK SDK] Atualizando pedido #{db_order.id} para Pendente via PaymentIntent")
+                    db_order.status = "Pendente"
+                    db_order.payment_intent_id = payment_intent_id
+                    for sub in db_order.sub_orders:
+                        sub.status = "Pendente"
+                    db.commit()
+
+            # Verifica se o pedido associado foi cancelado enquanto o pagamento estava em "processing" (estorno tardio)
             order = db.query(OrderDB).filter(
                 OrderDB.payment_intent_id == payment_intent_id,
                 OrderDB.status == "Cancelado"
