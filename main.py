@@ -112,8 +112,11 @@ async def startup_event():
     finally:
         db.close()
 
-    # Inicia o worker de notificação a estafetas em background
+    # Inicia os workers em background
     asyncio.create_task(courier_notification_worker())
+    
+    from services.payment_reconciliation_service import payment_reconciliation_worker
+    asyncio.create_task(payment_reconciliation_worker())
 
     print("\n🎉 Servidor pronto para receber requisições!\n")
 

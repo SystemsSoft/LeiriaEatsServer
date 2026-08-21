@@ -35,6 +35,11 @@ class Settings:
             print("⚠️ AVISO: GEMINI_API_KEY não encontrada no arquivo .env")
         elif self.GEMINI_API_KEY:
             print("✅ Gemini API Key configurada")
+            
+        if not self.STRIPE_WEBHOOK_SECRET:
+            print("⚠️ AVISO: STRIPE_WEBHOOK_SECRET não encontrada no arquivo .env")
+        else:
+            print(f"✅ Stripe Webhook configurado (Secret: {self.STRIPE_WEBHOOK_SECRET[:8]}...)")
 
 
 settings = Settings()
