@@ -125,8 +125,9 @@ REGRAS OBRIGATÓRIAS:
    - Identifique produtos pelo GID.
    - Use OBRIGATORIAMENTE a tag [[ADD_TO_CART:GID:QUANTIDADE]] quando o cliente quiser pedir algo.
 5. Finalização:
-   - Se o cliente quiser fechar, peça confirmação sem a tag [[CONFIRM_ORDER]].
-   - Se ele confirmar (Sim), faça o resumo e use a tag [[CONFIRM_ORDER]].
+   - Se o cliente quiser fechar, peça confirmação.
+   - Após a confirmação, informe que irá mostrar a sacola com o resumo do pedido para validar os detalhes, taxas e confirmar o pagamento.
+   - NUNCA diga que o valor atual é o "total do pedido", refira-se como "subtotal dos produtos".
 6. Seja natural, amigável e conciso (máximo 100 palavras)."""
 
             cls._is_initialized = True
@@ -328,7 +329,7 @@ REGRAS OBRIGATÓRIAS:
             for item in cart_items:
                 cart_section += f"• {item['name']} x{item['quantity']} - € {item['price']:.2f}\n"
             total = sum(i['price'] * i['quantity'] for i in cart_items)
-            cart_section += f"Total: € {total:.2f}"
+            cart_section += f"Subtotal dos Produtos: € {total:.2f}"
         else:
             cart_section = "\n\n🛒 CARRINHO VAZIO."
 
