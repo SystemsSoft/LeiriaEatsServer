@@ -220,9 +220,17 @@ class HybridAIService:
         found_products = []
         for product in candidate_pool[:15]:
             found_products.append({
-                "id": product.id, "gid": getattr(product, "gid", ""), "name": product.name,
-                "price": float(product.price), "restaurant_gid": getattr(product, "restaurant_gid", "") or restaurant_gid or "",
-                "description": getattr(product, "description", ""), "category": getattr(product, "category", ""),
+                "id": product.id,
+                "gid": getattr(product, "gid", ""),
+                "name": product.name,
+                "price": float(product.price),
+                "restaurant_gid": getattr(product, "restaurant_gid", "") or restaurant_gid or "",
+                "image_url": getattr(product, "image_url", ""),
+                "description": getattr(product, "description", ""),
+                "category": getattr(product, "category", ""),
+                "rating": getattr(product, "rating", None),
+                "is_popular": getattr(product, "is_popular", False),
+                "is_available": getattr(product, "is_available", True),
                 "serves_people": getattr(product, "serves_people", 1)
             })
 
