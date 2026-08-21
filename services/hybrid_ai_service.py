@@ -240,14 +240,39 @@ class HybridAIService:
             "intent_type": intent_type, "user_needs": intent_info.get("details", {})
         }
 
-        # 3. Iniciar Stream
+        # 3. Iniciar Stream com Filtro de Tags
         full_ai_response = ""
+        tag_buffer = ""
+        is_inside_tag = False
+        
         try:
             for text_chunk in GeminiSalesAgent.generate_response_stream(user_message, context):
                 full_ai_response += text_chunk
-                yield {"type": "chunk", "text": text_chunk}
+                
+                # Lógica de processamento caractere a caractere para filtrar tags [[...]]
+                for char in text_chunk:
+                    if not is_inside_tag:
+                        if char == '[':
+                            tag_buffer += '['
+                            if tag_buffer == '[[':
+                                is_inside_tag = True
+                        else:
+                            # Se tínhamos um '[' isolado e veio outro caractere, libera o '['
+                            if tag_buffer:
+                                yield {"type": "chunk", "text": tag_buffer}
+                                tag_buffer = ""
+                            yield {"type": "chunk", "text": char}
+                    else:
+                        tag_buffer += char
+                        if tag_buffer.endswith(']]'):
+                            is_inside_tag = False
+                            tag_buffer = "" # Descarta a tag completa
+                
+            # Flush final do buffer se a mensagem acabar e não for uma tag completa
+            if tag_buffer and not is_inside_tag:
+                yield {"type": "chunk", "text": tag_buffer}
 
-            # 3. Pós-processamento (tags, carrinho, confirmação)
+            # 3. Pós-processamento interno (tags, carrinho, confirmação)
             import re
             order_confirmed = "[[CONFIRM_ORDER]]" in full_ai_response
             add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(\d+)\]\]", full_ai_response)
@@ -522,8 +547,10 @@ class HybridAIService:
                 if "[[CONFIRM_ORDER]]" in ai_response:
                     print(f"🎉 [Gemini] Pedido CONFIRMADO via tag!")
                     order_confirmed = True
-                    # Limpar a tag da resposta final para o usuário
-                    ai_response = ai_response.replace("[[CONFIRM_ORDER]]", "")
+                
+                # 🔍 3. LIMPEZA GLOBAL DE TAGS DA RESPOSTA (Segurança)
+                # Remove qualquer coisa entre [[ ]] para o usuário não ver
+                ai_response = re.sub(r"\[\[.*?\]\]", "", ai_response)
                 
                 # Limpeza final de espaços duplos resultantes da remoção de tags
                 ai_response = ' '.join(ai_response.split()).strip()
