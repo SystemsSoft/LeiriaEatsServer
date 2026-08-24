@@ -115,14 +115,21 @@ class UserSession:
 
     def add_to_cart(self, product_id: int, name: str, price: float, restaurant_gid: str,
                     quantity: int = 1, serves_people: int = 1, category: str = "") -> str:
-        """Adiciona ou incrementa item no carrinho"""
+        """Adiciona, incrementa ou subtrai item no carrinho"""
         for item in self.cart:
             if item.product_id == product_id:
                 item.quantity += quantity
+                # Garantir que a quantidade nunca seja negativa
+                if item.quantity <= 0:
+                    self.remove_from_cart(product_id)
+                    return f"{name} removido do carrinho"
                 return f"Quantidade de {name} atualizada para {item.quantity}"
 
-        self.cart.append(CartItem(product_id, name, price, restaurant_gid, quantity, serves_people, category))
-        return f"{name} adicionado ao carrinho"
+        # Apenas adiciona se a quantidade for positiva
+        if quantity > 0:
+            self.cart.append(CartItem(product_id, name, price, restaurant_gid, quantity, serves_people, category))
+            return f"{name} adicionado ao carrinho"
+        return ""
 
     def remove_from_cart(self, product_id: int) -> bool:
         """Remove item do carrinho"""

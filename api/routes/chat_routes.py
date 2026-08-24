@@ -51,6 +51,7 @@ class ChatResponse(BaseModel):
     intent: str
     session_id: str
     cart: dict
+    show_cart: bool = False
     order_confirmed: bool = False
 
 
@@ -136,6 +137,33 @@ def end_session(session_id: str):
     """Encerra uma sessão (ex: após confirmar pedido)"""
     SessionManager.delete(session_id)
     return {"message": "Sessão encerrada", "session_id": session_id}
+
+
+@router.post("/chat/session/{session_id}/confirm")
+def confirm_order(session_id: str):
+    """
+    Finaliza o pedido oficialmente.
+    O aplicativo chama isto após o usuário confirmar na sacola.
+    """
+    session = SessionManager.get(session_id)
+    if not session:
+        return {"error": "Sessão não encontrada ou expirada"}
+    
+    # Gerar sumário final antes de resetar
+    summary = session.get_cart_summary()
+    
+    # Limpa a sessão para o próximo pedido
+    session.reset_session()
+    SessionManager.save(session)
+    
+    print(f"✅ [Chat] Pedido confirmado pelo App para sessão: {session_id[:8]}...")
+    
+    return {
+        "message": "Pedido confirmado com sucesso",
+        "session_id": session_id,
+        "order_confirmed": True,
+        "final_cart": summary
+    }
 
 
 # Rota de status dos modelos

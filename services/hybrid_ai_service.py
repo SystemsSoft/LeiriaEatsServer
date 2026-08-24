@@ -283,10 +283,10 @@ class HybridAIService:
             if tag_buffer and not is_inside_tag:
                 yield {"type": "chunk", "text": tag_buffer}
 
-            # 3. Pós-processamento interno (tags, carrinho, confirmação)
+            # 3. Pós-processamento interno (tags, carrinho, mostrar sacola)
             import re
-            order_confirmed = "[[CONFIRM_ORDER]]" in full_ai_response
-            add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(\d+)\]\]", full_ai_response)
+            show_cart = "[[SHOW_CART]]" in full_ai_response
+            add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(-?\d+)\]\]", full_ai_response)
             
             for prod_gid, qty_str in add_to_cart_matches:
                 qty = int(qty_str)
@@ -299,21 +299,19 @@ class HybridAIService:
                     )
             
             # Limpar tags da resposta para o histórico
-            clean_response = full_ai_response.replace("[[CONFIRM_ORDER]]", "")
+            clean_response = full_ai_response.replace("[[SHOW_CART]]", "")
             for m in add_to_cart_matches:
                 clean_response = clean_response.replace(f"[[ADD_TO_CART:{m[0]}:{m[1]}]]", "")
             clean_response = ' '.join(clean_response.split()).strip()
 
-            # 🛠️ CAPTURA DE DADOS ANTES DO RESET
+            # 🛠️ CAPTURA DE DADOS
             final_cart_summary = session.get_cart_summary()
 
-            # 🛠️ CORREÇÃO ROBUSTA: Se confirmado, garantimos que os produtos do carrinho retornam
-            if order_confirmed:
+            # 🛠️ Se mostrar sacola, garantimos que os produtos do carrinho retornam
+            if show_cart:
                 cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
-                # Filtramos do pool encontrado OU buscamos no cache global se faltar
                 mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
                 
-                # Se ainda faltar algo (segurança extra), busca no cache
                 found_ids = {p["id"] for p in mentioned_products}
                 for cp_id in cart_prod_ids:
                     if cp_id not in found_ids:
@@ -331,11 +329,7 @@ class HybridAIService:
             session.add_message("assistant", clean_response)
             session.last_suggested_ids = [p["id"] for p in mentioned_products]
             
-            # 🚀 O RESET É O ÚLTIMO PASSO: 
-            if order_confirmed: 
-                print(f"🎉 [Stream] Pedido confirmado. Limpando sessão {session.session_id[:8]}...")
-                session.reset_session()
-            
+            # 🚀 NOTA: Não limpamos mais a sessão aqui. O App chamará a API de confirmação depois.
             SessionManager.save(session)
 
             # Enviar metadados finais
@@ -345,7 +339,8 @@ class HybridAIService:
                 "session_id": session.session_id,
                 "cart": final_cart_summary,
                 "products": mentioned_products,
-                "order_confirmed": order_confirmed
+                "show_cart": show_cart,
+                "order_confirmed": False
             }
 
         except Exception as e:
@@ -566,9 +561,9 @@ class HybridAIService:
                 
                 print(f"🤖 [Gemini] Resposta bruta: {ai_response}")
 
-                # 🔍 1. DETECÇÃO DE ADIÇÃO AO CARRINHO VIA TAG DO GEMINI
+                # 🔍 1. DETECÇÃO DE ADIÇÃO/REMOÇÃO NO CARRINHO VIA TAG DO GEMINI
                 import re
-                add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(\d+)\]\]", ai_response)
+                add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(-?\d+)\]\]", ai_response)
                 
                 if add_to_cart_matches:
                     print(f"🛒 [Gemini] Tags de adição encontradas: {add_to_cart_matches}")
@@ -595,10 +590,8 @@ class HybridAIService:
                     # Limpar a tag da resposta
                     ai_response = ai_response.replace(f"[[ADD_TO_CART:{prod_gid}:{qty_str}]]", "")
 
-                # 🔍 2. DETECÇÃO DE CONFIRMAÇÃO VIA TAG DO GEMINI
-                if "[[CONFIRM_ORDER]]" in ai_response:
-                    print(f"🎉 [Gemini] Pedido CONFIRMADO via tag!")
-                    order_confirmed = True
+                # 🔍 2. DETECÇÃO DE MOSTRAR SACOLA VIA TAG DO GEMINI
+                show_cart = "[[SHOW_CART]]" in ai_response
                 
                 # 🔍 3. LIMPEZA GLOBAL DE TAGS DA RESPOSTA (Segurança)
                 # Remove qualquer coisa entre [[ ]] para o usuário não ver
@@ -618,6 +611,7 @@ class HybridAIService:
                     user_message,
                     session.get_cart_as_list()
                 )
+                show_cart = False
                 used_ai = False
         except Exception as e:
             print(f"❌ [Gemini] Erro ao gerar resposta: {e}")
@@ -629,6 +623,7 @@ class HybridAIService:
                 user_message,
                 session.get_cart_as_list()
             )
+            show_cart = False
             used_ai = False
 
         # Filtrar: retornar apenas produtos que a IA mencionou na resposta
@@ -650,18 +645,15 @@ class HybridAIService:
         # ⭐ NOVO: Guardar os IDs dos produtos mencionados para a PRÓXIMA mensagem
         session.last_suggested_ids = [p["id"] for p in mentioned_products]
 
-        # 🛠️ CAPTURA DE DADOS ANTES DO RESET
+        # 🛠️ CAPTURA DE DADOS
         final_cart_summary = session.get_cart_summary()
 
-        # Se confirmado, garantimos que todos os produtos do carrinho retornam no JSON
-        if order_confirmed:
+        # Se mostrar sacola, garantimos que todos os produtos do carrinho retornam no JSON
+        if show_cart:
             cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
             mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
 
-        # 🚀 O RESET É O ÚLTIMO PASSO: 
-        if order_confirmed:
-            session.reset_session()
-
+        # 🚀 NOTA: Não limpamos mais a sessão aqui. O App chamará a API de confirmação depois.
         SessionManager.save(session)
 
         print(f"✅ Resposta final gerada")
@@ -680,7 +672,8 @@ class HybridAIService:
             "needs_mapped": intent_info["details"],
             "session_id": session.session_id,
             "cart": final_cart_summary,
-            "order_confirmed": order_confirmed,
+            "show_cart": show_cart,
+            "order_confirmed": False,
             "restaurant_gid": session.restaurant_gid,
         }
 
