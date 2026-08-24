@@ -4,7 +4,7 @@ from typing import Optional, List
 from pydantic import BaseModel
 
 from core.database import get_db
-from schemas.models import UserRequest, SearchResponse
+from schemas.models import UserRequest, SearchResponse, Restaurant
 from services.ai_service import AIService
 from services.hybrid_ai_service import HybridAIService
 from services.session_service import SessionManager
@@ -53,6 +53,7 @@ class ChatResponse(BaseModel):
     cart: dict
     show_cart: bool = False
     order_confirmed: bool = False
+    restaurantResults: List[Restaurant] = []
 
 
 # Rota antiga (mantida para compatibilidade)

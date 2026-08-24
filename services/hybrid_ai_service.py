@@ -161,7 +161,6 @@ class HybridAIService:
         
         restaurant_id = None
         if restaurant_gid:
-            from repositories.restaurant_repo import RestaurantRepository
             res_db = RestaurantRepository.get_by_gid(db, restaurant_gid)
             if res_db:
                 restaurant_id = res_db.id
@@ -304,41 +303,72 @@ class HybridAIService:
                 clean_response = clean_response.replace(f"[[ADD_TO_CART:{m[0]}:{m[1]}]]", "")
             clean_response = ' '.join(clean_response.split()).strip()
 
-            # 🛠️ CAPTURA DE DADOS
+            # 🛠️ CAPTURA DE DADOS FINAL (Sincronizada com o carrinho atualizado)
             final_cart_summary = session.get_cart_summary()
+            new_cart_map = {item["product_id"]: item["quantity"] for item in final_cart_summary["items"]}
 
-            # 🛠️ Se mostrar sacola, garantimos que os produtos do carrinho retornam
-            if show_cart:
-                cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
-                mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
-                
-                found_ids = {p["id"] for p in mentioned_products}
-                for cp_id in cart_prod_ids:
-                    if cp_id not in found_ids:
+            # 1. Iniciar com produtos mencionados no texto
+            mentioned_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+            
+            # 2. SE show_cart for true OU se o usuário confirmou algo, FORÇAR todos os itens do carrinho na lista
+            # Isso garante que o App sempre tenha os dados dos produtos que estão na sacola
+            cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
+            seen_ids_final = {p["id"] for p in mentioned_products}
+            
+            for cp_id in cart_prod_ids:
+                if cp_id not in seen_ids_final:
+                    # Tentar achar no pool de busca primeiro (contexto rico)
+                    p_from_pool = next((p for p in found_products if p["id"] == cp_id), None)
+                    if p_from_pool:
+                        mentioned_products.append(p_from_pool)
+                    else:
+                        # Se não estava no pool, buscar no cache global e converter para o formato de resposta
                         full_p = next((p for p in AIService._product_obj_cache if p.id == cp_id), None)
                         if full_p:
                             mentioned_products.append({
                                 "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                                 "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
                                 "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
-                                "category": getattr(full_p, "category", ""), "quantity": cart_map.get(full_p.id, 1)
+                                "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
+                                "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
+                                "serves_people": getattr(full_p, "serves_people", 1)
                             })
-            else:
-                mentioned_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+                    seen_ids_final.add(cp_id)
+
+            # 3. ATUALIZAR QUANTIDADES (Garantir que os valores no JSON batem com o carrinho)
+            for p in mentioned_products:
+                p["quantity"] = new_cart_map.get(p["id"], 0)
+
+            # 4. BUSCAR RESTAURANTES (De todos os produtos que vamos retornar)
+            mentioned_restaurants = []
+            seen_res_gids = set()
+            for p in mentioned_products:
+                res_gid = p.get("restaurant_gid")
+                if res_gid and res_gid not in seen_res_gids:
+                    res_db = RestaurantRepository.get_by_gid(db, res_gid)
+                    if res_db:
+                        mentioned_restaurants.append({
+                            "id": res_db.id, "gid": res_db.gid, "name": res_db.name,
+                            "category": res_db.category, "rating": res_db.rating,
+                            "image_url": res_db.image_url, "latitude": res_db.latitude,
+                            "longitude": res_db.longitude
+                        })
+                        seen_res_gids.add(res_gid)
             
             session.add_message("assistant", clean_response)
             session.last_suggested_ids = [p["id"] for p in mentioned_products]
             
-            # 🚀 NOTA: Não limpamos mais a sessão aqui. O App chamará a API de confirmação depois.
+            # Persistir sessão
             SessionManager.save(session)
 
             # Enviar metadados finais
-            print(f"📦 [Stream] Enviando {len(mentioned_products)} produtos no chunk final.")
+            print(f"📦 [Stream] Enviando {len(mentioned_products)} produtos e {len(mentioned_restaurants)} restaurantes no chunk final.")
             yield {
                 "type": "final",
                 "session_id": session.session_id,
                 "cart": final_cart_summary,
                 "products": mentioned_products,
+                "restaurantResults": mentioned_restaurants,
                 "show_cart": show_cart,
                 "order_confirmed": False
             }
@@ -626,46 +656,68 @@ class HybridAIService:
             show_cart = False
             used_ai = False
 
-        # Filtrar: retornar apenas produtos que a IA mencionou na resposta
+        # 🛠️ CAPTURA DE DADOS FINAL (Sincronizada com o carrinho atualizado)
+        final_cart_summary = session.get_cart_summary()
+        new_cart_map = {item["product_id"]: item["quantity"] for item in final_cart_summary["items"]}
+
+        # 1. Iniciar com produtos mencionados no texto
         mentioned_products = HybridAIService._filter_mentioned_products(ai_response, found_products)
         
-        # ⭐ NOVO: Sincronizar quantidade do carrinho nos produtos retornados
-        # Se um produto mencionado já estiver no carrinho, injetamos a quantidade atual
-        cart_summary = session.get_cart_summary()
-        cart_item_map = {item["product_id"]: item["quantity"] for item in cart_summary["items"]}
+        # 2. SE show_cart for true, FORÇAR todos os itens do carrinho na lista
+        cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
+        seen_ids_final = {p["id"] for p in mentioned_products}
         
+        for cp_id in cart_prod_ids:
+            if cp_id not in seen_ids_final:
+                p_from_pool = next((p for p in found_products if p["id"] == cp_id), None)
+                if p_from_pool:
+                    mentioned_products.append(p_from_pool)
+                else:
+                    full_p = next((p for p in AIService._product_obj_cache if p.id == cp_id), None)
+                    if full_p:
+                        mentioned_products.append({
+                            "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
+                            "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
+                            "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
+                            "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
+                            "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
+                            "serves_people": getattr(full_p, "serves_people", 1)
+                        })
+                seen_ids_final.add(cp_id)
+
+        # 3. ATUALIZAR QUANTIDADES
         for p in mentioned_products:
-            p["quantity"] = cart_item_map.get(p["id"], 0)
-            
-        print(f"📦 [Products] {len(mentioned_products)}/{len(found_products)} produtos mencionados na resposta")
+            p["quantity"] = new_cart_map.get(p["id"], 0)
+
+        # 4. BUSCAR RESTAURANTES
+        mentioned_restaurants = []
+        seen_res_gids = set()
+        for p in mentioned_products:
+            res_gid = p.get("restaurant_gid")
+            if res_gid and res_gid not in seen_res_gids:
+                res_db = RestaurantRepository.get_by_gid(db, res_gid)
+                if res_db:
+                    mentioned_restaurants.append({
+                        "id": res_db.id, "gid": res_db.gid, "name": res_db.name,
+                        "category": res_db.category, "rating": res_db.rating,
+                        "image_url": res_db.image_url, "latitude": res_db.latitude,
+                        "longitude": res_db.longitude
+                    })
+                    seen_res_gids.add(res_gid)
 
         # Salvar resposta da IA no histórico da sessão
         session.add_message("assistant", ai_response)
-
-        # ⭐ NOVO: Guardar os IDs dos produtos mencionados para a PRÓXIMA mensagem
         session.last_suggested_ids = [p["id"] for p in mentioned_products]
-
-        # 🛠️ CAPTURA DE DADOS
-        final_cart_summary = session.get_cart_summary()
-
-        # Se mostrar sacola, garantimos que todos os produtos do carrinho retornam no JSON
-        if show_cart:
-            cart_prod_ids = {item["product_id"] for item in final_cart_summary["items"]}
-            mentioned_products = [p for p in found_products if p["id"] in cart_prod_ids]
 
         # 🚀 NOTA: Não limpamos mais a sessão aqui. O App chamará a API de confirmação depois.
         SessionManager.save(session)
 
-        print(f"✅ Resposta final gerada")
+        print(f"✅ Resposta final gerada (Síncrona)")
         
-        # 📋 LOG DO CARRINHO (JSON formatado para debug)
-        print("\n--- [DEBUG] JSON DE RETORNO (CART) ---")
-        print(json.dumps(final_cart_summary, indent=2, ensure_ascii=False))
-        print("--------------------------------------\n")
-
         return {
             "response": ai_response,
             "products": mentioned_products,
+            "restaurantResults": mentioned_restaurants,
             "intent": intent_type,
             "semantic_search_used": True,
             "ai_generated": used_ai,
