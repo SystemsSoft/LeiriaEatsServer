@@ -132,12 +132,25 @@ def clear_cart(session_id: str):
     return {"message": "Carrinho limpo com sucesso", "session_id": session_id}
 
 
-# Endpoint para encerrar sessão
+# Endpoint para encerrar sessão completamente
 @router.delete("/chat/session/{session_id}")
 def end_session(session_id: str):
-    """Encerra uma sessão (ex: após confirmar pedido)"""
+    """Encerra uma sessão (remove do Redis/RAM)"""
     SessionManager.delete(session_id)
     return {"message": "Sessão encerrada", "session_id": session_id}
+
+
+# Endpoint para resetar histórico e carrinho mantendo o ID da sessão
+@router.post("/chat/session/{session_id}/reset")
+def reset_session(session_id: str):
+    """Limpa histórico e carrinho para iniciar um novo pedido do zero"""
+    session = SessionManager.get(session_id)
+    if not session:
+        return {"error": "Sessão não encontrada ou expirada"}
+    
+    session.reset_session()
+    SessionManager.save(session)
+    return {"message": "Histórico e carrinho limpos com sucesso", "session_id": session_id}
 
 
 @router.post("/chat/session/{session_id}/confirm")
