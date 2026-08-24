@@ -284,8 +284,11 @@ class HybridAIService:
 
             # 3. Pós-processamento interno (tags, carrinho, mostrar sacola)
             import re
-            show_cart = "[[SHOW_CART]]" in full_ai_response
             add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(-?\d+)\]\]", full_ai_response)
+            
+            # Se houve qualquer alteração no carrinho (adição ou remoção), ativamos o show_cart
+            has_cart_action = len(add_to_cart_matches) > 0
+            show_cart = "[[SHOW_CART]]" in full_ai_response or has_cart_action
             
             for prod_gid, qty_str in add_to_cart_matches:
                 qty = int(qty_str)
@@ -595,8 +598,8 @@ class HybridAIService:
                 import re
                 add_to_cart_matches = re.findall(r"\[\[ADD_TO_CART:([A-Z0-9]+):(-?\d+)\]\]", ai_response)
                 
-                if add_to_cart_matches:
-                    print(f"🛒 [Gemini] Tags de adição encontradas: {add_to_cart_matches}")
+                # Se houve qualquer alteração no carrinho, ativamos o show_cart
+                has_cart_action = len(add_to_cart_matches) > 0
                 
                 for prod_gid, qty_str in add_to_cart_matches:
                     qty = int(qty_str)
@@ -621,7 +624,7 @@ class HybridAIService:
                     ai_response = ai_response.replace(f"[[ADD_TO_CART:{prod_gid}:{qty_str}]]", "")
 
                 # 🔍 2. DETECÇÃO DE MOSTRAR SACOLA VIA TAG DO GEMINI
-                show_cart = "[[SHOW_CART]]" in ai_response
+                show_cart = "[[SHOW_CART]]" in ai_response or has_cart_action
                 
                 # 🔍 3. LIMPEZA GLOBAL DE TAGS DA RESPOSTA (Segurança)
                 # Remove qualquer coisa entre [[ ]] para o usuário não ver
