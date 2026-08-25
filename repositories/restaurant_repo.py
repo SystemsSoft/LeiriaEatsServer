@@ -39,7 +39,9 @@ class RestaurantRepository:
             license=company.license,
             plan=company.plan,
             gid=str(ULID()), # Gera um novo ULID para o restaurante
-            status="PENDING"  # Status inicial
+            status="PENDING",  # Status inicial
+            has_surprise_box=company.has_surprise_box,
+            surprise_box_qty=company.surprise_box_qty
         )
 
         db.add(db_restaurant)

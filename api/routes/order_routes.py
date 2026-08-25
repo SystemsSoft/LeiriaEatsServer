@@ -252,6 +252,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
         stripe_customer_id=stripe_customer_id,
         tracking_code=order_data.tracking_code,
         delivery_type=order_data.delivery_type,
+        order_type=order_data.order_type,
         total_delivery_fee=order_data.total_delivery_fee,
         total_service_fee=order_data.total_service_fee,
     )

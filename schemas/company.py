@@ -46,6 +46,9 @@ class CompanyCreateRequest(BaseModel):
 
     plan: Optional[str] = None
     gid: Optional[str] = None
+    
+    has_surprise_box: bool = False
+    surprise_box_qty: int = 0
 
 class CompanyUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -56,7 +59,8 @@ class CompanyUpdateRequest(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     gid: Optional[str] = None
-
+    has_surprise_box: Optional[bool] = None
+    surprise_box_qty: Optional[int] = None
 
 class UsesPlatformCourierRequest(BaseModel):
     use_own_delivery: bool
@@ -110,6 +114,9 @@ class CompanyResponse(BaseModel):
     use_own_delivery: bool = False
     status: str = "PENDING"  # PENDING | STRIPE_PENDING | ACTIVE | INACTIVE
     gid: Optional[str] = ""
+    
+    has_surprise_box: bool = False
+    surprise_box_qty: int = 0
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 

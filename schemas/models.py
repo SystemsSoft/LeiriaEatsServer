@@ -30,6 +30,8 @@ class Restaurant(BaseModel):
     is_closed: Optional[bool] = None  # Estado de encerramento do restaurante no dia/hora atual
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    has_surprise_box: bool = False
+    surprise_box_qty: int = 0
 
     # O nome aqui deve ser 'products' para bater com o banco de dados
     products: List[Product] = []
@@ -82,6 +84,7 @@ class OrderRequest(BaseModel):
     search_query: str = ""
     tracking_code: str = ""
     delivery_type: str = ""
+    order_type: str = "COMMON"
     delivery_latitude: Optional[float] = None
     delivery_longitude: Optional[float] = None
     total_delivery_fee: float = 0.0
@@ -132,6 +135,7 @@ class OrderResponse(BaseModel):
     status: str
     tracking_code: Optional[str] = ""
     delivery_type: Optional[str] = ""
+    order_type: Optional[str] = "COMMON"
     delivery_latitude: Optional[float] = None
     delivery_longitude: Optional[float] = None
     total_delivery_fee: float = 0.0

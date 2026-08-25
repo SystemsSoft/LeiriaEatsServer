@@ -29,6 +29,10 @@ class RestaurantDB(Base):
     use_own_delivery = Column(Boolean, nullable=False, default=False)
     status = Column(String(50), default="PENDING")  # PENDING | STRIPE_PENDING | ACTIVE | INACTIVE
     gid = Column(String(255), nullable=True, unique=True)
+    
+    # --- SURPRISE BOX ---
+    has_surprise_box = Column(Boolean, default=False, nullable=False)
+    surprise_box_qty = Column(Integer, default=0, nullable=False)
 
     products = relationship("ProductDB", back_populates="restaurant")
     hours = relationship("RestaurantHourDB", back_populates="restaurant")
@@ -113,6 +117,7 @@ class OrderDB(Base):
     stripe_customer_id = Column(String(255), nullable=True)
     tracking_code = Column(String(100), nullable=True, default="")
     delivery_type = Column(String(50), nullable=True)
+    order_type = Column(String(50), nullable=True, default="COMMON") # COMMON | SURPRISE
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     # ── Coordenadas do endereço de entrega ─────────

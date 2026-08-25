@@ -170,10 +170,13 @@ class HybridAIService:
         intent_type = intent_info["type"]
 
         # 2. Pool de produtos (Consistente com a versão síncrona)
+        import time
+        start_time = time.time()
         from services.ai_service import AIService
         search_results = AIService.process_search(user_query=user_message, db=db, scope="product")
+        print(f"⏱️  [E5 Search] Tempo: {time.time() - start_time:.4f}s")
         
-        all_products = []
+        start_pool = time.time()
         if restaurant_id:
             from core.sql_models import ProductDB as ProductDBModel
             from sqlalchemy.orm import joinedload
@@ -249,14 +252,21 @@ class HybridAIService:
             "intent_type": intent_type, 
             "user_needs": intent_info.get("details", {})
         }
+        print(f"⏱️  [Context Prep] Tempo: {time.time() - start_pool:.4f}s")
 
         # 3. Iniciar Stream com Filtro de Tags
         full_ai_response = ""
         tag_buffer = ""
         is_inside_tag = False
         
+        start_gen = time.time()
+        print(f"🤖 [Gemini] Iniciando geração de conteúdo...")
         try:
+            chunk_count = 0
             for text_chunk in GeminiSalesAgent.generate_response_stream(user_message, context):
+                if chunk_count == 0:
+                    print(f"⏱️  [Gemini TTFT] Tempo para o primeiro chunk: {time.time() - start_gen:.4f}s")
+                chunk_count += 1
                 full_ai_response += text_chunk
                 
                 # Lógica de processamento caractere a caractere para filtrar tags [[...]]
@@ -278,9 +288,10 @@ class HybridAIService:
                             is_inside_tag = False
                             tag_buffer = "" # Descarta a tag completa
                 
-            # Flush final do buffer se a mensagem acabar e não for uma tag completa
             if tag_buffer and not is_inside_tag:
                 yield {"type": "chunk", "text": tag_buffer}
+            
+            print(f"⏱️  [Gemini Stream] Tempo total de geração: {time.time() - start_gen:.4f}s")
 
             # 3. Pós-processamento interno (tags, carrinho, mostrar sacola)
             import re
