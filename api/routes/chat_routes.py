@@ -47,7 +47,8 @@ class ProductItem(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
-    products: List[ProductItem]
+    products: List[ProductItem] # Apenas sugestões da IA
+    cartProducts: List[ProductItem] = [] # Detalhes dos itens que já estão no carrinho
     intent: str
     session_id: str
     cart: dict
