@@ -87,14 +87,19 @@ class GeminiSalesAgent:
     _usage_monitor = GeminiUsageMonitor()
     _ultimo_tamanho_prompt = 0  # F0: exposto para a telemetria estimar tokens de entrada
 
-    # F2.3: roteamento de modelo por turno. Flash-Lite é a variante mais rápida, mas a
-    # mais fraca em seguir instrução — e o system prompt pede aritmética de carrinho
-    # incremental e decisão condicional. Reservamos o modelo mais forte só para turnos
-    # que podem de fato alterar o carrinho; conversa fiada/saudação usa o Lite, mais barato
-    # e mais rápido. Confirmar identificador, limites e custo na documentação oficial do
-    # Gemini antes de fixar em produção — nomes de modelo mudam com frequência.
+    # F2.3: roteamento de modelo por turno.
+    # gemini-1.5-flash e gemini-2.5-flash(-lite) foram descontinuados por esta conta
+    # (404 NOT_FOUND) — confirmado ao vivo em 2026-08-27. "gemini-flash-lite-latest" é
+    # o alias que o próprio Google mantém apontado para a versão estável atual do tier
+    # Lite, evitando cair de novo nesse mesmo problema quando a próxima geração sair.
+    # "gemini-flash-latest" (tier mais forte) foi testado no mesmo dia e falhou nas 4
+    # chaves configuradas — 429 RESOURCE_EXHAUSTED (cota do tier gratuito, 20 req/dia
+    # para o modelo por trás do alias) numa tentativa e 503 UNAVAILABLE (sobrecarga do
+    # Google) em outra. Os três apontam para o mesmo modelo por ora — reavaliar usar um
+    # tier mais forte em MODELO_ACAO quando o faturamento pay-as-you-go for ativado.
     MODELO_CONVERSA = "gemini-flash-lite-latest"
-    MODELO_ACAO = "gemini-flash-latest"
+    MODELO_ACAO = "gemini-flash-lite-latest"
+    MODELO_ESTAVEL = "gemini-flash-lite-latest"
 
     @classmethod
     def _escolher_modelo(cls, context: Dict) -> str:
@@ -291,42 +296,54 @@ REGRAS OBRIGATÓRIAS:
                 modelo = cls._escolher_modelo(context)
                 cls._ultimo_tamanho_prompt = len(prompt)
 
-                # Tentar com as chaves disponíveis (Failover)
-                for key_index, client in enumerate(cls._clients):
-                    try:
-                        # Usar generate_content_stream
-                        stream = client.models.generate_content_stream(
-                            model=modelo,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                system_instruction=cls._system_instruction,
-                                temperature=0.7,
-                                top_p=0.9,
-                                top_k=40,
-                                max_output_tokens=250,
-                                response_modalities=['TEXT'],
+                # Tentar com os modelos disponíveis (Failover de Modelo + Chaves)
+                modelos_a_tentar = [modelo, cls.MODELO_ESTAVEL] if modelo != cls.MODELO_ESTAVEL else [modelo]
+                
+                for mod in modelos_a_tentar:
+                    for key_index, client in enumerate(cls._clients):
+                        try:
+                            # Usar generate_content_stream
+                            stream = client.models.generate_content_stream(
+                                model=mod,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    system_instruction=cls._system_instruction,
+                                    temperature=0.7,
+                                    top_p=0.9,
+                                    top_k=40,
+                                    max_output_tokens=250,
+                                    response_modalities=['TEXT'],
+                                )
                             )
-                        )
 
-                        # Registrar uso (contamos como 1 req)
-                        cls._usage_monitor.record_request()
+                            # Registrar uso (contamos como 1 req)
+                            cls._usage_monitor.record_request()
 
-                        for chunk in stream:
-                            if chunk.text:
-                                yield chunk.text
-                        
-                        return # Sucesso, sai do loop de chaves e retentativas
+                            for chunk in stream:
+                                if chunk.text:
+                                    yield chunk.text
+                            
+                            return # Sucesso absoluto
 
-                    except Exception as e_key:
-                        erro_msg = str(e_key)
-                        is_quota_error = "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg
-                        is_server_error = "503" in erro_msg or "UNAVAILABLE" in erro_msg
-                        
-                        if (is_quota_error or is_server_error) and key_index < len(cls._clients) - 1:
-                            print(f"⚠️ [Gemini Stream] Chave {key_index+1} falhou. Tentando próxima chave... ({erro_msg[:60]})")
-                            continue # Pula para a próxima chave
-                        else:
-                            raise e_key # Se for a última chave ou outro erro, lança exceção para o retry temporal
+                        except Exception as e_key:
+                            erro_msg = str(e_key)
+                            is_quota_error = "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg
+                            is_server_error = "503" in erro_msg or "UNAVAILABLE" in erro_msg
+                            
+                            if is_quota_error and key_index < len(cls._clients) - 1:
+                                print(f"⚠️ [Gemini Stream] Chave {key_index+1} esgotou cota (429). Pulando para próxima...")
+                                continue 
+                            
+                            if is_server_error:
+                                if key_index < len(cls._clients) - 1:
+                                    print(f"⚠️ [Gemini Stream] Modelo {mod} instável (503) na chave {key_index+1}. Tentando próxima chave...")
+                                    time.sleep(0.5)
+                                    continue
+                                elif mod != modelos_a_tentar[-1]:
+                                    print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves. Tentando modelo estável...")
+                                    break # Sai do loop de chaves para tentar o próximo modelo
+                            
+                            raise e_key # Se nada resolveu, sobe para o retry temporal de 1.5s
 
             except Exception as e:
                 erro_str = str(e)
