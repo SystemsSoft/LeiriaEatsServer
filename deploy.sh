@@ -3,9 +3,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSH_KEY="${SSH_KEY:-$PROJECT_DIR/athenna.pem}"
+SSH_KEY="${SSH_KEY:-$PROJECT_DIR/aws-key.pem}"
 # Atualizado para o IP público atual da instância (ver RESUMO_DIAGNOSTICO.md)
-SERVER_HOST="${SERVER_HOST:-3.239.34.2}"
+SERVER_HOST="${SERVER_HOST:-13.222.98.95}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ec2-user/leiria-eats}"
 SERVICE_NAME="${SERVICE_NAME:-leiria-eats.service}"
@@ -17,7 +17,7 @@ fi
 
 chmod 600 "$SSH_KEY"
 
-RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=15"
+RSYNC_SSH="ssh -i $SSH_KEY -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no"
 sync_output="$(rsync --archive --compress --itemize-changes \
   --exclude='.env' \
   --exclude='.venv/' \
@@ -26,6 +26,7 @@ sync_output="$(rsync --archive --compress --itemize-changes \
   --exclude='__pycache__/' \
   --exclude='*.py[cod]' \
   --exclude='athenna.pem' \
+  --exclude='aws-key.pem' \
   --exclude='deploy.sh' \
   -e "$RSYNC_SSH" \
   "$PROJECT_DIR/" "$SERVER_USER@$SERVER_HOST:$REMOTE_DIR/")"
@@ -44,6 +45,7 @@ fi
 ssh -i "$SSH_KEY" \
   -o BatchMode=yes \
   -o ConnectTimeout=15 \
+  -o StrictHostKeyChecking=no \
   "$SERVER_USER@$SERVER_HOST" \
   "REMOTE_DIR='$REMOTE_DIR' SERVICE_NAME='$SERVICE_NAME' REQUIREMENTS_CHANGED='$requirements_changed' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
