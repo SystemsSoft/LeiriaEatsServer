@@ -81,7 +81,7 @@ class GeminiSalesAgent:
     Agente de vendas usando Google Gemini 1.5 Flash
     Modelo otimizado para conversação consultiva de vendas em Portugal
     """
-    _model = None
+    _clients = []
     _is_initialized = False
     _cache = GeminiCache(ttl_seconds=1800)  # Cache de 30 minutos
     _usage_monitor = GeminiUsageMonitor()
@@ -175,15 +175,20 @@ class GeminiSalesAgent:
 
     @classmethod
     def initialize(cls):
-        """Inicializa o cliente Gemini"""
+        """Inicializa os clientes Gemini (com Failover)"""
         if cls._is_initialized:
             return
 
         try:
-            print("🤖 [Gemini] Configurando API...")
+            print(f"🤖 [Gemini] Configurando API ({len(settings.GEMINI_API_KEYS)} chaves detectadas)...")
 
-            # Configurar cliente com API key
-            cls._model = genai.Client(api_key=settings.GEMINI_API_KEY)
+            cls._clients = []
+            for key in settings.GEMINI_API_KEYS:
+                client = genai.Client(api_key=key)
+                cls._clients.append(client)
+            
+            if not cls._clients:
+                raise ValueError("Nenhuma GEMINI_API_KEY configurada no .env")
 
             # 🚀 Pré-configurar regras do sistema (System Instructions)
             # Isso torna a geração mais rápida e o prompt mais curto
@@ -286,28 +291,42 @@ REGRAS OBRIGATÓRIAS:
                 modelo = cls._escolher_modelo(context)
                 cls._ultimo_tamanho_prompt = len(prompt)
 
-                # Usar generate_content_stream
-                stream = cls._model.models.generate_content_stream(
-                    model=modelo,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=cls._system_instruction,
-                        temperature=0.7,
-                        top_p=0.9,
-                        top_k=40,
-                        max_output_tokens=250,
-                        response_modalities=['TEXT'],
-                    )
-                )
+                # Tentar com as chaves disponíveis (Failover)
+                for key_index, client in enumerate(cls._clients):
+                    try:
+                        # Usar generate_content_stream
+                        stream = client.models.generate_content_stream(
+                            model=modelo,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                system_instruction=cls._system_instruction,
+                                temperature=0.7,
+                                top_p=0.9,
+                                top_k=40,
+                                max_output_tokens=250,
+                                response_modalities=['TEXT'],
+                            )
+                        )
 
-                # Registrar uso (contamos como 1 req)
-                cls._usage_monitor.record_request()
+                        # Registrar uso (contamos como 1 req)
+                        cls._usage_monitor.record_request()
 
-                for chunk in stream:
-                    if chunk.text:
-                        yield chunk.text
+                        for chunk in stream:
+                            if chunk.text:
+                                yield chunk.text
+                        
+                        return # Sucesso, sai do loop de chaves e retentativas
 
-                return # Sucesso, sai do loop de retry
+                    except Exception as e_key:
+                        erro_msg = str(e_key)
+                        is_quota_error = "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg
+                        is_server_error = "503" in erro_msg or "UNAVAILABLE" in erro_msg
+                        
+                        if (is_quota_error or is_server_error) and key_index < len(cls._clients) - 1:
+                            print(f"⚠️ [Gemini Stream] Chave {key_index+1} falhou. Tentando próxima chave... ({erro_msg[:60]})")
+                            continue # Pula para a próxima chave
+                        else:
+                            raise e_key # Se for a última chave ou outro erro, lança exceção para o retry temporal
 
             except Exception as e:
                 erro_str = str(e)
@@ -363,25 +382,35 @@ REGRAS OBRIGATÓRIAS:
             modelo = cls._escolher_modelo(context)
             cls._ultimo_tamanho_prompt = len(prompt)
 
-            # Chamar API com nova sintaxe
-            response = cls._model.models.generate_content(
-                model=modelo,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=cls._system_instruction,
-                    temperature=0.7,
-                    top_p=0.9,
-                    top_k=40,
-                    max_output_tokens=250,
-                    response_modalities=['TEXT'],
-                )
-            )
+            # Chamar API (com Failover de Chaves)
+            ai_response = ""
+            for key_index, client in enumerate(cls._clients):
+                try:
+                    response = client.models.generate_content(
+                        model=modelo,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=cls._system_instruction,
+                            temperature=0.7,
+                            top_p=0.9,
+                            top_k=40,
+                            max_output_tokens=250,
+                            response_modalities=['TEXT'],
+                        )
+                    )
+                    # Registrar uso e sair do loop se sucesso
+                    cls._usage_monitor.record_request()
+                    ai_response = cls._clean_response(response.text)
+                    break
+                except Exception as e_key:
+                    erro_msg = str(e_key)
+                    if ("429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg) and key_index < len(cls._clients) - 1:
+                        print(f"⚠️ [Gemini] Chave {key_index+1} falhou. Tentando próxima... ({erro_msg[:60]})")
+                        continue
+                    raise e_key
 
-            # Registrar uso
-            cls._usage_monitor.record_request()
-
-            # Limpar e validar resposta
-            ai_response = cls._clean_response(response.text)
+            if not ai_response:
+                return cls._generate_fallback_response(user_message, context)
 
             # Salvar no cache — NUNCA cachear resposta com ação de carrinho (tags [[...]]).
             # Uma resposta com [[ADD_TO_CART:...]] cacheada seria reexecutada para outra
@@ -447,33 +476,46 @@ REGRAS OBRIGATÓRIAS:
 
         acoes_executadas = []
         try:
-            response = cls._model.models.generate_content(model=modelo, contents=contents, config=config)
-            cls._usage_monitor.record_request()
+            # Chamar API (com Failover de Chaves)
+            response = None
+            for key_index, client in enumerate(cls._clients):
+                try:
+                    response = client.models.generate_content(model=modelo, contents=contents, config=config)
+                    cls._usage_monitor.record_request()
+                    
+                    # Se chegamos aqui, sucesso com esta chave. Agora processamos as function calls.
+                    # Nota: as chamadas subsequentes (idiv-e-vinda) usarão o mesmo client.
+                    for _ in range(3):
+                        chamadas = response.function_calls
+                        if not chamadas:
+                            break
 
-            # Até 3 idas e vindas de function-call nesta troca — suficiente para o caso
-            # de uso (no máximo adicionar_ao_carrinho seguido de mostrar_sacola no mesmo
-            # turno) e evita loop infinito se o modelo insistir em chamar ferramentas.
-            for _ in range(3):
-                chamadas = response.function_calls
-                if not chamadas:
-                    break
+                        contents.append(response.candidates[0].content)
+                        partes_resposta = []
+                        for chamada in chamadas:
+                            resultado = executor(chamada.name, dict(chamada.args or {}))
+                            acoes_executadas.append({
+                                "ferramenta": chamada.name,
+                                "args": dict(chamada.args or {}),
+                                "resultado": resultado,
+                            })
+                            partes_resposta.append(
+                                types.Part.from_function_response(name=chamada.name, response=resultado)
+                            )
+                        contents.append(types.Content(role="user", parts=partes_resposta))
+                        response = client.models.generate_content(model=modelo, contents=contents, config=config)
+                        cls._usage_monitor.record_request()
+                    
+                    break # Sucesso total com este cliente
+                except Exception as e_key:
+                    erro_msg = str(e_key)
+                    if ("429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg) and key_index < len(cls._clients) - 1:
+                        print(f"⚠️ [Gemini Tools] Chave {key_index+1} falhou. Tentando próxima... ({erro_msg[:60]})")
+                        continue
+                    raise e_key
 
-                contents.append(response.candidates[0].content)  # turno do modelo com a(s) function_call(s)
-                partes_resposta = []
-                for chamada in chamadas:
-                    resultado = executor(chamada.name, dict(chamada.args or {}))
-                    acoes_executadas.append({
-                        "ferramenta": chamada.name,
-                        "args": dict(chamada.args or {}),
-                        "resultado": resultado,
-                    })
-                    partes_resposta.append(
-                        types.Part.from_function_response(name=chamada.name, response=resultado)
-                    )
-                contents.append(types.Content(role="user", parts=partes_resposta))
-
-                response = cls._model.models.generate_content(model=modelo, contents=contents, config=config)
-                cls._usage_monitor.record_request()
+            if not response:
+                return {"text": cls._generate_fallback_response(user_message, context), "acoes_executadas": []}
 
             texto_final = cls._clean_response(response.text or "")
             return {"text": texto_final, "acoes_executadas": acoes_executadas}
@@ -671,7 +713,7 @@ Responda considerando TODO o contexto acima. Seja consultivo e natural."""
     @classmethod
     def is_ready(cls) -> bool:
         """Verifica se modelo está pronto"""
-        return cls._is_initialized and cls._model is not None
+        return cls._is_initialized and len(cls._clients) > 0
 
     @classmethod
     def get_usage_status(cls) -> Dict:

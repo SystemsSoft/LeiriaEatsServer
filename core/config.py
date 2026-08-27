@@ -16,8 +16,10 @@ class Settings:
     # Fallback temporário para facilitar teste online do webhook.
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-    # Google Gemini API Key
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
+    # Google Gemini API Keys (Suporta múltiplas chaves separadas por vírgula para failover)
+    GEMINI_API_KEYS: list[str] = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip()]
+    # Mantido por compatibilidade
+    GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
     # Redis Config
     REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")

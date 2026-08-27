@@ -208,6 +208,31 @@ def _try_automatic_payment_with_saved_card(
         return None
 
 
+def _descrever_erro_stripe(e: Exception) -> str:
+    """
+    Extrai os campos estruturados de um erro do Stripe (code, http_status, param, type)
+    quando disponíveis, em vez de só str(e) — que costuma vir genérico o suficiente para
+    não dar pista nenhuma do motivo real (ex.: número de telefone em formato inválido
+    vs. cliente Stripe apagado vs. chave de API inválida têm mensagens bem diferentes
+    nesses campos, mas parecidas em str(e)).
+    """
+    if isinstance(e, stripe.error.StripeError):
+        partes = [f"tipo={type(e).__name__}"]
+        if getattr(e, "http_status", None) is not None:
+            partes.append(f"http_status={e.http_status}")
+        if getattr(e, "code", None):
+            partes.append(f"code={e.code}")
+        json_body = getattr(e, "json_body", None) or {}
+        erro_aninhado = json_body.get("error", {}) if isinstance(json_body, dict) else {}
+        if erro_aninhado.get("param"):
+            partes.append(f"param={erro_aninhado['param']}")
+        if erro_aninhado.get("type"):
+            partes.append(f"stripe_type={erro_aninhado['type']}")
+        partes.append(f"mensagem={str(e)}")
+        return " | ".join(partes)
+    return f"tipo={type(e).__name__} | mensagem={str(e)}"
+
+
 @router.post("/orders/initiate-checkout")
 def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Session = Depends(get_db)):
     """
@@ -215,6 +240,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     - Suporta múltiplos restaurantes num único checkout.
     - Se houver cartão salvo e save_payment_method=true, tenta cobrança automática.
     """
+    print(f"🛒 [Checkout] Iniciando checkout único para user: {order_data.user_id}")
     from ulid import ULID
     master_order_gid = order_data.gid if order_data.gid else str(ULID())
     
@@ -237,6 +263,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
             )
             stripe_customer_id = customer.id
         except Exception as e:
+            print(f"❌ [Checkout] Erro ao criar cliente Stripe ({order_data.user_id}): {_descrever_erro_stripe(e)}")
             raise HTTPException(status_code=400, detail=f"Erro ao criar cliente Stripe: {str(e)}")
 
     # ── 2. Criar Master Order ───────────────────────────────────────────────
@@ -389,7 +416,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
         }
 
     except Exception as e:
-        print(f"❌ [Stripe SDK Error]: {str(e)}")
+        print(f"❌ [Stripe SDK Error] ({order_data.user_id}, amount_cents={amount_cents}): {_descrever_erro_stripe(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
