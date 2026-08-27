@@ -85,6 +85,81 @@ class GeminiSalesAgent:
     _is_initialized = False
     _cache = GeminiCache(ttl_seconds=1800)  # Cache de 30 minutos
     _usage_monitor = GeminiUsageMonitor()
+    _ultimo_tamanho_prompt = 0  # F0: exposto para a telemetria estimar tokens de entrada
+
+    # F2.3: roteamento de modelo por turno. Flash-Lite é a variante mais rápida, mas a
+    # mais fraca em seguir instrução — e o system prompt pede aritmética de carrinho
+    # incremental e decisão condicional. Reservamos o modelo mais forte só para turnos
+    # que podem de fato alterar o carrinho; conversa fiada/saudação usa o Lite, mais barato
+    # e mais rápido. Confirmar identificador, limites e custo na documentação oficial do
+    # Gemini antes de fixar em produção — nomes de modelo mudam com frequência.
+    MODELO_CONVERSA = "gemini-flash-lite-latest"
+    MODELO_ACAO = "gemini-flash-latest"
+
+    @classmethod
+    def _escolher_modelo(cls, context: Dict) -> str:
+        """Turno com carrinho não-vazio ou intenção de busca/pergunta específica de
+        produto merece o modelo com melhor aderência a instrução."""
+        if context.get("cart"):
+            return cls.MODELO_ACAO
+        if context.get("intent_type") in {"product_search", "specific_question"}:
+            return cls.MODELO_ACAO
+        return cls.MODELO_CONVERSA
+
+    # F3.1 (PLANO_EXECUCAO_IA.md): ferramentas do contrato de function calling, que
+    # substitui as tags textuais [[ADD_TO_CART:...]]/[[SHOW_CART]]. Formato validado por
+    # introspecção do SDK google-genai 2.17.0 instalado neste projeto (não assumido de
+    # memória) — types.FunctionDeclaration aceita JSON Schema puro via
+    # `parametersJsonSchema`. O round-trip completo (chamada real → function_call →
+    # function_response → texto final) NÃO pôde ser validado contra a API ao vivo nesta
+    # sessão porque a GEMINI_API_KEY do projeto está com créditos esgotados (429
+    # RESOURCE_EXHAUSTED, confirmado com uma chamada mínima). Validar assim que os
+    # créditos forem restabelecidos, antes de ligar IA_FUNCTION_CALLING em produção.
+    _FERRAMENTA_ADICIONAR_AO_CARRINHO = types.FunctionDeclaration(
+        name="adicionar_ao_carrinho",
+        description=(
+            "Adiciona, remove ou ajusta a quantidade de um produto no carrinho do cliente. "
+            "delta_quantidade positivo adiciona/incrementa; negativo remove/decrementa. "
+            "Use o GID exato listado em PRODUTOS DISPONÍVEIS — nunca invente um GID."
+        ),
+        parametersJsonSchema={
+            "type": "object",
+            "properties": {
+                "product_gid": {"type": "string", "description": "GID exato do produto listado no catálogo"},
+                "delta_quantidade": {"type": "integer", "description": "Variação de quantidade; negativo remove"},
+            },
+            "required": ["product_gid", "delta_quantidade"],
+        },
+    )
+    _FERRAMENTA_MOSTRAR_SACOLA = types.FunctionDeclaration(
+        name="mostrar_sacola",
+        description="Sinaliza que a sacola/carrinho deve ser exibida ao cliente para revisão e pagamento, após ele confirmar que quer finalizar o pedido.",
+        parametersJsonSchema={"type": "object", "properties": {}},
+    )
+    # F4.2: substitui _filter_mentioned_products (heurística de casar nome de produto no
+    # texto da resposta, que erra em ambas as direções — ver ANALISE_IA_PEDIDO.md 3.6).
+    # O modelo declara explicitamente quais produtos do pool merecem aparecer como
+    # cartão ao cliente, em vez do servidor adivinhar a partir do texto gerado.
+    _FERRAMENTA_SUGERIR_PRODUTOS = types.FunctionDeclaration(
+        name="sugerir_produtos",
+        description=(
+            "Declara quais produtos do catálogo devem ser exibidos como cartão ao cliente nesta "
+            "resposta (ex.: ao comparar opções ou recomendar algo), mesmo sem adicioná-los ao "
+            "carrinho. Não é necessário chamar isto para produtos que você já adicionou via "
+            "adicionar_ao_carrinho — esses já aparecem automaticamente."
+        ),
+        parametersJsonSchema={
+            "type": "object",
+            "properties": {
+                "gids": {"type": "array", "items": {"type": "string"},
+                          "description": "GIDs exatos do catálogo a destacar, na ordem de relevância"},
+            },
+            "required": ["gids"],
+        },
+    )
+    _TOOLS = [types.Tool(functionDeclarations=[
+        _FERRAMENTA_ADICIONAR_AO_CARRINHO, _FERRAMENTA_MOSTRAR_SACOLA, _FERRAMENTA_SUGERIR_PRODUTOS,
+    ])]
 
     # Respostas em cache adaptadas para o vocabulário e tom de PT-PT
     _STATIC_RESPONSES = {
@@ -109,7 +184,7 @@ class GeminiSalesAgent:
 
             # Configurar cliente com API key
             cls._model = genai.Client(api_key=settings.GEMINI_API_KEY)
-            
+
             # 🚀 Pré-configurar regras do sistema (System Instructions)
             # Isso torna a geração mais rápida e o prompt mais curto
             cls._system_instruction = """Você é um CONSULTOR DE VENDAS especialista em delivery de comida em Portugal.
@@ -137,7 +212,41 @@ REGRAS OBRIGATÓRIAS:
    - Após o cliente confirmar (ex: "Sim", "Pode ser"), faça o resumo do pedido e use OBRIGATORIAMENTE a tag [[SHOW_CART]].
    - Informe que a sacola será apresentada no ecrã para que ele possa validar os detalhes, taxas e confirmar o pagamento.
    - NUNCA diga que o valor atual é o "total do pedido", refira-se como "subtotal dos produtos".
-6. Seja natural, amigável e conciso (máximo 100 palavras)."""
+6. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou
+   alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela."""
+
+            # F3: variante da system instruction para o modo function calling — mesmas
+            # regras de 1 a 3 e 6, mas a regra 4/5 usa as FERRAMENTAS em vez de tags de
+            # texto [[...]]. Ver nota de validação pendente junto de _TOOLS acima.
+            cls._system_instruction_fc = """Você é um CONSULTOR DE VENDAS especialista em delivery de comida em Portugal.
+MISSÃO: Entender o que o cliente quer e ajudá-lo a montar o melhor pedido baseando-se no HISTÓRICO DA CONVERSA.
+
+REGRAS OBRIGATÓRIAS:
+1. Comunique SEMPRE em Português de Portugal (PT-PT).
+   - Use infinitivo em vez de gerúndio (ex: "a preparar" em vez de "preparando").
+   - Use vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
+2. Use APENAS produtos listados na seção "PRODUTOS DISPONÍVEIS". NUNCA invente itens nem GIDs.
+3. Validação de Quantidade Inteligente:
+   - SÓ pergunte a quantidade OU para quantas pessoas após o utilizador ter escolhido um produto específico.
+   - NÃO pergunte as duas coisas. Escolha a mais natural baseada no contexto:
+     * Para pratos partilháveis (pizzas, sushi, combinados): pergunte "Para quantas pessoas?".
+     * Para itens individuais (hambúrgueres, bebidas, sobremesas): pergunte a "Quantidade".
+   - Se o utilizador já mencionou o número de pessoas no início da conversa, use essa informação para sugerir a quantidade e não pergunte novamente.
+4. Gestão do Carrinho — use SEMPRE a ferramenta adicionar_ao_carrinho, nunca escreva a ação como texto:
+   - Identifique produtos pelo GID exato do catálogo.
+   - O sistema é INCREMENTAL: delta_quantidade é SOMADO ao que já existe no carrinho.
+   - REGRA DE OURO: não chame a ferramenta automaticamente apenas porque o utilizador escolheu um sabor. Se você vai perguntar a quantidade logo a seguir, ESPERE a resposta dele para então chamar a ferramenta com o valor total desejado.
+   - Se o utilizador já tem 1 item e diz "quero 3 no total", chame a ferramenta com delta_quantidade=2 (a diferença, não o total).
+   - Depois de chamar a ferramenta, você receberá o resultado (sucesso ou erro) antes de escrever a resposta final — use esse resultado para responder com precisão; se dizer "erro", NÃO afirme ao cliente que adicionou.
+5. Finalização e Sacola:
+   - Se o cliente quiser fechar ou finalizar o pedido, peça uma confirmação final.
+   - Após o cliente confirmar (ex: "Sim", "Pode ser"), faça o resumo do pedido e chame a ferramenta mostrar_sacola.
+   - Informe que a sacola será apresentada no ecrã para que ele possa validar os detalhes, taxas e confirmar o pagamento.
+   - NUNCA diga que o valor atual é o "total do pedido", refira-se como "subtotal dos produtos".
+6. Destaque de Produtos: quando comparar opções, recomendar algo ou responder "o que vocês têm", chame
+   sugerir_produtos com os GIDs relevantes para que apareçam como cartão na tela. Não é necessário
+   chamar isto para um produto que você já adicionou via adicionar_ao_carrinho.
+7. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela."""
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -174,10 +283,12 @@ REGRAS OBRIGATÓRIAS:
 
                 prompt = cls._build_prompt(user_message, products, context,
                                            history_text, session_context)
+                modelo = cls._escolher_modelo(context)
+                cls._ultimo_tamanho_prompt = len(prompt)
 
                 # Usar generate_content_stream
                 stream = cls._model.models.generate_content_stream(
-                    model='gemini-flash-lite-latest',
+                    model=modelo,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=cls._system_instruction,
@@ -195,17 +306,21 @@ REGRAS OBRIGATÓRIAS:
                 for chunk in stream:
                     if chunk.text:
                         yield chunk.text
-                
+
                 return # Sucesso, sai do loop de retry
 
             except Exception as e:
-                is_unavailable = "503" in str(e) or "UNAVAILABLE" in str(e)
-                if is_unavailable and attempt < max_retries:
+                erro_str = str(e)
+                # 503 (UNAVAILABLE) e 429 (RESOURCE_EXHAUSTED / cota estourada) são
+                # transitórios e valem retry. Sem tratar 429, cota estourada caía direto
+                # no fallback genérico no meio de uma venda, sem nenhuma nova tentativa.
+                is_retryable = any(code in erro_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+                if is_retryable and attempt < max_retries:
                     wait_time = 1.5 * (attempt + 1)
-                    print(f"⚠️ [Gemini Stream] 503 detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time}s...")
+                    print(f"⚠️ [Gemini Stream] Erro transitório detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time}s... ({erro_str[:120]})")
                     time.sleep(wait_time)
                     continue
-                
+
                 print(f"❌ [Gemini Stream] Erro final após {attempt} retentativas: {e}")
                 yield cls._generate_fallback_response(user_message, context)
                 return
@@ -245,10 +360,12 @@ REGRAS OBRIGATÓRIAS:
             # Construir prompt otimizado
             prompt = cls._build_prompt(user_message, products, context,
                                        history_text, session_context)
+            modelo = cls._escolher_modelo(context)
+            cls._ultimo_tamanho_prompt = len(prompt)
 
             # Chamar API com nova sintaxe
             response = cls._model.models.generate_content(
-                model='gemini-flash-lite-latest',
+                model=modelo,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=cls._system_instruction,
@@ -266,8 +383,11 @@ REGRAS OBRIGATÓRIAS:
             # Limpar e validar resposta
             ai_response = cls._clean_response(response.text)
 
-            # Salvar no cache
-            cls._cache.set(cache_key, ai_response)
+            # Salvar no cache — NUNCA cachear resposta com ação de carrinho (tags [[...]]).
+            # Uma resposta com [[ADD_TO_CART:...]] cacheada seria reexecutada para outra
+            # sessão com carrinho diferente que disparasse a mesma cache_key.
+            if "[[" not in ai_response:
+                cls._cache.set(cache_key, ai_response)
 
             # Log de status
             status = cls._usage_monitor.get_status()
@@ -278,6 +398,92 @@ REGRAS OBRIGATÓRIAS:
         except Exception as e:
             print(f"❌ [Gemini] Erro ao gerar resposta: {e}")
             return cls._generate_fallback_response(user_message, context)
+
+    @classmethod
+    def generate_response_with_tools(cls, user_message: str, context: Dict, executor) -> Dict:
+        """
+        F3 do PLANO_EXECUCAO_IA.md — gera resposta usando function calling nativo em vez
+        das tags de texto [[ADD_TO_CART:...]]/[[SHOW_CART]]. Substitui de uma vez os 8
+        modos de falha silenciosa do contrato por tags (regex que não casa, GID fora do
+        pool descoberto só depois do fato, tag truncada por max_output_tokens, etc.) —
+        ver ANALISE_IA_PEDIDO.md seção 3.4.
+
+        `executor` é uma função (nome_ferramenta: str, args: dict) -> dict que EXECUTA e
+        VALIDA a ação (ex.: checa se o GID existe no pool, aplica teto de quantidade) e
+        devolve um resultado — que é reenviado ao modelo ANTES da resposta final. Isso é
+        o que impede a IA de afirmar uma ação que não foi de fato aplicada: ela só escreve
+        a frase final depois de ver o resultado real da chamada.
+
+        A execução das ferramentas (validação de GID, teto de quantidade, mutação do
+        carrinho) fica em HybridAIService — GeminiSalesAgent não conhece a sessão nem o
+        pool de produtos, só orquestra a conversa com o modelo.
+
+        Retorna {"text": str, "acoes_executadas": [{"ferramenta": str, "args": dict, "resultado": dict}]}.
+
+        NÃO USAR EM PRODUÇÃO sem antes validar o round-trip contra a API viva — ver nota
+        junto de _TOOLS. Esta implementação foi testada apenas contra um dublê do cliente
+        (tests/test_function_calling.py), porque os créditos da GEMINI_API_KEY do projeto
+        estavam esgotados no momento em que este código foi escrito.
+        """
+        if not cls.is_ready():
+            cls.initialize()
+
+        products = context.get("products", [])
+        history_text = context.get("history_text", "")
+        session_context = context.get("session_context", {})
+        prompt = cls._build_prompt(user_message, products, context, history_text, session_context)
+        cls._ultimo_tamanho_prompt = len(prompt)
+        modelo = cls._escolher_modelo(context)
+
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
+        config = types.GenerateContentConfig(
+            system_instruction=cls._system_instruction_fc,
+            temperature=0.7,
+            top_p=0.9,
+            top_k=40,
+            max_output_tokens=250,
+            tools=cls._TOOLS,
+        )
+
+        acoes_executadas = []
+        try:
+            response = cls._model.models.generate_content(model=modelo, contents=contents, config=config)
+            cls._usage_monitor.record_request()
+
+            # Até 3 idas e vindas de function-call nesta troca — suficiente para o caso
+            # de uso (no máximo adicionar_ao_carrinho seguido de mostrar_sacola no mesmo
+            # turno) e evita loop infinito se o modelo insistir em chamar ferramentas.
+            for _ in range(3):
+                chamadas = response.function_calls
+                if not chamadas:
+                    break
+
+                contents.append(response.candidates[0].content)  # turno do modelo com a(s) function_call(s)
+                partes_resposta = []
+                for chamada in chamadas:
+                    resultado = executor(chamada.name, dict(chamada.args or {}))
+                    acoes_executadas.append({
+                        "ferramenta": chamada.name,
+                        "args": dict(chamada.args or {}),
+                        "resultado": resultado,
+                    })
+                    partes_resposta.append(
+                        types.Part.from_function_response(name=chamada.name, response=resultado)
+                    )
+                contents.append(types.Content(role="user", parts=partes_resposta))
+
+                response = cls._model.models.generate_content(model=modelo, contents=contents, config=config)
+                cls._usage_monitor.record_request()
+
+            texto_final = cls._clean_response(response.text or "")
+            return {"text": texto_final, "acoes_executadas": acoes_executadas}
+
+        except Exception as e:
+            print(f"❌ [Gemini FunctionCalling] Erro ao gerar resposta: {e}")
+            return {
+                "text": cls._generate_fallback_response(user_message, context),
+                "acoes_executadas": acoes_executadas,
+            }
 
     @classmethod
     def _build_prompt(
@@ -371,12 +577,32 @@ REGRAS OBRIGATÓRIAS:
         if ctx_parts:
             session_section = f"\n\n🧠 CONTEXTO EXTRA: {' | '.join(ctx_parts)}"
 
+        # F1.2: sinais detectados por palavra-chave em HybridAIService._detect_intent_type.
+        # Antes eram calculados (intent_type, user_needs) e nunca chegavam a este prompt —
+        # a IA não recebia o que o sistema já sabia sobre a intenção da mensagem.
+        user_needs = context.get("user_needs", {}) or {}
+        sinais = []
+        if user_needs.get("has_doubt"):
+            sinais.append("cliente parece indeciso entre opções")
+        if user_needs.get("wants_recommendation"):
+            sinais.append("cliente pediu recomendação")
+        if user_needs.get("asks_quantity"):
+            sinais.append("cliente perguntou sobre quantidade/porção")
+        if user_needs.get("mentions_drink"):
+            sinais.append("cliente mencionou bebida")
+        if user_needs.get("mentions_dessert"):
+            sinais.append("cliente mencionou sobremesa")
+        intent_type = context.get("intent_type")
+        if intent_type == "greeting":
+            sinais.append("mensagem é uma saudação")
+        signals_section = f"\n\n🔎 SINAIS DETECTADOS NA MENSAGEM: {' | '.join(sinais)}" if sinais else ""
+
         # Prompt final - nota de confirmação
         order_note = ""
         if context.get("order_confirmed"):
             order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
-        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{order_note}
+        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"
@@ -398,13 +624,32 @@ Responda considerando TODO o contexto acima. Seja consultivo e natural."""
 
     @classmethod
     def _generate_cache_key(cls, user_message: str, context: Dict) -> str:
-        """Gera chave de cache baseada na mensagem e produtos"""
-        # Simplificar para cache mais eficiente
-        products = context.get("products", [])
-        product_ids = sorted([p.get('id', 0) for p in products[:3]])
+        """
+        Gera chave de cache baseada na mensagem, produtos, carrinho e histórico recente.
 
-        cache_key = f"{user_message.lower().strip()}_{','.join(map(str, product_ids))}"
-        return cache_key
+        Inclui carrinho e histórico porque a resposta do Gemini depende deles: duas sessões
+        diferentes com o mesmo produto no pool mas carrinhos distintos NÃO podem compartilhar
+        a mesma resposta cacheada (ex.: "sim" respondido de forma diferente conforme o que
+        já está no carrinho). Sem isso, uma resposta cacheada para a sessão A podia ser
+        servida para a sessão B nesse estado diferente.
+        """
+        import hashlib
+
+        products = context.get("products", [])
+        gids = sorted(p.get("gid", "") for p in products[:6] if p.get("gid"))
+
+        cart = context.get("cart", [])
+        cart_sig = ",".join(
+            f"{i.get('product_id')}x{i.get('quantity')}"
+            for i in sorted(cart, key=lambda i: i.get("product_id", 0))
+        )
+
+        # Últimos ~300 caracteres do histórico bastam para diferenciar o ponto da conversa
+        # sem tornar o cache inútil (praticamente todo turno teria histórico único).
+        history_tail = (context.get("history_text") or "")[-300:]
+
+        raw = f"{user_message.lower().strip()}|{cart_sig}|{history_tail}|{','.join(gids)}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @classmethod
     def _generate_fallback_response(cls, user_message: str, context: Dict) -> str:

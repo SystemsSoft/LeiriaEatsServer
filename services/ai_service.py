@@ -25,6 +25,7 @@ class AIService:
     # Mapeamento de Produtos
     _product_obj_cache = []  # Guarda o objeto Product real
     _product_owner_name = []  # Nome do restaurante dono para o 'reply'
+    _product_by_id: dict = {}  # {id: Product} — evita O(n) por lookup (F2.2 do plano)
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -417,6 +418,103 @@ class AIService:
         cls._data_cache = data
         cls._index_data(data)
 
+    @staticmethod
+    def _texto_para_indice(p, categoria_restaurante: str) -> str:
+        """
+        Texto usado no embedding do produto (F1.1 do PLANO_EXECUCAO_IA.md).
+
+        Antes usava apenas nome + descrição, deixando de fora ingredients, dietary_tags,
+        search_tags, recommended_for e spice_level — colunas que existem no banco
+        exatamente para a IA e que ficavam sem nenhum sinal no vetor. Consultas como
+        "algo sem lactose" ou "picante para o jantar" não tinham como casar com nada.
+        """
+        partes = [
+            getattr(p, "name", None),
+            getattr(p, "description", None),
+            getattr(p, "category", None),
+            categoria_restaurante,
+            getattr(p, "ingredients", None),
+            getattr(p, "dietary_tags", None),
+            getattr(p, "search_tags", None),
+            getattr(p, "recommended_for", None),
+            getattr(p, "portion_size", None),
+        ]
+        spice = getattr(p, "spice_level", None)
+        if spice and spice != "não picante":
+            partes.append(spice)
+        return "passage: " + " | ".join(str(x) for x in partes if x)
+
+    @staticmethod
+    def _normalizar_texto_busca(texto: Optional[str]) -> str:
+        """Minúsculas e sem acentos, para comparação léxica tolerante a "Francesinha"
+        vs. "francesinha" vs. "fráncesinha" (erro de digitação comum em mobile)."""
+        import unicodedata
+        if not texto:
+            return ""
+        sem_acento = ''.join(
+            c for c in unicodedata.normalize('NFD', texto.lower())
+            if unicodedata.category(c) != 'Mn'
+        )
+        return sem_acento.strip()
+
+    # Palavras genéricas de pedido/conectores que não carregam sinal de relevância para
+    # casamento léxico — sem isso, "quero um produto" casaria com QUALQUER produto só
+    # pela palavra "produto", inflando falsos positivos no sinal léxico do F5.2.
+    _STOPWORDS_LEXICAL = {
+        "quero", "queria", "gostaria", "preciso", "vou", "querer", "traz", "trazer",
+        "pode", "por", "favor", "para", "com", "sem", "uma", "uns", "umas", "que",
+        "produto", "produtos", "prato", "pratos", "item", "itens", "algo", "alguma",
+        "algum", "coisa", "tem", "tens", "temos", "cardapio", "cardápio", "menu",
+    }
+
+    @classmethod
+    def _score_lexical(cls, query_normalizada: str, produto) -> float:
+        """
+        F5.2 do PLANO_EXECUCAO_IA.md — sinal léxico para fundir com o score vetorial via
+        RRF. Cobre o caso em que o embedding multilingual erra: nomes próprios de prato
+        ("Francesinha", "Bitoque", "Combo do Chefe") tendem a ter score de cosseno
+        mediano porque o modelo não tem uma associação semântica forte para eles — mas
+        um match textual direto é trivial de pegar.
+
+        1.0  → a consulta inteira aparece como substring no nome/tags do produto
+        (0,1] → fração dos tokens de conteúdo (>2 letras, fora de _STOPWORDS_LEXICAL)
+                da consulta que aparecem no produto
+        0.0  → nenhuma sobreposição
+        """
+        if not query_normalizada:
+            return 0.0
+        texto_produto = cls._normalizar_texto_busca(
+            f"{getattr(produto, 'name', '') or ''} {getattr(produto, 'search_tags', '') or ''}"
+        )
+        if not texto_produto:
+            return 0.0
+        if query_normalizada in texto_produto:
+            return 1.0
+
+        tokens_query = {
+            t for t in query_normalizada.split()
+            if len(t) > 2 and t not in cls._STOPWORDS_LEXICAL
+        }
+        if not tokens_query:
+            return 0.0
+        tokens_produto = set(texto_produto.split())
+        intersecao = tokens_query & tokens_produto
+        if not intersecao:
+            return 0.0
+        return len(intersecao) / len(tokens_query)
+
+    @staticmethod
+    def _rrf(rank_a: Optional[int], rank_b: Optional[int], k: int = 60) -> float:
+        """Reciprocal Rank Fusion — funde duas ordenações (vetorial e léxica) sem
+        precisar normalizar escalas de score diferentes entre si. rank_a/rank_b são
+        posições 0-based; None significa "não apareceu nessa lista"."""
+        score = 0.0
+        if rank_a is not None:
+            score += 1.0 / (k + rank_a)
+        if rank_b is not None:
+            score += 1.0 / (k + rank_b)
+        return score
+
     @classmethod
     def _index_data(cls, restaurants: list[Restaurant]):
         model = cls.get_model()
@@ -424,24 +522,36 @@ class AIService:
         # --- PARTE 1: Especialista em Restaurantes (Nomes e Categorias) ---
         names = [f"passage: {r.name}" for r in restaurants]
         categories = [f"passage: {r.category}" for r in restaurants]
-        cls._embeddings_names = model.encode(names, convert_to_tensor=True)
-        cls._embeddings_categories = model.encode(categories, convert_to_tensor=True)
+        embeddings_names = model.encode(names, convert_to_tensor=True)
+        embeddings_categories = model.encode(categories, convert_to_tensor=True)
 
         # --- PARTE 2: Especialista em Produtos ---
         product_texts = []
-        cls._product_obj_cache = []
-        cls._product_owner_name = []
+        product_obj_cache = []
+        product_owner_name = []
+        product_by_id = {}
 
         for r in restaurants:
             for p in r.products:
-                # Indexamos com prefixo 'passage:' + Nome + Descrição para maior profundidade
-                text = f"passage: {p.name} {p.description if p.description else ''}"
+                text = cls._texto_para_indice(p, r.category)
                 product_texts.append(text)
-                cls._product_obj_cache.append(p)
-                cls._product_owner_name.append(r.name)
+                product_obj_cache.append(p)
+                product_owner_name.append(r.name)
+                product_by_id[p.id] = p
 
-        if product_texts:
-            cls._embeddings_products = model.encode(product_texts, convert_to_tensor=True)
+        embeddings_products = model.encode(product_texts, convert_to_tensor=True) if product_texts else None
+
+        # Rebind atômico ao final: requests concorrentes que estejam lendo essas
+        # estruturas durante a reindexação não devem ver um estado parcial (ex.: cache
+        # de objetos já trocado mas embeddings ainda antigos, ou vice-versa) — isso
+        # fazia um lookup falhar em silêncio e uma tag ADD_TO_CART do Gemini ser
+        # descartada no meio de uma reindexação.
+        cls._embeddings_names = embeddings_names
+        cls._embeddings_categories = embeddings_categories
+        cls._product_obj_cache = product_obj_cache
+        cls._product_owner_name = product_owner_name
+        cls._product_by_id = product_by_id
+        cls._embeddings_products = embeddings_products
 
     @classmethod
     def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto") -> SearchResponse:
@@ -512,23 +622,66 @@ class AIService:
                     res_results.append({"obj": res, "score": score})
 
         # --- 3. BUSCA DE PRODUTOS (sempre executada) ---
+        # F5.2: busca híbrida (vetorial E5 + léxica) fundida por Reciprocal Rank Fusion.
+        # Nome próprio de prato ("Francesinha", "Bitoque", "Combo do Chefe") é onde o
+        # embedding multilingual é mais fraco e onde um match textual acerta na hora.
+        # O plano original previa pg_trgm (Postgres), mas core/database.py usa
+        # mysql+pymysql — o banco real é MySQL. Em vez de depender de um recurso
+        # específico de dialeto (FULLTEXT do MySQL exigiria migração e não pôde ser
+        # validado contra o banco real nesta sessão), o lado léxico roda em Python sobre
+        # o cache já carregado em memória — portátil entre bancos, sem migração, e
+        # barato para catálogos deste porte (dezenas/centenas de produtos por busca).
         prod_results = []
         if cls._embeddings_products is not None:
             scores_prod = util.cos_sim(user_embedding, cls._embeddings_products)[0]
+            query_normalizada = cls._normalizar_texto_busca(user_query)
+
+            # F5.1 (corte relativo) aplicado ao cosseno cru, ANTES da fusão: RRF é um
+            # score baseado em posição/rank, não em distância — a proporção entre o 1º e
+            # o 6º colocado por rank muda pouco mesmo quando a diferença de relevância
+            # real é grande. Aplicar um corte relativo em cima do score RRF não filtraria
+            # quase nada; o corte que faz sentido continua sendo sobre o cosseno.
+            melhor_score_vetorial = scores_prod.max().item() if len(scores_prod) else 0.0
+            PROD_SCORE_RELATIVE_CUTOFF = 0.97
+            piso_vetorial_relativo = melhor_score_vetorial * PROD_SCORE_RELATIVE_CUTOFF
+
+            rank_vetorial = {}
+            for idx in sorted(range(len(cls._product_obj_cache)),
+                               key=lambda i: scores_prod[i].item(), reverse=True):
+                rank_vetorial[idx] = len(rank_vetorial)
+
+            scores_lexicais = [
+                cls._score_lexical(query_normalizada, p) for p in cls._product_obj_cache
+            ]
+            rank_lexical = {}
+            for idx in sorted(
+                (i for i, s in enumerate(scores_lexicais) if s > 0),
+                key=lambda i: scores_lexicais[i], reverse=True,
+            ):
+                rank_lexical[idx] = len(rank_lexical)
+
             for i, p_obj in enumerate(cls._product_obj_cache):
-                score = scores_prod[i].item()
-                if score > 0.45:  # Threshold para incluir candidatos
-                    prod_results.append({
-                        "obj": p_obj,
-                        "score": score,
-                        "owner": cls._product_owner_name[i]
-                    })
+                score_vetorial = scores_prod[i].item()
+                tem_match_lexical = i in rank_lexical
+                # Um produto entra na disputa se: (a) semanticamente próximo do melhor
+                # resultado vetorial (corte relativo, F5.1), OU (b) tem match léxico —
+                # é essa segunda condição que resgata nomes próprios de prato que o
+                # embedding subestimou (ex.: "Francesinha" com score vetorial mediano).
+                if score_vetorial < piso_vetorial_relativo and not tem_match_lexical:
+                    continue
+                score_fundido = cls._rrf(rank_vetorial.get(i), rank_lexical.get(i))
+                prod_results.append({
+                    "obj": p_obj,
+                    "score": score_fundido,
+                    "score_vetorial": score_vetorial,
+                    "owner": cls._product_owner_name[i],
+                })
 
         # --- 4. ORDENAÇÃO ---
         res_results.sort(key=lambda x: x["score"], reverse=True)
 
-        # Ordenar produtos por score e manter apenas os top 6 mais relevantes
-        # Isso evita mandar todos os 16 produtos para o Gemini
+        # Ordenar produtos pelo score fundido (RRF) — o corte por relevância (F5.1) já
+        # foi aplicado acima, sobre o cosseno cru; aqui só falta truncar por quantidade.
         prod_results.sort(key=lambda x: x["score"], reverse=True)
         prod_results = prod_results[:6]
 
