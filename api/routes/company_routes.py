@@ -91,10 +91,15 @@ def update_company(gid: str, company_update: CompanyUpdateRequest, db: Session =
 
 @router.post("/connect/onboarding/{gid}")
 def create_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
-    # 1. Busca o restaurante no banco
+    # 1. Busca o restaurante no banco (Tenta GID primeiro, depois ID para compatibilidade)
     restaurant = RestaurantRepository.get_by_gid(db, gid)
+    
+    if not restaurant and gid.isdigit():
+        # Fallback: tenta buscar por ID numérico se o App ainda não enviou o GID
+        restaurant = RestaurantRepository.get_by_id(db, int(gid))
+
     if not restaurant:
-        raise HTTPException(status_code=404, detail="Restaurante não encontrado")
+        raise HTTPException(status_code=404, detail="Restaurante não encontrado. Verifique se o ID ou GID está correto.")
 
     try:
         # 2. Se ele ainda não tem conta Stripe, cria uma
