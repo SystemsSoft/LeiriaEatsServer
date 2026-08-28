@@ -20,21 +20,45 @@ router = APIRouter()
 def create_product(product_data: ProductCreateRequest, db: Session = Depends(get_db)):
     print(f"🍔 Criando produto: {product_data.name}")
 
+    # Pega o GID de qualquer um dos campos (preferência para restaurant_gid)
+    res_gid = product_data.restaurant_gid or product_data.restaurant_id
+    if not res_gid:
+        raise HTTPException(status_code=400, detail="restaurant_gid é obrigatório.")
+
     # Verifica se o restaurante existe usando RestaurantDB
-    restaurant = db.query(RestaurantDB).filter(RestaurantDB.gid == product_data.restaurant_gid).first()
+    restaurant = db.query(RestaurantDB).filter(RestaurantDB.gid == res_gid).first()
+    
+    # Fallback para ID numérico se não for GID
+    if not restaurant and str(res_gid).isdigit():
+        restaurant = db.query(RestaurantDB).filter(RestaurantDB.id == int(res_gid)).first()
+
     if not restaurant:
         raise HTTPException(status_code=404, detail="Restaurante não encontrado.")
 
     # Cria o objeto ProductDB (Banco de Dados)
     new_product = ProductDB(
-        gid=str(ULID()), # Gera um novo ULID para o produto
+        gid=str(ULID()), 
         name=product_data.name,
         description=product_data.description,
         price=product_data.price,
         image_url=product_data.image_url,
         restaurant_id=restaurant.id,
         category=product_data.category,
-        preparation_time=product_data.preparation_time
+        preparation_time=product_data.preparation_time,
+        
+        # Colunas de IA
+        ingredients=product_data.ingredients,
+        allergens=product_data.allergens,
+        dietary_tags=product_data.dietary_tags,
+        spice_level=product_data.spice_level,
+        serves_people=product_data.serves_people,
+        portion_size=product_data.portion_size,
+        calories=product_data.calories,
+        is_popular=product_data.is_popular,
+        is_available=product_data.is_available,
+        preparation_time_minutes=product_data.preparation_time_minutes,
+        recommended_for=product_data.recommended_for,
+        search_tags=product_data.search_tags
     )
 
     try:
@@ -104,6 +128,20 @@ def update_product(gid: str, product_data: ProductCreateRequest, db: Session = D
     db_product.price = product_data.price
     db_product.category = product_data.category
     db_product.preparation_time = product_data.preparation_time
+
+    # Atualizar Colunas de IA se presentes
+    db_product.ingredients = product_data.ingredients
+    db_product.allergens = product_data.allergens
+    db_product.dietary_tags = product_data.dietary_tags
+    db_product.spice_level = product_data.spice_level
+    db_product.serves_people = product_data.serves_people
+    db_product.portion_size = product_data.portion_size
+    db_product.calories = product_data.calories
+    db_product.is_popular = product_data.is_popular
+    db_product.is_available = product_data.is_available
+    db_product.preparation_time_minutes = product_data.preparation_time_minutes
+    db_product.recommended_for = product_data.recommended_for
+    db_product.search_tags = product_data.search_tags
 
     if product_data.image_url:
         db_product.image_url = product_data.image_url

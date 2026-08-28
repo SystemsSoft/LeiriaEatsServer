@@ -7,7 +7,8 @@ class ProductCreateRequest(BaseModel):
     description: str
     price: float
     image_url: Optional[str] = None
-    restaurant_gid: str
+    restaurant_gid: Optional[str] = None
+    restaurant_id: Optional[str] = None # Fallback para apps antigos que enviam restaurant_id com GID
     category: str
     preparation_time: Optional[str] = None
 
