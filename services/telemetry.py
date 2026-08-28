@@ -95,6 +95,8 @@ def registrar_turno(
     motivo_fallback: Optional[str] = None,
     intent_type: Optional[str] = None,
     origem: str = "stream",
+    restaurantes_no_carrinho: int = 0,
+    limite_restaurantes_atingido: bool = False,
 ) -> None:
     """
     Registra um turno completo de conversa. Chamar sempre no caminho de sucesso E no de
@@ -125,6 +127,10 @@ def registrar_turno(
         "promessa_sem_execucao": promessa_sem_execucao,
         "divergencia_de_preco": divergencia_de_preco,
         "motivo_fallback": motivo_fallback,
+        # PLANO_LIMITE_RESTAURANTES.md, Fase 4.2 — dá para responder depois: com que
+        # frequência os clientes esbarram no limite, e 3 é o número certo?
+        "restaurantes_no_carrinho": restaurantes_no_carrinho,
+        "limite_restaurantes_atingido": limite_restaurantes_atingido,
     }
     _logger.info(json.dumps(evento, ensure_ascii=False))
 

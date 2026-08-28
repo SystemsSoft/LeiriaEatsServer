@@ -233,6 +233,26 @@ def _descrever_erro_stripe(e: Exception) -> str:
     return f"tipo={type(e).__name__} | mensagem={str(e)}"
 
 
+def _validar_sub_orders(sub_orders: list, max_restaurantes: int) -> Optional[str]:
+    """
+    Validação pura do payload de checkout (PLANO_LIMITE_RESTAURANTES.md, Fase 1.2).
+
+    Função sem efeitos colaterais para poder ser testada sem precisar simular Stripe
+    nem banco de dados. Retorna a mensagem de erro (para virar HTTPException 400) ou
+    None se o payload for válido.
+    """
+    if not sub_orders:
+        return "O pedido não contém nenhum item."
+
+    gids_distintos = {s.restaurant_gid for s in sub_orders if s.restaurant_gid}
+    if len(gids_distintos) > max_restaurantes:
+        return (
+            f"Um pedido pode incluir no máximo {max_restaurantes} restaurantes "
+            f"diferentes (recebidos: {len(gids_distintos)})."
+        )
+    return None
+
+
 @router.post("/orders/initiate-checkout")
 def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Session = Depends(get_db)):
     """
@@ -241,9 +261,20 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     - Se houver cartão salvo e save_payment_method=true, tenta cobrança automática.
     """
     print(f"🛒 [Checkout] Iniciando checkout único para user: {order_data.user_id}")
+
+    # ── 0. Validação de restaurantes ────────────────────────────────────────
+    # Gate de negócio (PLANO_LIMITE_RESTAURANTES.md, Fase 1.2) — é a ÚNICA camada
+    # inviolável do limite: o carrinho do chat e o payload de checkout são desacoplados
+    # (o app monta `sub_orders` por conta própria), então validar só no lado da IA seria
+    # cosmético. As camadas na IA (executor, pool, prompt) existem para o cliente não
+    # chegar até aqui e levar erro depois de montar o pedido inteiro.
+    erro_validacao = _validar_sub_orders(order_data.sub_orders, config.settings.MAX_RESTAURANTES_POR_PEDIDO)
+    if erro_validacao:
+        raise HTTPException(status_code=400, detail=erro_validacao)
+
     from ulid import ULID
     master_order_gid = order_data.gid if order_data.gid else str(ULID())
-    
+
     # ── 1. Cliente Stripe ──────────────────────────────────────────────────
     # Para o SDK Nativo (PaymentSheet), precisamos SEMPRE de um Customer ID
     stripe_customer_id = None

@@ -6,6 +6,7 @@ from services.ai_service import AIService
 from services.gemini_sales_service import GeminiSalesAgent
 from services.session_service import SessionManager, UserSession
 from repositories.restaurant_repo import RestaurantRepository
+from core.config import settings
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 import json
@@ -150,9 +151,56 @@ class HybridAIService:
     # GeminiSalesAgent._TOOLS — bloqueado nesta sessão por créditos esgotados da API key).
     MAX_QTD_ITEM_FUNCTION_CALLING = 20
 
+    # PLANO_LIMITE_RESTAURANTES.md — mesmo valor lido pelo gate de checkout
+    # (core/config.py), para os dois lados nunca divergirem.
+    MAX_RESTAURANTES_POR_PEDIDO = settings.MAX_RESTAURANTES_POR_PEDIDO
+
     @staticmethod
     def _function_calling_habilitado() -> bool:
         return os.getenv("IA_FUNCTION_CALLING", "false").strip().lower() == "true"
+
+    @staticmethod
+    def _filtrar_pool_por_restaurantes_travados(candidate_pool: list, session: UserSession) -> list:
+        """
+        PLANO_LIMITE_RESTAURANTES.md, Fase 3.1 — quando o limite de restaurantes já foi
+        atingido, o pool de produtos oferecido à IA passa a conter só os restaurantes já
+        escolhidos. Sem isso a IA continuaria "vendo" produtos de outros restaurantes e
+        tentando sugeri-los, mesmo sabendo que não pode adicioná-los (a regra do prompt
+        cobriria isso, mas é mais robusto a IA nem enxergar a opção que não pode oferecer).
+
+        Itens que já estão no carrinho continuam SEMPRE visíveis, mesmo que por alguma
+        inconsistência de dados seu restaurant_gid divirja dos "travados" — sem essa
+        cláusula, o cliente ficaria preso com um item que a conversa não consegue mais
+        remover (o pool é a única fonte de produtos que a IA recebe por turno).
+        """
+        restaurantes_travados = session.restaurantes_no_carrinho()
+        if len(restaurantes_travados) < HybridAIService.MAX_RESTAURANTES_POR_PEDIDO:
+            return candidate_pool
+
+        ids_no_carrinho = {item.product_id for item in session.cart}
+        return [
+            p for p in candidate_pool
+            if p.id in ids_no_carrinho or getattr(p, "restaurant_gid", "") in restaurantes_travados
+        ]
+
+    @staticmethod
+    def _bloqueado_por_limite_restaurantes(session: UserSession, gid_restaurante_produto: str,
+                                            delta: int) -> bool:
+        """
+        PLANO_LIMITE_RESTAURANTES.md, Fase 2 — regra única compartilhada pelo executor de
+        function calling e pelos dois laços de parsing de tags (stream e síncrono), para
+        as três camadas nunca divergirem sobre o que conta como "restaurante novo".
+
+        Só bloqueia ADIÇÃO (delta > 0) de um restaurante que ainda não está no carrinho,
+        e só quando o limite já foi atingido. Remoção (delta <= 0) e itens de um
+        restaurante já presente no carrinho nunca são bloqueados — é assim que o limite
+        libera sozinho quando o cliente desiste de um restaurante.
+        """
+        if delta <= 0 or not gid_restaurante_produto:
+            return False
+        restaurantes_atuais = session.restaurantes_no_carrinho()
+        e_restaurante_novo = gid_restaurante_produto not in restaurantes_atuais
+        return e_restaurante_novo and len(restaurantes_atuais) >= HybridAIService.MAX_RESTAURANTES_POR_PEDIDO
 
     @staticmethod
     def _executar_ferramenta(nome_ferramenta: str, args: Dict, session: UserSession,
@@ -180,6 +228,19 @@ class HybridAIService:
             if not produto.get("is_available", True):
                 return {"ok": False, "erro": "PRODUTO_INDISPONIVEL", "produto": produto["name"]}
 
+            # PLANO_LIMITE_RESTAURANTES.md, Fase 2.1 — ver _bloqueado_por_limite_restaurantes.
+            if HybridAIService._bloqueado_por_limite_restaurantes(
+                session, produto.get("restaurant_gid") or "", delta
+            ):
+                return {
+                    "ok": False,
+                    "erro": "LIMITE_DE_RESTAURANTES_ATINGIDO",
+                    "limite": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
+                    "restaurantes_atuais": list(session.nomes_restaurantes_no_carrinho().values()),
+                    "dica": ("Explique o limite ao cliente e ofereça remover os itens de um dos "
+                             "restaurantes atuais para abrir espaço."),
+                }
+
             atual = next((i.quantity for i in session.cart if i.product_id == produto["id"]), 0)
             alvo = max(0, min(atual + delta, HybridAIService.MAX_QTD_ITEM_FUNCTION_CALLING))
             if alvo == atual:
@@ -189,6 +250,7 @@ class HybridAIService:
                 product_id=produto["id"], name=produto["name"], price=produto["price"],
                 restaurant_gid=produto["restaurant_gid"], quantity=alvo - atual,
                 serves_people=produto.get("serves_people") or 1, category=produto.get("category", ""),
+                restaurant_name=produto.get("restaurant_name", ""),
             )
             estado_turno["carrinho_mudou"] = True
             return {"ok": True, "produto": produto["name"], "quantidade_final": alvo}
@@ -389,6 +451,9 @@ class HybridAIService:
             if product.id not in seen_ids:
                 candidate_pool.append(product); seen_ids.add(product.id)
 
+        # PLANO_LIMITE_RESTAURANTES.md, Fase 3.1
+        candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
+
         found_products = []
         produtos_sem_gid_excluidos = 0
         for product in candidate_pool[:20]: # Aumentado para 20 para segurança
@@ -405,6 +470,9 @@ class HybridAIService:
                 "name": product.name,
                 "price": float(product.price),
                 "restaurant_gid": getattr(product, "restaurant_gid", "") or restaurant_gid or "",
+                # Ver PLANO_LIMITE_RESTAURANTES.md Fase 2.3 — usado pela IA e pelo
+                # executor para se referir ao restaurante pelo nome, não pelo GID.
+                "restaurant_name": AIService._restaurant_name_by_product_id.get(product.id, ""),
                 "image_url": getattr(product, "image_url", ""),
                 "description": getattr(product, "description", ""),
                 "category": getattr(product, "category", ""),
@@ -430,7 +498,10 @@ class HybridAIService:
             "history_text": session.get_history_text(),
             "session_context": session.context,
             "intent_type": intent_type,
-            "user_needs": intent_info.get("details", {})
+            "user_needs": intent_info.get("details", {}),
+            # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2
+            "restaurantes_no_pedido": session.nomes_restaurantes_no_carrinho(),
+            "max_restaurantes_por_pedido": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
         }
         ms_pool = (time.time() - start_pool) * 1000
         print(f"⏱️  [Context Prep] Tempo: {ms_pool:.1f}ms")
@@ -491,16 +562,26 @@ class HybridAIService:
             for prod_gid, qty_str in add_to_cart_matches:
                 qty = int(qty_str)
                 product_info = next((p for p in found_products if p["gid"] == prod_gid), None)
-                if product_info:
+                if product_info is None:
+                    tags_descartadas_motivo.append("GID_FORA_DO_POOL")
+                    print(f"⚠️ [Gemini Stream] Produto GID {prod_gid} não encontrado no pool de contexto!")
+                elif HybridAIService._bloqueado_por_limite_restaurantes(
+                    session, product_info.get("restaurant_gid") or "", qty
+                ):
+                    # PLANO_LIMITE_RESTAURANTES.md, Fase 2.2 — mesma regra do executor de
+                    # function calling, aplicada aqui porque o caminho de tags é o que
+                    # roda em produção por padrão (IA_FUNCTION_CALLING desligada).
+                    tags_descartadas_motivo.append("LIMITE_DE_RESTAURANTES")
+                    print(f"⚠️ [Gemini Stream] Limite de {HybridAIService.MAX_RESTAURANTES_POR_PEDIDO} "
+                          f"restaurantes atingido — GID {prod_gid} descartado.")
+                else:
                     session.add_to_cart(
                         product_id=product_info["id"], name=product_info["name"],
                         price=product_info["price"], restaurant_gid=product_info["restaurant_gid"],
-                        quantity=qty, serves_people=product_info.get("serves_people") or 1
+                        quantity=qty, serves_people=product_info.get("serves_people") or 1,
+                        restaurant_name=product_info.get("restaurant_name", ""),
                     )
                     tags_aplicadas += 1
-                else:
-                    tags_descartadas_motivo.append("GID_FORA_DO_POOL")
-                    print(f"⚠️ [Gemini Stream] Produto GID {prod_gid} não encontrado no pool de contexto!")
 
             # Limpar tags da resposta para o histórico
             clean_response = full_ai_response.replace("[[SHOW_CART]]", "")
@@ -593,6 +674,8 @@ class HybridAIService:
                 divergencia_de_preco=telemetry.detectar_divergencia_de_preco(clean_response, found_products),
                 intent_type=intent_type,
                 origem="stream",
+                restaurantes_no_carrinho=len(session.restaurantes_no_carrinho()),
+                limite_restaurantes_atingido=len(session.restaurantes_no_carrinho()) >= HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
             )
 
             yield {
@@ -626,6 +709,7 @@ class HybridAIService:
                     motivo_fallback=f"exception:{type(e).__name__}",
                     intent_type=intent_type,
                     origem="stream",
+                    restaurantes_no_carrinho=len(session.restaurantes_no_carrinho()),
                 )
             except Exception:
                 pass  # telemetria nunca deve mascarar o erro original
@@ -791,6 +875,9 @@ class HybridAIService:
                 candidate_pool.append(product)
                 seen_ids.add(product.id)
 
+        # PLANO_LIMITE_RESTAURANTES.md, Fase 3.1
+        candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
+
         found_products = []
         produtos_sem_gid_excluidos = 0
         # Pegamos até 15 produtos para dar um contexto rico (carrinho + busca)
@@ -811,6 +898,8 @@ class HybridAIService:
                 "name": product.name,
                 "price": float(product.price),
                 "restaurant_gid": (getattr(product, "restaurant_gid", "") or restaurant_gid) or "", # Garantir que nunca retorne null
+                # Ver PLANO_LIMITE_RESTAURANTES.md Fase 2.3.
+                "restaurant_name": AIService._restaurant_name_by_product_id.get(product.id, ""),
                 "image_url": _get("image_url"),
                 "description": _get("description", ""),
                 "category": _get("category", ""),
@@ -858,7 +947,10 @@ class HybridAIService:
             "is_greeting": intent_type == "greeting",
             "consultation_mode": intent_type in ["consultation_needed", "general_question"],
             "specific_question": intent_type == "specific_question",
-            "user_needs": intent_info.get("details", {})
+            "user_needs": intent_info.get("details", {}),
+            # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2
+            "restaurantes_no_pedido": session.nomes_restaurantes_no_carrinho(),
+            "max_restaurantes_por_pedido": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
         }
 
         # ⭐ USAR GEMINI SEMPRE (API cloud - sem peso no servidor)
@@ -919,7 +1011,17 @@ class HybridAIService:
 
                     # Buscar detalhes do produto no pool encontrado via GID
                     product_info = next((p for p in found_products if p["gid"] == prod_gid), None)
-                    if product_info:
+                    if product_info is None:
+                        print(f"⚠️ [Gemini] Produto GID {prod_gid} não encontrado no pool de contexto!")
+                        tags_descartadas_motivo.append("GID_FORA_DO_POOL")
+                    elif HybridAIService._bloqueado_por_limite_restaurantes(
+                        session, product_info.get("restaurant_gid") or "", qty
+                    ):
+                        # PLANO_LIMITE_RESTAURANTES.md, Fase 2.2
+                        print(f"⚠️ [Gemini] Limite de {HybridAIService.MAX_RESTAURANTES_POR_PEDIDO} "
+                              f"restaurantes atingido — GID {prod_gid} descartado.")
+                        tags_descartadas_motivo.append("LIMITE_DE_RESTAURANTES")
+                    else:
                         print(f"🛒 [Gemini] Adicionando ao carrinho: {product_info['name']} x{qty}")
                         session.add_to_cart(
                             product_id=product_info["id"], # Mantemos o ID interno na sessão para performance
@@ -928,12 +1030,10 @@ class HybridAIService:
                             restaurant_gid=product_info["restaurant_gid"],
                             quantity=qty,
                             serves_people=product_info.get("serves_people") or 1,
-                            category=product_info.get("category", "")
+                            category=product_info.get("category", ""),
+                            restaurant_name=product_info.get("restaurant_name", ""),
                         )
                         tags_aplicadas += 1
-                    else:
-                        print(f"⚠️ [Gemini] Produto GID {prod_gid} não encontrado no pool de contexto!")
-                        tags_descartadas_motivo.append("GID_FORA_DO_POOL")
 
                     # Limpar a tag da resposta
                     ai_response = ai_response.replace(f"[[ADD_TO_CART:{prod_gid}:{qty_str}]]", "")
@@ -1066,6 +1166,8 @@ class HybridAIService:
                 motivo_fallback=motivo_fallback,
                 intent_type=intent_type,
                 origem="sync",
+                restaurantes_no_carrinho=len(session.restaurantes_no_carrinho()),
+                limite_restaurantes_atingido=len(session.restaurantes_no_carrinho()) >= HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
             )
         except Exception:
             pass  # telemetria nunca deve derrubar a resposta ao usuário

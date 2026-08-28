@@ -28,6 +28,10 @@ class Settings:
     REDIS_DB: int = int(os.getenv("REDIS_DB", 0))
     USE_REDIS: bool = os.getenv("USE_REDIS", "false").lower() == "true"
 
+    # Limite de restaurantes distintos por pedido (PLANO_LIMITE_RESTAURANTES.md).
+    # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.
+    MAX_RESTAURANTES_POR_PEDIDO: int = int(os.getenv("MAX_RESTAURANTES_POR_PEDIDO", 3))
+
     def __init__(self):
         # Aviso de segurança no terminal se a chave não for achada
         if not self.STRIPE_API_KEY:

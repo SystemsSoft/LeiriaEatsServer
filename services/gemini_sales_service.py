@@ -223,7 +223,14 @@ REGRAS OBRIGATÓRIAS:
    - Informe que a sacola será apresentada no ecrã para que ele possa validar os detalhes, taxas e confirmar o pagamento.
    - NUNCA diga que o valor atual é o "total do pedido", refira-se como "subtotal dos produtos".
 6. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou
-   alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela."""
+   alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela.
+7. Limite de Restaurantes: um pedido pode incluir no máximo 3 restaurantes diferentes.
+   - A secção "RESTAURANTES NO PEDIDO" (quando presente) mostra quantos já estão no carrinho.
+   - Ao atingir o limite ("LIMITE ATINGIDO"), ofereça e adicione APENAS produtos desses restaurantes.
+   - Se o cliente pedir algo de um restaurante novo nessa situação, explique o limite com
+     naturalidade e ofereça remover os itens de um dos restaurantes atuais para abrir espaço.
+   - NUNCA use a tag [[ADD_TO_CART:...]] para um produto de um restaurante fora da lista quando
+     o limite estiver atingido — mesmo que o cliente insista."""
 
             # F3: variante da system instruction para o modo function calling — mesmas
             # regras de 1 a 3 e 6, mas a regra 4/5 usa as FERRAMENTAS em vez de tags de
@@ -256,7 +263,16 @@ REGRAS OBRIGATÓRIAS:
 6. Destaque de Produtos: quando comparar opções, recomendar algo ou responder "o que vocês têm", chame
    sugerir_produtos com os GIDs relevantes para que apareçam como cartão na tela. Não é necessário
    chamar isto para um produto que você já adicionou via adicionar_ao_carrinho.
-7. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela."""
+7. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela.
+8. Limite de Restaurantes: um pedido pode incluir no máximo 3 restaurantes diferentes.
+   - A secção "RESTAURANTES NO PEDIDO" (quando presente) mostra quantos já estão no carrinho.
+   - Ao atingir o limite ("LIMITE ATINGIDO"), chame adicionar_ao_carrinho e sugerir_produtos
+     APENAS com produtos desses restaurantes.
+   - Se o cliente pedir algo de um restaurante novo nessa situação, explique o limite com
+     naturalidade e ofereça remover os itens de um dos restaurantes atuais para abrir espaço.
+   - Se você chamar adicionar_ao_carrinho para um restaurante fora da lista e o resultado vier
+     com erro=LIMITE_DE_RESTAURANTES_ATINGIDO, NÃO afirme ao cliente que adicionou — explique o
+     limite usando os "restaurantes_atuais" do resultado."""
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -656,12 +672,29 @@ REGRAS OBRIGATÓRIAS:
             sinais.append("mensagem é uma saudação")
         signals_section = f"\n\n🔎 SINAIS DETECTADOS NA MENSAGEM: {' | '.join(sinais)}" if sinais else ""
 
+        # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2 — só aparece quando há pelo menos 1
+        # restaurante no carrinho, para não poluir o prompt em conversas de saudação/
+        # descoberta antes do primeiro item.
+        restaurantes_no_pedido = context.get("restaurantes_no_pedido") or {}
+        restaurant_section = ""
+        if restaurantes_no_pedido:
+            max_restaurantes = context.get("max_restaurantes_por_pedido", 3)
+            qtd_atual = len(restaurantes_no_pedido)
+            nomes = " | ".join(restaurantes_no_pedido.values())
+            if qtd_atual >= max_restaurantes:
+                restaurant_section = (
+                    f"\n\n🏪 RESTAURANTES NO PEDIDO ({qtd_atual}/{max_restaurantes} — LIMITE ATINGIDO): {nomes}\n"
+                    f"   Ofereça APENAS produtos destes {qtd_atual} restaurantes."
+                )
+            else:
+                restaurant_section = f"\n\n🏪 RESTAURANTES NO PEDIDO ({qtd_atual}/{max_restaurantes}): {nomes}"
+
         # Prompt final - nota de confirmação
         order_note = ""
         if context.get("order_confirmed"):
             order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
-        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{order_note}
+        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"

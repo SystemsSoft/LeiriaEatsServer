@@ -26,6 +26,7 @@ class AIService:
     _product_obj_cache = []  # Guarda o objeto Product real
     _product_owner_name = []  # Nome do restaurante dono para o 'reply'
     _product_by_id: dict = {}  # {id: Product} — evita O(n) por lookup (F2.2 do plano)
+    _restaurant_name_by_product_id: dict = {}  # {id: restaurant_name} — ver Fase 2.3 do PLANO_LIMITE_RESTAURANTES.md
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -530,6 +531,7 @@ class AIService:
         product_obj_cache = []
         product_owner_name = []
         product_by_id = {}
+        restaurant_name_by_product_id = {}
 
         for r in restaurants:
             for p in r.products:
@@ -538,6 +540,12 @@ class AIService:
                 product_obj_cache.append(p)
                 product_owner_name.append(r.name)
                 product_by_id[p.id] = p
+                # {product_id: restaurant_name} — o pool de produtos do chat mistura
+                # objetos ORM (ProductDB, com `.restaurant.name`) e Pydantic (Product,
+                # sem esse campo). Este dict dá uma forma única de obter o nome do
+                # restaurante independente do tipo do objeto no pool (ver
+                # PLANO_LIMITE_RESTAURANTES.md, Fase 2.3).
+                restaurant_name_by_product_id[p.id] = r.name
 
         embeddings_products = model.encode(product_texts, convert_to_tensor=True) if product_texts else None
 
@@ -551,6 +559,7 @@ class AIService:
         cls._product_obj_cache = product_obj_cache
         cls._product_owner_name = product_owner_name
         cls._product_by_id = product_by_id
+        cls._restaurant_name_by_product_id = restaurant_name_by_product_id
         cls._embeddings_products = embeddings_products
 
     @classmethod

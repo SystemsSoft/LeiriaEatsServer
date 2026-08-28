@@ -8,7 +8,8 @@ from core.config import settings
 
 class CartItem:
     def __init__(self, product_id: int, name: str, price: float, restaurant_gid: str,
-                 quantity: int = 1, serves_people: Optional[int] = 1, category: str = ""):
+                 quantity: int = 1, serves_people: Optional[int] = 1, category: str = "",
+                 restaurant_name: str = ""):
         self.product_id = product_id
         self.name = name
         self.price = price
@@ -16,6 +17,9 @@ class CartItem:
         self.quantity = quantity
         self.serves_people = serves_people if serves_people is not None else 1
         self.category = category
+        # Necessário para a IA explicar o limite de restaurantes por nome, não por GID
+        # (ver PLANO_LIMITE_RESTAURANTES.md, Fase 2.3).
+        self.restaurant_name = restaurant_name
 
     def to_dict(self) -> Dict:
         return {
@@ -26,6 +30,7 @@ class CartItem:
             "quantity": self.quantity,
             "serves_people": self.serves_people,
             "category": self.category,
+            "restaurant_name": self.restaurant_name,
             "subtotal": round(self.price * self.quantity, 2)
         }
 
@@ -38,7 +43,10 @@ class CartItem:
             restaurant_gid=data.get("restaurant_gid") or "",
             quantity=data["quantity"],
             serves_people=data.get("serves_people") if data.get("serves_people") is not None else 1,
-            category=data.get("category", "")
+            category=data.get("category", ""),
+            # .get() com default "" garante que sessões antigas no Redis (sem este campo)
+            # continuem carregando sem KeyError.
+            restaurant_name=data.get("restaurant_name", "")
         )
 
 
@@ -114,7 +122,8 @@ class UserSession:
     # ── Carrinho ───────────────────────────────────────────────────────────
 
     def add_to_cart(self, product_id: int, name: str, price: float, restaurant_gid: str,
-                    quantity: int = 1, serves_people: int = 1, category: str = "") -> str:
+                    quantity: int = 1, serves_people: int = 1, category: str = "",
+                    restaurant_name: str = "") -> str:
         """Adiciona, incrementa ou subtrai item no carrinho"""
         for item in self.cart:
             if item.product_id == product_id:
@@ -127,7 +136,8 @@ class UserSession:
 
         # Apenas adiciona se a quantidade for positiva
         if quantity > 0:
-            self.cart.append(CartItem(product_id, name, price, restaurant_gid, quantity, serves_people, category))
+            self.cart.append(CartItem(product_id, name, price, restaurant_gid, quantity,
+                                       serves_people, category, restaurant_name))
             return f"{name} adicionado ao carrinho"
         return ""
 
@@ -136,6 +146,30 @@ class UserSession:
         before = len(self.cart)
         self.cart = [item for item in self.cart if item.product_id != product_id]
         return len(self.cart) < before
+
+    # ── Limite de restaurantes por pedido (PLANO_LIMITE_RESTAURANTES.md) ───
+
+    def restaurantes_no_carrinho(self) -> set:
+        """
+        GIDs distintos de restaurantes com pelo menos 1 item no carrinho.
+
+        Deliberadamente NÃO é um campo armazenado — é sempre derivado do carrinho atual.
+        Guardar essa lista à parte exigiria lembrar de atualizá-la em todo caminho que
+        remove um item; esquecer um único caminho deixaria um "slot" ocupado por um
+        restaurante que já não tem nenhum produto no pedido. Estado derivado nunca
+        dessincroniza: o limite libera sozinho assim que o último item de um restaurante
+        sai do carrinho.
+        """
+        return {item.restaurant_gid for item in self.cart if item.restaurant_gid}
+
+    def nomes_restaurantes_no_carrinho(self) -> Dict[str, str]:
+        """{restaurant_gid: restaurant_name} dos restaurantes atualmente no carrinho —
+        usado para a IA se referir a eles pelo nome, não pelo GID."""
+        nomes = {}
+        for item in self.cart:
+            if item.restaurant_gid and item.restaurant_gid not in nomes:
+                nomes[item.restaurant_gid] = item.restaurant_name or item.restaurant_gid
+        return nomes
 
     def clear_cart(self):
         """Limpa o carrinho"""
