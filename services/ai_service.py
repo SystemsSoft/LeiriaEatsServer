@@ -27,6 +27,7 @@ class AIService:
     _product_owner_name = []  # Nome do restaurante dono para o 'reply'
     _product_by_id: dict = {}  # {id: Product} — evita O(n) por lookup (F2.2 do plano)
     _restaurant_name_by_product_id: dict = {}  # {id: restaurant_name} — ver Fase 2.3 do PLANO_LIMITE_RESTAURANTES.md
+    _restaurantes_aptos_pagamento: set = set()  # GIDs com conta Stripe apta a receber (Fase 0, PLANO_PAGAMENTO_2_ETAPAS.md)
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -533,6 +534,17 @@ class AIService:
         product_by_id = {}
         restaurant_name_by_product_id = {}
 
+        # Fase 0 do PLANO_PAGAMENTO_2_ETAPAS.md: restaurante só entra aqui se tiver conta
+        # Stripe capaz de RECEBER dinheiro. Usa stripe_onboarding_completed (não `status`)
+        # porque a pergunta é estritamente "esta conta consegue receber pagamento?" — o
+        # `status` é a situação comercial, um conceito mais amplo, e já é sincronizado com
+        # este campo pelo webhook account.updated.
+        restaurantes_aptos_pagamento = {
+            r.gid for r in restaurants
+            if getattr(r, "gid", None) and getattr(r, "stripe_account_id", None)
+               and getattr(r, "stripe_onboarding_completed", False)
+        }
+
         for r in restaurants:
             for p in r.products:
                 text = cls._texto_para_indice(p, r.category)
@@ -560,6 +572,7 @@ class AIService:
         cls._product_owner_name = product_owner_name
         cls._product_by_id = product_by_id
         cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurantes_aptos_pagamento = restaurantes_aptos_pagamento
         cls._embeddings_products = embeddings_products
 
     @classmethod

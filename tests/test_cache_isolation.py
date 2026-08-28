@@ -53,7 +53,7 @@ def _preparar_agente(respostas):
     GeminiSalesAgent._usage_monitor = GeminiUsageMonitor()
     GeminiSalesAgent._system_instruction = "system instruction de teste"
     fake_client = _FakeClient(respostas)
-    GeminiSalesAgent._model = fake_client
+    GeminiSalesAgent._clients = [fake_client]
     return fake_client
 
 

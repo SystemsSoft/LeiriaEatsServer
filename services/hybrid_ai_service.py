@@ -184,6 +184,32 @@ class HybridAIService:
         ]
 
     @staticmethod
+    def _filtrar_pool_por_aptidao_de_pagamento(candidate_pool: list, session: UserSession) -> list:
+        """
+        Fase 0 do PLANO_PAGAMENTO_2_ETAPAS.md — a IA nunca oferece produto de restaurante
+        sem conta Stripe apta a receber pagamento. Bloquear só no checkout (que já existe
+        e continua existindo como rede de segurança) faz o cliente descobrir o problema só
+        depois de montar o pedido inteiro pela conversa; filtrando aqui, ele nunca chega a
+        essa situação — o 400 do checkout vira caso raro (a situação do restaurante mudou
+        ENTRE a conversa e o pagamento), não o caminho normal.
+
+        Cache vazio (índice ainda não carregou) não filtra nada — falha para o lado
+        permissivo, porque o checkout continua protegendo mesmo se este filtro não agir.
+        Itens já no carrinho continuam sempre visíveis, pela mesma razão do filtro de
+        limite de restaurantes: se a situação do restaurante mudar no meio da conversa, o
+        cliente precisa conseguir remover o item pela própria conversa.
+        """
+        aptos = AIService._restaurantes_aptos_pagamento
+        if not aptos:
+            return candidate_pool
+
+        ids_no_carrinho = {item.product_id for item in session.cart}
+        return [
+            p for p in candidate_pool
+            if p.id in ids_no_carrinho or getattr(p, "restaurant_gid", "") in aptos
+        ]
+
+    @staticmethod
     def _bloqueado_por_limite_restaurantes(session: UserSession, gid_restaurante_produto: str,
                                             delta: int) -> bool:
         """
@@ -453,6 +479,8 @@ class HybridAIService:
 
         # PLANO_LIMITE_RESTAURANTES.md, Fase 3.1
         candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
+        # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0
+        candidate_pool = HybridAIService._filtrar_pool_por_aptidao_de_pagamento(candidate_pool, session)
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -877,6 +905,8 @@ class HybridAIService:
 
         # PLANO_LIMITE_RESTAURANTES.md, Fase 3.1
         candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
+        # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0
+        candidate_pool = HybridAIService._filtrar_pool_por_aptidao_de_pagamento(candidate_pool, session)
 
         found_products = []
         produtos_sem_gid_excluidos = 0

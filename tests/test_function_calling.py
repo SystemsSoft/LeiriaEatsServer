@@ -191,7 +191,7 @@ def teste_loop_function_calling_completa_apos_executar_ferramenta():
     resposta_1 = _RespostaFake(function_calls=[_FuncCallFake("adicionar_ao_carrinho", {"product_gid": "01PROD1", "delta_quantidade": 2})])
     resposta_2 = _RespostaFake(texto="Prontinho! Já ajustei o seu pedido para 2 pizzas.")
     fake_client = _ClientFake([resposta_1, resposta_2])
-    GeminiSalesAgent._model = fake_client
+    GeminiSalesAgent._clients = [fake_client]
 
     chamadas_executor = []
     def executor(nome, args):
@@ -218,7 +218,7 @@ def teste_loop_nao_afirma_sucesso_quando_executor_recusa():
     resposta_1 = _RespostaFake(function_calls=[_FuncCallFake("adicionar_ao_carrinho", {"product_gid": "GID_INEXISTENTE", "delta_quantidade": 1})])
     resposta_2 = _RespostaFake(texto="Hmm, não encontrei esse produto no cardápio. Pode confirmar o nome?")
     fake_client = _ClientFake([resposta_1, resposta_2])
-    GeminiSalesAgent._model = fake_client
+    GeminiSalesAgent._clients = [fake_client]
 
     def executor(nome, args):
         return {"ok": False, "erro": "GID_FORA_DO_CATALOGO"}

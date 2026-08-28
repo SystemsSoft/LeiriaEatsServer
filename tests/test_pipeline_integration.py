@@ -99,9 +99,9 @@ def teste_pipeline_completo_adiciona_ao_carrinho():
 
     GeminiSalesAgent._is_initialized = True
     GeminiSalesAgent._system_instruction = "system de teste"
-    GeminiSalesAgent._model = _FakeClient(
+    GeminiSalesAgent._clients = [_FakeClient(
         f"Perfeito! Já vou adicionar. [[ADD_TO_CART:{p1.gid}:2]]"
-    )
+    )]
 
     eventos = list(HybridAIService.process_sales_chat_stream(
         user_message="quero 2 pizzas margherita",
@@ -134,7 +134,7 @@ def teste_gid_fora_do_pool_nao_quebra_pipeline():
 
     GeminiSalesAgent._is_initialized = True
     GeminiSalesAgent._system_instruction = "system de teste"
-    GeminiSalesAgent._model = _FakeClient("Vou adicionar! [[ADD_TO_CART:GIDQUENAOEXISTE:1]]")
+    GeminiSalesAgent._clients = [_FakeClient("Vou adicionar! [[ADD_TO_CART:GIDQUENAOEXISTE:1]]")]
 
     eventos = list(HybridAIService.process_sales_chat_stream(
         user_message="quero uma pizza",

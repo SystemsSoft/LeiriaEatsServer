@@ -32,6 +32,20 @@ class Settings:
     # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.
     MAX_RESTAURANTES_POR_PEDIDO: int = int(os.getenv("MAX_RESTAURANTES_POR_PEDIDO", 3))
 
+    # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 6.1 — cinto de segurança do pagamento em 2
+    # etapas. Independente do prazo de aceite normal (15 min, PRAZO_ACEITE_MINUTOS em
+    # payment_reconciliation_service.py): se por qualquer motivo um pedido ficar preso
+    # em AUTHORIZED além deste prazo (worker fora do ar, bug, pedido que escapou da
+    # busca), esta é a última rede — cancela a autorização sozinha, sem depender do
+    # fluxo normal de aceite/recusa.
+    #
+    # 1 hora foi escolhido por estar bem acima do fluxo normal (15 min) e bem abaixo de
+    # qualquer janela real de expiração de autorização do Stripe (medida em dias, não
+    # horas) — mas o valor exato dessa janela ainda não foi confirmado na documentação
+    # oficial do Stripe (ver PLANO_PAGAMENTO_2_ETAPAS.md, Fase 6.1). Reavaliar esta
+    # margem quando o número real for confirmado.
+    PRAZO_SEGURANCA_AUTORIZACAO_MINUTOS: int = int(os.getenv("PRAZO_SEGURANCA_AUTORIZACAO_MINUTOS", 60))
+
     def __init__(self):
         # Aviso de segurança no terminal se a chave não for achada
         if not self.STRIPE_API_KEY:

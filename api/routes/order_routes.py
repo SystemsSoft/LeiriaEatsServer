@@ -1,6 +1,8 @@
 # Arquivo: api/routes/order_routes.py
 from typing import List, Dict, Any, Optional
 import math
+import os
+from datetime import datetime, timezone, timedelta
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
@@ -150,12 +152,24 @@ def _try_automatic_payment_with_saved_card(
     """
     Tenta cobrar off-session usando o último cartão salvo do usuário.
     Retorna um dict com dados do pagamento quando sucesso, ou None para fallback em Checkout.
+
+    NOTA (2026-08-27): esta função não é chamada em nenhum lugar do código hoje — é
+    código morto. Ajustada mesmo assim para o fluxo de captura manual
+    (PLANO_PAGAMENTO_2_ETAPAS.md) porque, se um dia for conectada (ex.: "pedir de novo"
+    com 1 toque), o caminho óbvio de reintrodução repetiria o Destination Charge antigo,
+    que não funciona com captura em 2 etapas nem com multi-restaurante.
     """
     if not saved_method:
         return None
 
     if not saved_method.stripe_customer_id or not saved_method.stripe_payment_method_id:
         return None
+
+    # Padrão TRUE (2026-08-28): captura manual é o fluxo padrão do projeto, ainda não
+    # lançado — não há pedidos antigos em produção para manter compatibilidade. Setar
+    # PAGAMENTO_CAPTURA_MANUAL=false explicitamente volta ao fluxo antigo (cobrança
+    # imediata), só para depuração pontual.
+    usar_captura_manual = os.getenv("PAGAMENTO_CAPTURA_MANUAL", "true").strip().lower() == "true"
 
     try:
         # Garantir que o payment_method está anexado ao customer antes de cobrar
@@ -168,27 +182,43 @@ def _try_automatic_payment_with_saved_card(
             # Já está anexado, ignora silenciosamente
             pass
 
-        payment_intent = stripe.PaymentIntent.create(
-            amount=amount_cents,
-            currency="eur",
-            customer=saved_method.stripe_customer_id,
-            payment_method=saved_method.stripe_payment_method_id,
-            off_session=True,
-            confirm=True,
-            application_fee_amount=platform_fee,
-            transfer_data={"destination": restaurant.stripe_account_id},
-            metadata={
+        payment_intent_params = {
+            "amount": amount_cents,
+            "currency": "eur",
+            "customer": saved_method.stripe_customer_id,
+            "payment_method": saved_method.stripe_payment_method_id,
+            "off_session": True,
+            "confirm": True,
+            "metadata": {
                 "order_id": str(new_order.id),
                 "user_id": new_order.user_id,
-                "payment_flow": "off_session_saved_card",
+                "payment_flow": "MANUAL_CAPTURE" if usar_captura_manual else "off_session_saved_card",
             },
-        )
+        }
+
+        if usar_captura_manual:
+            payment_intent_params["capture_method"] = "manual"
+            # Sem transfer_data/application_fee_amount — Separate Charges and Transfers
+            # (Fase 4): o repasse acontece depois da captura, por restaurante aceito.
+        else:
+            payment_intent_params["application_fee_amount"] = platform_fee
+            payment_intent_params["transfer_data"] = {"destination": restaurant.stripe_account_id}
+
+        payment_intent = stripe.PaymentIntent.create(**payment_intent_params)
 
         new_order.payment_intent_id = payment_intent.id
         new_order.stripe_customer_id = saved_method.stripe_customer_id
-        new_order.status = "Pendente"
-        for sub in new_order.sub_orders:
-            sub.status = "Pendente"
+        if usar_captura_manual:
+            new_order.payment_flow = "MANUAL_CAPTURE"
+            new_order.payment_status = "REQUIRES_PAYMENT"
+            new_order.authorized_amount = new_order.total
+            # Status do pedido só muda para "Pendente" quando o webhook confirmar a
+            # autorização (payment_intent.amount_capturable_updated) — ver Fase 1.3.
+        else:
+            new_order.payment_flow = "AUTO_CAPTURE"
+            new_order.status = "Pendente"
+            for sub in new_order.sub_orders:
+                sub.status = "Pendente"
         db.commit()
 
         return {
@@ -253,6 +283,40 @@ def _validar_sub_orders(sub_orders: list, max_restaurantes: int) -> Optional[str
     return None
 
 
+def _validar_restaurantes_aptos_pagamento(sub_orders: list, db: Session) -> Optional[str]:
+    """
+    PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0 — rede de segurança do checkout.
+
+    O filtro no pool da IA (services/hybrid_ai_service.py,
+    _filtrar_pool_por_aptidao_de_pagamento) já evita que a conversa monte um pedido com
+    restaurante inapto — mas essa é uma decisão de UX, não de integridade. O carrinho é
+    montado ao longo de vários turnos e a situação do restaurante no Stripe pode mudar
+    entre a conversa e o momento do pagamento (conta desativada, onboarding revertido).
+    Este é o gate que não pode ser contornado: se algum restaurante do pedido não
+    consegue receber dinheiro, o pedido inteiro é rejeitado ANTES de cobrar o cliente.
+
+    Função separada de `_validar_sub_orders` (que é pura, sem I/O) porque esta precisa
+    consultar o banco — mantém as duas testáveis sem misturar os dois tipos de teste.
+    """
+    gids_distintos = {s.restaurant_gid for s in sub_orders if s.restaurant_gid}
+    if not gids_distintos:
+        return None
+
+    restaurantes = db.query(RestaurantDB).filter(RestaurantDB.gid.in_(gids_distintos)).all()
+    restaurantes_por_gid = {r.gid: r for r in restaurantes}
+
+    for gid in gids_distintos:
+        restaurante = restaurantes_por_gid.get(gid)
+        if not restaurante:
+            return f"Restaurante {gid} não encontrado."
+        if not restaurante.stripe_account_id or not restaurante.stripe_onboarding_completed:
+            return (
+                f"O restaurante {restaurante.name} não está apto a receber pagamentos "
+                f"no momento. Remova os itens desse restaurante para continuar."
+            )
+    return None
+
+
 @router.post("/orders/initiate-checkout")
 def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Session = Depends(get_db)):
     """
@@ -271,6 +335,14 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     erro_validacao = _validar_sub_orders(order_data.sub_orders, config.settings.MAX_RESTAURANTES_POR_PEDIDO)
     if erro_validacao:
         raise HTTPException(status_code=400, detail=erro_validacao)
+
+    # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0 — gate que não pode ser contornado: com o
+    # filtro do pool da IA, isto só deve disparar se a situação do restaurante mudou
+    # ENTRE a conversa e o pagamento. Sem este gate, um pedido multi-restaurante com um
+    # restaurante inapto cobraria o cliente sem ter para onde repassar o dinheiro dele.
+    erro_aptidao = _validar_restaurantes_aptos_pagamento(order_data.sub_orders, db)
+    if erro_aptidao:
+        raise HTTPException(status_code=400, detail=erro_aptidao)
 
     from ulid import ULID
     master_order_gid = order_data.gid if order_data.gid else str(ULID())
@@ -379,22 +451,31 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     db.commit()
 
     # ── 4. Pagamento Stripe ────────────────────────────────────────────────
-    amount_cents = int(new_master_order.total * 100)
-    
-    # ⚠️ NOTA: Stripe Checkout só suporta 1 destino em transfer_data.
-    # Em pedidos multi-restaurante, o dinheiro cai na conta da PLATAFORMA
-    # e deve ser distribuído via Transfer API no webhook após o sucesso.
-    
+    # round() (não int() puro) é essencial aqui: floats de dinheiro acumulam erro de
+    # representação binária (ex.: 20.05 * 100 pode virar 2004.9999999999998), e
+    # int() TRUNCA para 2004 em vez de 2005. Isso já causou autorização 1 cêntimo
+    # abaixo do total real, fazendo a captura (que usa round(), linha ~1097) pedir
+    # mais do que o autorizado -> Stripe rejeita com "capture amount is greater than
+    # the amount you can capture". Todo valor monetário convertido para cêntimos
+    # neste arquivo deve usar round(), nunca int() puro.
+    amount_cents = int(round(new_master_order.total * 100))
     is_multi_restaurant = len(order_data.sub_orders) > 1
-    
+
+    # PLANO_PAGAMENTO_2_ETAPAS.md — padrão TRUE (2026-08-28): captura manual é o fluxo
+    # padrão do projeto, ainda não lançado — sem pedidos antigos em produção que
+    # precisem do comportamento anterior. Setar PAGAMENTO_CAPTURA_MANUAL=false
+    # explicitamente volta ao fluxo antigo (cobrança imediata no checkout, Destination
+    # Charge para 1 restaurante, sem repasse multi-restaurante), só para depuração.
+    usar_captura_manual = os.getenv("PAGAMENTO_CAPTURA_MANUAL", "true").strip().lower() == "true"
+
     payment_intent_data = {}
-    if not is_multi_restaurant and first_restaurant and first_restaurant.stripe_account_id:
-        # Se for apenas 1 restaurante, mantemos a lógica de repasse direto
+    if not usar_captura_manual and not is_multi_restaurant and first_restaurant and first_restaurant.stripe_account_id:
+        # Caminho ANTIGO: Destination Charge, só válido para 1 restaurante.
         commission_rate = get_commission_rate(first_restaurant.plan, use_own_delivery=first_restaurant.use_own_delivery)
-        platform_fee = int((total_products_price * commission_rate + order_data.total_service_fee) * 100)
-        
+        platform_fee = int(round((total_products_price * commission_rate + order_data.total_service_fee) * 100))
+
         if not first_restaurant.use_own_delivery:
-            platform_fee += int(order_data.total_delivery_fee * 100)
+            platform_fee += int(round(order_data.total_delivery_fee * 100))
 
         payment_intent_data = {
             "application_fee_amount": platform_fee,
@@ -409,7 +490,6 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
         )
 
         # 4.2 Criar PaymentIntent centralizado
-        # Incluímos as taxas de aplicação e transferência (apenas para restaurante único)
         payment_intent_params = {
             "amount": amount_cents,
             "currency": "eur",
@@ -420,13 +500,25 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
                 "master_gid": master_order_gid,
                 "user_id": order_data.user_id,
                 "is_multi_restaurant": str(is_multi_restaurant).lower(),
+                "payment_flow": "MANUAL_CAPTURE" if usar_captura_manual else "AUTO_CAPTURE",
             }
         }
 
-        # Adicionar taxas se houver apenas um restaurante
-        if payment_intent_data:
-            payment_intent_params.update(payment_intent_data)
-        
+        if usar_captura_manual:
+            # Fase 1.1: autoriza sem cobrar. Nenhum transfer_data/application_fee_amount
+            # aqui — o valor fica retido na conta da PLATAFORMA (Separate Charges and
+            # Transfers) e é distribuído por restaurante depois da captura (Fase 4),
+            # só para os sub-pedidos que o restaurante aceitar (Fases 2 e 3).
+            payment_intent_params["capture_method"] = "manual"
+            new_master_order.payment_flow = "MANUAL_CAPTURE"
+            new_master_order.payment_status = "REQUIRES_PAYMENT"
+            new_master_order.authorized_amount = new_master_order.total
+        else:
+            # Adicionar taxas se houver apenas um restaurante (caminho antigo)
+            if payment_intent_data:
+                payment_intent_params.update(payment_intent_data)
+            new_master_order.payment_flow = "AUTO_CAPTURE"
+
         # Se o usuário quer salvar o cartão, instruímos o Stripe
         if order_data.save_payment_method:
             payment_intent_params["setup_future_usage"] = "off_session"
@@ -568,6 +660,45 @@ def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _reverter_repasses_do_pedido(master: OrderDB, db: Session) -> list:
+    """
+    PLANO_PAGAMENTO_2_ETAPAS.md, Fase 5.1 — reverte os repasses (Transfer) já feitos
+    aos restaurantes de um pedido cancelado/reembolsado.
+
+    Necessário porque `reverse_transfer=True` no Refund só reverte o repasse
+    AUTOMÁTICO de um Destination Charge — não tem nenhum efeito sobre Transfers
+    criados separadamente (Separate Charges and Transfers, Fase 4). Sem este passo,
+    cancelar um pedido já repassado devolveria o dinheiro ao cliente SEM retirá-lo do
+    restaurante — prejuízo direto da plataforma. Validado ao vivo em modo de teste do
+    Stripe nesta sessão (Transfer.create_reversal).
+
+    Idempotente: calcula o valor ainda não revertido antes de reverter, então chamar
+    esta função duas vezes para o mesmo pedido não reverte em dobro.
+    """
+    resultados = []
+    for sub in master.sub_orders:
+        if not sub.stripe_transfer_id:
+            continue
+        ja_revertido = sub.stripe_transfer_reversed or 0.0
+        valor_restante = (sub.stripe_transfer_amount or 0.0) - ja_revertido
+        if valor_restante <= 0:
+            continue
+        try:
+            reversao = stripe.Transfer.create_reversal(
+                sub.stripe_transfer_id,
+                amount=int(round(valor_restante * 100)),
+                idempotency_key=f"reversal_sub_{sub.gid}",
+            )
+            sub.stripe_transfer_reversed = ja_revertido + (reversao.amount / 100)
+            db.commit()
+            print(f"✅ [Reversão] Sub-pedido {sub.gid}: €{reversao.amount/100:.2f} revertido do restaurante")
+            resultados.append({"sub_order_gid": sub.gid, "valor_revertido": reversao.amount / 100})
+        except stripe.error.StripeError as e:
+            print(f"❌ [Reversão] Falha ao reverter repasse do sub-pedido {sub.gid}: {str(e)}")
+            resultados.append({"sub_order_gid": sub.gid, "erro": str(e)})
+    return resultados
+
+
 @router.post("/orders/{order_id}/cancel")
 def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
     """
@@ -596,6 +727,7 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
     refund_id = None
     refund_status = None
     refund_error = None
+    repasses_revertidos = []
 
     payment_intent_id = order.payment_intent_id
 
@@ -644,6 +776,16 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
                 refund_status = refund.status
                 print(f"✅ Reembolso criado! ID: {refund_id}, Status: {refund_status}")
 
+                # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 5.1 — reverse_transfer=True acima só
+                # reverte o repasse automático de Destination Charge (restaurante único,
+                # fluxo antigo). Para pedidos MANUAL_CAPTURE (Separate Charges and
+                # Transfers), os Transfers foram criados à parte e precisam ser
+                # revertidos explicitamente — sem isto o restaurante fica com o dinheiro
+                # e o cliente também é reembolsado, prejuízo direto da plataforma.
+                if order.payment_flow == "MANUAL_CAPTURE":
+                    repasses_revertidos = _reverter_repasses_do_pedido(order, db)
+                order.payment_status = "REFUNDED"
+
             elif pi.status == "processing":
                 # Ainda em processamento — não é possível estornar agora
                 refund_status = "pending_stripe_processing"
@@ -655,13 +797,17 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
 
             elif pi.status in ("requires_payment_method", "requires_confirmation",
                                "requires_action", "requires_capture"):
-                # Nunca foi capturado → cancela diretamente, sem cobrança
-                stripe.PaymentIntent.cancel(payment_intent_id)
+                # Nunca foi capturado → cancela diretamente, sem cobrança. É o ganho
+                # central do fluxo de 2 etapas: cancelar antes do aceite nunca gera
+                # reembolso, porque nunca houve cobrança.
+                stripe.PaymentIntent.cancel(payment_intent_id, idempotency_key=f"cancel_order_{order.gid}")
                 refund_status = "not_charged"
+                order.payment_status = "CANCELED"
                 print(f"✅ PaymentIntent cancelado antes de ser capturado — sem cobrança ao cliente")
 
             elif pi.status == "canceled":
                 refund_status = "already_canceled"
+                order.payment_status = "CANCELED"
                 print(f"ℹ️ PaymentIntent já estava cancelado")
 
         except stripe.error.InvalidRequestError as e:
@@ -687,7 +833,8 @@ def cancel_order_and_refund(order_id: int, db: Session = Depends(get_db)):
             "refund_id": refund_id,
             "refund_status": refund_status,
             "error": refund_error,
-        }
+        },
+        "repasses_revertidos": repasses_revertidos,
     }
 
 
@@ -713,8 +860,31 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
     refund_id = None
     refund_status = None
     refund_error = None
+    repasse_revertido = None
+    liquidacao = None
 
     payment_intent_id = master.payment_intent_id
+
+    # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 5 — pedido MANUAL_CAPTURE ainda não capturado:
+    # nunca houve cobrança, então cancelar este sub-pedido não precisa (nem pode) de
+    # reembolso. Marca "Cancelado" e — crucial — grava declined_at: é esse campo, não
+    # o status, que _liquidar_pedido_se_todos_responderam usa para saber que este
+    # sub-pedido já respondeu (sem isso o pedido master ficaria "aguardando" para
+    # sempre, mesmo com o sub já cancelado).
+    if master.payment_flow == "MANUAL_CAPTURE" and master.payment_status == "AUTHORIZED":
+        sub.status = "Cancelado"
+        if sub.accepted_at is None and sub.declined_at is None:
+            sub.declined_at = datetime.now(timezone.utc)
+            sub.decline_reason = sub.decline_reason or "Cancelado antes da captura"
+        db.commit()
+        liquidacao = _liquidar_pedido_se_todos_responderam(master, db)
+        return {
+            "message": "Sub-pedido cancelado com sucesso (autorização ainda não capturada — sem cobrança)",
+            "sub_order_gid": gid,
+            "master_status": master.status,
+            "refund": {"amount": 0, "processed": False, "refund_id": None, "error": None},
+            "liquidacao": liquidacao,
+        }
 
     # 1. Recuperar PaymentIntent se necessário (fallback via session)
     if not payment_intent_id and master.checkout_session_id:
@@ -733,8 +903,8 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
             pi = stripe.PaymentIntent.retrieve(payment_intent_id)
             if pi.status == "succeeded":
                 # Montante a reembolsar (total do sub-pedido em cêntimos)
-                refund_amount = int(sub.total * 100)
-                
+                refund_amount = int(round(sub.total * 100))
+
                 try:
                     refund = stripe.Refund.create(
                         payment_intent=payment_intent_id,
@@ -743,7 +913,7 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
                         reverse_transfer=True, # Tenta reverter repasse automático
                         refund_application_fee=True, # Tenta devolver comissão
                         metadata={
-                            "sub_order_id": str(sub.id), 
+                            "sub_order_id": str(sub.id),
                             "sub_order_gid": gid,
                             "master_order_id": str(master.id),
                             "master_order_gid": master.gid
@@ -758,7 +928,7 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
                         reverse_transfer=False,
                         refund_application_fee=False,
                         metadata={
-                            "sub_order_id": str(sub.id), 
+                            "sub_order_id": str(sub.id),
                             "sub_order_gid": gid,
                             "master_order_id": str(master.id),
                             "master_order_gid": master.gid
@@ -769,19 +939,38 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
                 refund_status = refund.status
                 print(f"✅ Reembolso parcial criado! Valor: {sub.total} €, ID: {refund_id}")
 
+                # Fase 5.1 — reverse_transfer=True acima só reverte repasse automático de
+                # Destination Charge. Para MANUAL_CAPTURE, o repasse DESTE sub-pedido
+                # (se já tiver sido feito, Fase 4) precisa ser revertido explicitamente.
+                if master.payment_flow == "MANUAL_CAPTURE" and sub.stripe_transfer_id:
+                    ja_revertido = sub.stripe_transfer_reversed or 0.0
+                    valor_restante = (sub.stripe_transfer_amount or 0.0) - ja_revertido
+                    if valor_restante > 0:
+                        try:
+                            reversao = stripe.Transfer.create_reversal(
+                                sub.stripe_transfer_id,
+                                amount=int(round(valor_restante * 100)),
+                                idempotency_key=f"reversal_sub_{sub.gid}",
+                            )
+                            sub.stripe_transfer_reversed = ja_revertido + (reversao.amount / 100)
+                            repasse_revertido = reversao.amount / 100
+                            print(f"✅ [Reversão] Sub-pedido {gid}: €{repasse_revertido:.2f} revertido do restaurante")
+                        except stripe.error.StripeError as e:
+                            print(f"❌ [Reversão] Falha ao reverter repasse do sub-pedido {gid}: {str(e)}")
+
         except stripe.error.StripeError as e:
             print(f"❌ Erro ao processar reembolso parcial: {str(e)}")
             refund_error = str(e)
 
     # 3. Atualizar status na base de dados
     sub.status = "Cancelado"
-    
+
     # 4. Verificar se TODOS os sub-pedidos da master foram cancelados
     all_cancelled = all(s.status == "Cancelado" for s in master.sub_orders)
     if all_cancelled:
         master.status = "Cancelado"
         print(f"ℹ️ Todos os sub-pedidos do Master #{master.id} foram cancelados. Master atualizado.")
-    
+
     db.commit()
 
     return {
@@ -793,7 +982,8 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
             "processed": refund_id is not None,
             "refund_id": refund_id,
             "error": refund_error
-        }
+        },
+        "repasse_revertido": repasse_revertido,
     }
 
 
@@ -860,6 +1050,210 @@ def update_order_status(order_id: int, status_data: OrderStatusUpdate, db: Sessi
     return {"message": "Status atualizado", "status": order.status, "driver_name": None, "tracking_code": order.tracking_code}
 
 
+def _liquidar_pedido_se_todos_responderam(master: OrderDB, db: Session) -> Dict:
+    """
+    PLANO_PAGAMENTO_2_ETAPAS.md, Fase 3 — coração do fluxo de 2 etapas. Só age quando
+    TODOS os sub-pedidos já responderam (aceito ou recusado); enquanto houver algum sem
+    resposta, não faz nada — devolve o estado para quem chamou decidir o que mostrar.
+
+    IMPORTANTE (2026-08-28): "respondeu" é decidido por `sub.accepted_at`/
+    `sub.declined_at`, NUNCA por `sub.status`. O `status` do sub-pedido continua só com
+    valores que os apps de restaurante e cliente já conhecem ("Pendente", "Cancelado")
+    — não introduzimos "AGUARDANDO_ACEITE"/"Aceito"/"Recusado" como valores visíveis,
+    porque um app que não foi atualizado não sabe o que fazer com uma string de status
+    que nunca viu (o pedido simplesmente não aparece na lista, por exemplo). O estado
+    real do fluxo de aceite vive em `accepted_at`/`declined_at` (sub) e `payment_status`
+    (master) — campos novos que nenhum app antigo lê, então são seguros para carregar a
+    lógica sem quebrar compatibilidade.
+
+    Decisão financeira fechada em 2026-08-27: quando parte dos restaurantes recusa, a
+    taxa de serviço é cobrada INTEGRAL do cliente (não recalculada proporcionalmente).
+
+    Idempotência: chamar esta função duas vezes para o mesmo pedido já liquidado é
+    seguro — `idempotency_key` no Stripe garante que capture/cancel não dobram, e o
+    chamador (accept/decline) já tranca a linha do master com SELECT FOR UPDATE antes
+    de invocar, então duas respostas simultâneas nunca competem aqui.
+    """
+    pendentes = [s for s in master.sub_orders if s.accepted_at is None and s.declined_at is None]
+    if pendentes:
+        return {"acao": "aguardando", "pendentes": len(pendentes)}
+
+    if master.payment_status not in ("AUTHORIZED",):
+        # Já liquidado por uma chamada anterior (ou nunca chegou a ser autorizado) —
+        # não repete a captura/cancelamento.
+        return {"acao": "ja_liquidado", "payment_status": master.payment_status}
+
+    aceitos = [s for s in master.sub_orders if s.accepted_at is not None]
+
+    if not aceitos:
+        # Nenhum restaurante aceitou -> libera a reserva. Sem cobrança, sem reembolso:
+        # é exatamente o ganho pedido — recusa nunca gera necessidade de estorno.
+        try:
+            stripe.PaymentIntent.cancel(
+                master.payment_intent_id,
+                idempotency_key=f"cancel_order_{master.gid}",
+            )
+        except stripe.error.InvalidRequestError as e:
+            print(f"⚠️ [Liquidação] PaymentIntent.cancel falhou para pedido #{master.id}: {str(e)}")
+        master.payment_status = "CANCELED"
+        master.status = "Cancelado"
+        db.commit()
+        print(f"✅ [Liquidação] Pedido #{master.id}: nenhum restaurante aceitou — autorização liberada, sem cobrança")
+        return {"acao": "cancelado", "motivo": "nenhum_restaurante_aceitou"}
+
+    valor_a_capturar_cents = int(round(
+        (sum(s.total for s in aceitos) + (master.total_service_fee or 0.0)) * 100
+    ))
+
+    try:
+        stripe.PaymentIntent.capture(
+            master.payment_intent_id,
+            amount_to_capture=valor_a_capturar_cents,
+            idempotency_key=f"capture_order_{master.gid}",
+        )
+    except stripe.error.InvalidRequestError as e:
+        print(f"❌ [Liquidação] Captura falhou para pedido #{master.id}: {str(e)}")
+        return {"acao": "erro_captura", "detalhe": str(e)}
+
+    # Atualiza payment_status IMEDIATAMENTE (não espera o webhook) — é o que fecha a
+    # idempotência desta função: a guarda de "ja_liquidado" acima depende de
+    # payment_status não ser mais "AUTHORIZED". Esperar o webhook deixaria uma janela
+    # em que duas chamadas rápidas em sequência (antes do webhook chegar) tentariam
+    # capturar duas vezes — o idempotency_key do Stripe evita o dinheiro dobrar, mas a
+    # aplicação não devia depender só disso. O disparo do repasse (Fase 4) continua no
+    # webhook payment_intent.succeeded, que é quem tem o `latest_charge` (necessário
+    # para o Transfer.create com source_transaction).
+    master.payment_status = "CAPTURED"
+    master.captured_amount = valor_a_capturar_cents / 100
+    # Sub-pedidos recusados (declined_at preenchido, status "Cancelado") permanecem
+    # assim — não entram no fluxo de preparo/entrega.
+    master.status = "Pendente"  # segue o fluxo normal de preparo a partir daqui
+    db.commit()
+    print(f"✅ [Liquidação] Pedido #{master.id}: captura de €{valor_a_capturar_cents/100:.2f} solicitada "
+          f"({len(aceitos)}/{len(master.sub_orders)} restaurante(s) aceito(s))")
+    return {"acao": "captura_solicitada", "valor_a_capturar": valor_a_capturar_cents / 100,
+            "restaurantes_aceitos": len(aceitos), "restaurantes_recusados": len(master.sub_orders) - len(aceitos)}
+
+
+@router.post("/orders/sub-order/{gid}/accept")
+def accept_sub_order(gid: str, db: Session = Depends(get_db)):
+    """
+    PLANO_PAGAMENTO_2_ETAPAS.md, Fase 2.1 — o restaurante aceita o sub-pedido.
+
+    Só existe etapa de liquidação dentro do fluxo de captura manual (payment_flow ==
+    MANUAL_CAPTURE). Um pedido do fluxo antigo (AUTO_CAPTURE — cobrança já feita no
+    checkout, seja porque a flag PAGAMENTO_CAPTURA_MANUAL está desligada, seja porque o
+    pedido foi criado antes de ela ser ligada) não tem autorização para liquidar: o app
+    de restaurante chama este mesmo endpoint para TODO pedido, então aceitar aqui só
+    confirma — não há nada financeiro a fazer, e por isso NÃO é erro 400.
+
+    NÃO muda `sub.status` (fica "Pendente", como sempre foi) — só grava
+    `sub.accepted_at`. O app de restaurante não precisa saber que existe um conceito de
+    "aceite" para exibir o pedido corretamente; ele já sabe mostrar "Pendente".
+    """
+    sub = db.query(SubOrderDB).filter(SubOrderDB.gid == gid).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+
+    # Trava a linha do master ANTES de validar/decidir — sem isto, dois restaurantes
+    # respondendo ao mesmo tempo poderiam ambos ver "todos responderam" e tentar
+    # liquidar o pedido em paralelo. idempotency_key no Stripe protege a chamada em si,
+    # mas o SELECT FOR UPDATE evita a corrida antes mesmo de chegar lá.
+    master = db.query(OrderDB).filter(OrderDB.gid == sub.master_order_gid).with_for_update().first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Pedido principal não encontrado")
+
+    if master.payment_flow != "MANUAL_CAPTURE":
+        return {
+            "message": "Sub-pedido aceito (pagamento já cobrado no checkout — sem etapa de liquidação)",
+            "sub_order_gid": gid,
+            "status": sub.status,
+            "master_status": master.status,
+            "liquidacao": {"acao": "nao_aplicavel", "motivo": "payment_flow != MANUAL_CAPTURE"},
+        }
+    if master.payment_status != "AUTHORIZED":
+        raise HTTPException(
+            status_code=400,
+            detail="Este pedido não está aguardando aceite de restaurante.",
+        )
+    if sub.accepted_at is not None or sub.declined_at is not None:
+        raise HTTPException(status_code=400, detail="Este sub-pedido já respondeu (aceite ou recusa).")
+
+    sub.accepted_at = datetime.now(timezone.utc)
+    db.commit()
+    print(f"✅ [Aceite] Sub-pedido {gid} aceito pelo restaurante")
+
+    resultado = _liquidar_pedido_se_todos_responderam(master, db)
+
+    return {
+        "message": "Sub-pedido aceito",
+        "sub_order_gid": gid,
+        "status": sub.status,
+        "master_status": master.status,
+        "liquidacao": resultado,
+    }
+
+
+@router.post("/orders/sub-order/{gid}/decline")
+def decline_sub_order(gid: str, payload: Optional[dict] = None, db: Session = Depends(get_db)):
+    """
+    PLANO_PAGAMENTO_2_ETAPAS.md, Fase 2.1/2.2 — o restaurante recusa o sub-pedido.
+
+    Recusa NÃO é cancelamento com reembolso: antes da captura o cliente nunca foi
+    cobrado, então não há nada a devolver. `payload` opcional: {"reason": "..."}.
+
+    `sub.status` vira "Cancelado" (não "Recusado") — vocabulário que o app já conhece;
+    o motivo real ("recusado pelo restaurante" vs. "cliente cancelou") fica em
+    `declined_at`/`decline_reason`, campos que só o backend lê.
+
+    Um pedido do fluxo antigo (AUTO_CAPTURE — payment_flow != MANUAL_CAPTURE) JÁ foi
+    cobrado no checkout: recusar aqui não é "liberar autorização sem cobrança" (isso só
+    existe no fluxo de captura manual), é cancelamento com reembolso de verdade — por
+    isso delega para `cancel_sub_order_and_partial_refund`, a mesma lógica que o app já
+    usa para cancelamento no fluxo antigo.
+    """
+    sub = db.query(SubOrderDB).filter(SubOrderDB.gid == gid).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+
+    master = db.query(OrderDB).filter(OrderDB.gid == sub.master_order_gid).with_for_update().first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Pedido principal não encontrado")
+
+    if master.payment_flow != "MANUAL_CAPTURE":
+        resultado = cancel_sub_order_and_partial_refund(gid, db)
+        return {
+            "message": resultado["message"],
+            "sub_order_gid": gid,
+            "status": sub.status,
+            "master_status": resultado.get("master_status", master.status),
+            "liquidacao": resultado.get("liquidacao"),
+        }
+    if master.payment_status != "AUTHORIZED":
+        raise HTTPException(
+            status_code=400,
+            detail="Este pedido não está aguardando aceite de restaurante.",
+        )
+    if sub.accepted_at is not None or sub.declined_at is not None:
+        raise HTTPException(status_code=400, detail="Este sub-pedido já respondeu (aceite ou recusa).")
+
+    sub.status = "Cancelado"
+    sub.declined_at = datetime.now(timezone.utc)
+    sub.decline_reason = (payload or {}).get("reason")
+    db.commit()
+    print(f"🚫 [Recusa] Sub-pedido {gid} recusado pelo restaurante (motivo: {sub.decline_reason})")
+
+    resultado = _liquidar_pedido_se_todos_responderam(master, db)
+
+    return {
+        "message": "Sub-pedido recusado",
+        "sub_order_gid": gid,
+        "status": sub.status,
+        "master_status": master.status,
+        "liquidacao": resultado,
+    }
+
+
 @router.put("/orders/sub-order/{gid}/status", response_model=OrderStatusResponse)
 def update_sub_order_status(gid: str, status_data: OrderStatusUpdate, db: Session = Depends(get_db)):
     """
@@ -876,10 +1270,125 @@ def update_sub_order_status(gid: str, status_data: OrderStatusUpdate, db: Sessio
         res = cancel_sub_order_and_partial_refund(gid, db)
         return {"message": res["message"], "status": "Cancelado", "driver_name": sub.driver_name}
 
+    # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 2.1 — compatibilidade com apps de restaurante
+    # que ainda não têm o botão explícito de aceitar/recusar: se o restaurante mover o
+    # sub-pedido para qualquer status de progresso (ex.: "Em preparo") enquanto o
+    # pedido ainda aguarda aceite (payment_status == AUTHORIZED e este sub ainda não
+    # respondeu), trata como aceite implícito. Sem isto, um app antigo travaria o
+    # pedido até o prazo de aceite expirar (Fase 6).
+    #
+    # Checado por accepted_at/declined_at + payment_status do master — NUNCA por
+    # sub.status, que continua só "Pendente"/"Cancelado" (vocabulário que o app já
+    # conhece, ver nota em _liquidar_pedido_se_todos_responderam).
+    #
+    # `status_data.status not in ("Pendente", "Cancelado")` é essencial: sem isso, um
+    # app reenviando "Pendente" (no-op inofensivo no fluxo antigo — sub já está
+    # "Pendente" o tempo todo neste fluxo) disparia aceite implícito por engano a cada
+    # chamada. Só uma transição de PROGRESSO de verdade (ex.: "Em preparo") conta.
+    master_para_compat = sub.master_order
+    aguardando_aceite = bool(
+        master_para_compat
+        and master_para_compat.payment_flow == "MANUAL_CAPTURE"
+        and master_para_compat.payment_status == "AUTHORIZED"
+        and sub.accepted_at is None
+        and sub.declined_at is None
+        and status_data.status not in ("Pendente", "Cancelado")
+    )
+    if aguardando_aceite:
+        print(f"ℹ️ [Compat] Sub-pedido {gid} recebeu status '{status_data.status}' estando "
+              f"sem resposta no fluxo de captura manual — tratando como aceite implícito")
+        return accept_sub_order(gid, db)
+
+    # Bug real de produção (2026-08-28): nada aqui impedia um app reenviar "Pendente"
+    # DEPOIS do sub-pedido já ter avançado (ex.: "Em preparo"), sobrescrevendo o
+    # progresso de volta — provavelmente por retry duplicado ou tela desatualizada no
+    # app. "Pendente" só é um valor válido de ENTRADA no fluxo, nunca de retrocesso:
+    # se o sub já saiu de "Pendente"/PENDING_PAYMENT, ignorar silenciosamente esse
+    # pedido específico em vez de regredir o progresso.
+    if status_data.status == "Pendente" and sub.status not in (None, "Pendente", "PENDING_PAYMENT"):
+        print(f"⚠️ [Guard] Ignorando tentativa de regredir sub-pedido {gid} de "
+              f"'{sub.status}' para 'Pendente' (retrocesso não permitido)")
+        return {"message": "Status do sub-pedido não alterado (retrocesso ignorado)",
+                "status": sub.status, "driver_name": sub.driver_name}
+
     sub.status = status_data.status
     db.commit()
 
     return {"message": "Status do sub-pedido atualizado", "status": sub.status, "driver_name": sub.driver_name}
+
+
+def _repassar_para_restaurantes(master: OrderDB, db: Session, pi: dict) -> None:
+    """
+    PLANO_PAGAMENTO_2_ETAPAS.md, Fase 4 — distribui o valor capturado entre os
+    restaurantes cujo sub-pedido foi Aceito. Chamado a partir do webhook
+    payment_intent.succeeded quando payment_flow == "MANUAL_CAPTURE".
+
+    Fórmula fechada com o financeiro em 2026-08-27: comissão calculada POR
+    restaurante, sobre os produtos dele; a taxa do Stripe é absorvida pela plataforma
+    (o restaurante recebe o repasse integral, sem dedução extra) — validado ao vivo em
+    modo de teste do Stripe nesta sessão (Transfer.create com source_transaction e
+    idempotency_key).
+
+        repasse = produtos_do_sub × (1 − comissão)
+                + taxa_de_entrega_do_sub   (somente se restaurante.use_own_delivery)
+
+    Idempotência em duas camadas: idempotency_key no Stripe (protege reentrega do
+    webhook) + checagem de sub.stripe_transfer_id (protege reprocessamento pelo worker
+    de reconciliação da Fase 6.3).
+    """
+    charge_id = pi.get('latest_charge')
+    if not charge_id:
+        print(f"⚠️ [Repasse] Pedido #{master.id} sem latest_charge — repasse não pode ser feito ainda")
+        return
+
+    for sub in master.sub_orders:
+        if sub.accepted_at is None:
+            continue
+        if sub.stripe_transfer_id:
+            continue  # já repassado — evita repassar 2x se esta função rodar de novo
+
+        restaurante = sub.restaurant
+        # Rede de segurança adicional: o gate do checkout (Fase 0) já deveria ter
+        # impedido isto, mas a situação do restaurante pode mudar depois do checkout
+        # e antes da captura (aceite pode levar minutos).
+        if not restaurante or not restaurante.stripe_account_id or not restaurante.stripe_onboarding_completed:
+            print(f"⚠️ [Repasse] Sub-pedido {sub.gid} (restaurante {sub.restaurant_name}) sem conta "
+                  f"Stripe apta — repasse PENDENTE, requer reconciliação manual")
+            continue
+
+        comissao = get_commission_rate(restaurante.plan, use_own_delivery=restaurante.use_own_delivery)
+        produtos_do_sub = sub.total - (sub.delivery_fee or 0.0)
+        valor_repasse = produtos_do_sub * (1 - comissao)
+        if restaurante.use_own_delivery:
+            valor_repasse += (sub.delivery_fee or 0.0)
+        valor_repasse_cents = max(0, int(round(valor_repasse * 100)))
+
+        if valor_repasse_cents == 0:
+            print(f"ℹ️ [Repasse] Sub-pedido {sub.gid}: valor calculado é zero, nada a transferir")
+            continue
+
+        try:
+            transfer = stripe.Transfer.create(
+                amount=valor_repasse_cents,
+                currency="eur",
+                destination=restaurante.stripe_account_id,
+                source_transaction=charge_id,
+                metadata={
+                    "sub_order_gid": sub.gid,
+                    "master_order_gid": master.gid,
+                    "master_order_id": str(master.id),
+                },
+                idempotency_key=f"transfer_sub_{sub.gid}",
+            )
+        except stripe.error.StripeError as e:
+            print(f"❌ [Repasse] Falha ao transferir sub-pedido {sub.gid}: {str(e)}")
+            continue
+
+        sub.stripe_transfer_id = transfer.id
+        sub.stripe_transfer_amount = valor_repasse_cents / 100
+        db.commit()
+        print(f"✅ [Repasse] Sub-pedido {sub.gid} -> {restaurante.name}: "
+              f"€{sub.stripe_transfer_amount:.2f} (transfer {transfer.id})")
 
 
 @router.post("/stripe-webhook")
@@ -988,6 +1497,101 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
         finally:
             db.close()
 
+    # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 1.3 — com capture_method="manual", este evento
+    # (não payment_intent.succeeded) é quem sinaliza que a AUTORIZAÇÃO foi aprovada.
+    # Confirmado ao vivo em modo de teste do Stripe nesta sessão: um PaymentIntent
+    # manual, ao ser confirmado, dispara amount_capturable_updated com
+    # status=requires_capture — payment_intent.succeeded só dispara depois de
+    # PaymentIntent.capture(). Sem tratar este evento, todo pedido MANUAL_CAPTURE
+    # ficaria preso em PENDING_PAYMENT para sempre.
+    if event['type'] == 'payment_intent.amount_capturable_updated':
+        pi = event['data']['object']
+        payment_intent_id = pi.get('id')
+        order_id = pi.get('metadata', {}).get('order_id')
+        print(f"🔒 Evento amount_capturable_updated: {payment_intent_id} | Order ID: {order_id}")
+
+        db = SessionLocal()
+        try:
+            if order_id:
+                db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+                if db_order and db_order.payment_flow == "MANUAL_CAPTURE" and db_order.status == "PENDING_PAYMENT":
+                    db_order.payment_status = "AUTHORIZED"
+                    db_order.payment_intent_id = payment_intent_id
+                    # "Pendente" (não "AGUARDANDO_ACEITE") — apps legados/atuais só
+                    # reconhecem os status já existentes. O estado real de "aguardando
+                    # aceite do restaurante" fica em payment_status/accepted_at/declined_at,
+                    # nunca neste campo visível às apps.
+                    db_order.status = "Pendente"
+                    # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 6.1 — marca quando o cinto de
+                    # segurança (payment_reconciliation_service) deve agir se o fluxo
+                    # normal de aceite (15 min) não resolver por qualquer motivo. NÃO é
+                    # o prazo real de expiração da autorização no Stripe (ainda não
+                    # confirmado na documentação oficial) — é uma margem conservadora,
+                    # deliberadamente bem abaixo dele.
+                    db_order.authorization_expires_at = (
+                        datetime.now(timezone.utc)
+                        + timedelta(minutes=config.settings.PRAZO_SEGURANCA_AUTORIZACAO_MINUTOS)
+                    )
+                    for sub in db_order.sub_orders:
+                        sub.status = "Pendente"
+                    db.commit()
+                    print(f"✅ Pedido #{db_order.id} autorizado — aguardando aceite dos restaurantes "
+                          f"({len(db_order.sub_orders)} sub-pedido(s))")
+        except Exception as e:
+            print(f"❌ Erro ao processar amount_capturable_updated: {str(e)}")
+            db.rollback()
+        finally:
+            db.close()
+
+    # payment_intent.canceled — autorização liberada sem cobrança (Fase 3: nenhum
+    # restaurante aceitou; ou Fase 5: cliente cancelou antes do aceite). Não sobrescreve
+    # order.status aqui: quem chamou PaymentIntent.cancel() já definiu o status
+    # específico do pedido; este handler só confirma o estado do PAGAMENTO.
+    if event['type'] == 'payment_intent.canceled':
+        pi = event['data']['object']
+        payment_intent_id = pi.get('id')
+        order_id = pi.get('metadata', {}).get('order_id')
+        print(f"🚫 Evento payment_intent.canceled: {payment_intent_id} | Order ID: {order_id}")
+
+        db = SessionLocal()
+        try:
+            if order_id:
+                db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+                if db_order and db_order.payment_flow == "MANUAL_CAPTURE":
+                    db_order.payment_status = "CANCELED"
+                    db.commit()
+        except Exception as e:
+            print(f"❌ Erro ao processar payment_intent.canceled: {str(e)}")
+            db.rollback()
+        finally:
+            db.close()
+
+    # payment_intent.payment_failed — autorização recusada pelo banco/rede do cartão
+    # (saldo insuficiente, cartão bloqueado). Cancela o pedido diretamente: nunca houve
+    # cobrança, então não há o que reembolsar.
+    if event['type'] == 'payment_intent.payment_failed':
+        pi = event['data']['object']
+        payment_intent_id = pi.get('id')
+        order_id = pi.get('metadata', {}).get('order_id')
+        print(f"❌ Evento payment_intent.payment_failed: {payment_intent_id} | Order ID: {order_id}")
+
+        db = SessionLocal()
+        try:
+            if order_id:
+                db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+                if db_order and db_order.status == "PENDING_PAYMENT":
+                    db_order.payment_status = "FAILED"
+                    db_order.status = "Cancelado"
+                    for sub in db_order.sub_orders:
+                        sub.status = "Cancelado"
+                    db.commit()
+                    print(f"✅ Pedido #{db_order.id} cancelado — autorização/cobrança falhou, sem reembolso necessário")
+        except Exception as e:
+            print(f"❌ Erro ao processar payment_intent.payment_failed: {str(e)}")
+            db.rollback()
+        finally:
+            db.close()
+
     if event['type'] == 'payment_intent.succeeded':
         pi = event['data']['object']
         payment_intent_id = pi.get('id')
@@ -996,10 +1600,28 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
 
         db = SessionLocal()
         try:
-            # 🚀 ATUALIZAÇÃO DE STATUS PARA SDK NATIVO
-            # Quando usa o SDK, o evento principal é este succeeded, não o checkout.session
+            db_order = None
             if order_id:
                 db_order = db.query(OrderDB).filter(OrderDB.id == int(order_id)).first()
+
+            if db_order and db_order.payment_flow == "MANUAL_CAPTURE":
+                # Fase 3/4: para captura manual, succeeded = CAPTURA confirmada (o dinheiro
+                # já saiu do cliente), não autorização — isso já foi tratado em
+                # amount_capturable_updated. É aqui que os repasses são disparados.
+                db_order.payment_status = "CAPTURED"
+                db_order.captured_amount = (pi.get('amount_received') or 0) / 100
+                db.commit()
+                print(f"✅ Pedido #{db_order.id} capturado (€{db_order.captured_amount:.2f}) — disparando repasses")
+                try:
+                    _repassar_para_restaurantes(db_order, db, pi)
+                except Exception as e_repasse:
+                    # Falha no repasse NÃO deve impedir o ack do webhook (o dinheiro do
+                    # cliente já foi capturado com sucesso) — fica visível no log para
+                    # reconciliação manual/pelo worker (Fase 6.3).
+                    print(f"❌ [Repasse] Falha ao repassar pedido #{db_order.id}: {str(e_repasse)}")
+            else:
+                # 🚀 ATUALIZAÇÃO DE STATUS PARA SDK NATIVO (caminho AUTO_CAPTURE, inalterado)
+                # Quando usa o SDK, o evento principal é este succeeded, não o checkout.session
                 if db_order and db_order.status == "PENDING_PAYMENT":
                     print(f"✅ [SDK SDK] Atualizando pedido #{db_order.id} para Pendente via PaymentIntent")
                     db_order.status = "Pendente"

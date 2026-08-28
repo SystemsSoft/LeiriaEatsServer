@@ -128,6 +128,18 @@ class OrderDB(Base):
     total_delivery_fee = Column(Float, nullable=True, default=0.0)
     total_service_fee  = Column(Float, nullable=True, default=0.0)
 
+    # ── Pagamento em 2 etapas (PLANO_PAGAMENTO_2_ETAPAS.md) ────────────────
+    # payment_flow distingue pedidos criados antes/depois deste fluxo: pedidos antigos
+    # foram cobrados na hora (AUTO_CAPTURE) e devem seguir o cancelamento/estorno de
+    # sempre; só MANUAL_CAPTURE passa pelo caminho novo de autorização → aceite → captura.
+    # Sem essa coluna, um pedido antigo cancelado depois do deploy seguiria a lógica errada.
+    payment_flow = Column(String(20), nullable=True, default="AUTO_CAPTURE")  # AUTO_CAPTURE | MANUAL_CAPTURE
+    # REQUIRES_PAYMENT | AUTHORIZED | CAPTURED | CANCELED | FAILED
+    payment_status = Column(String(50), nullable=True, default=None)
+    authorized_amount = Column(Float, nullable=True, default=None)
+    captured_amount = Column(Float, nullable=True, default=None)
+    authorization_expires_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
     sub_orders = relationship("SubOrderDB", back_populates="master_order", cascade="all, delete-orphan", foreign_keys="SubOrderDB.master_order_gid", primaryjoin="OrderDB.gid == SubOrderDB.master_order_gid")
 
 
@@ -157,6 +169,15 @@ class SubOrderDB(Base):
     # ── Coordenadas do restaurante ───
     restaurant_latitude  = Column(Float, nullable=True)
     restaurant_longitude = Column(Float, nullable=True)
+
+    # ── Aceite e repasse (PLANO_PAGAMENTO_2_ETAPAS.md, Fases 2 e 4) ─────────
+    accepted_at  = Column(DateTime(timezone=True), nullable=True, default=None)
+    declined_at  = Column(DateTime(timezone=True), nullable=True, default=None)
+    decline_reason = Column(String(255), nullable=True, default=None)
+    # Idempotência do repasse: sem isto, um webhook reentregue pagaria o restaurante 2x.
+    stripe_transfer_id = Column(String(255), nullable=True, default=None)
+    stripe_transfer_amount = Column(Float, nullable=True, default=None)
+    stripe_transfer_reversed = Column(Float, nullable=True, default=0.0)
 
     master_order = relationship("OrderDB", back_populates="sub_orders", foreign_keys=[master_order_gid], primaryjoin="SubOrderDB.master_order_gid == OrderDB.gid")
     restaurant = relationship("RestaurantDB", foreign_keys=[restaurant_gid], primaryjoin="SubOrderDB.restaurant_gid == RestaurantDB.gid")
