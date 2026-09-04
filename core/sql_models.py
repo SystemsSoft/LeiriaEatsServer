@@ -161,7 +161,7 @@ class SubOrderDB(Base):
     base_time = Column(Integer, default=0)
     
     # ── Estafeta atribuído (específico por sub-pedido/restaurante) ──────────
-    driver_id   = Column(Integer, ForeignKey("drivers.id"), nullable=True)
+    driver_gid  = Column(String(255), ForeignKey("drivers.gid"), nullable=True)
     driver_name = Column(String(255), nullable=True)
     driver_delivery_fee = Column(Float, nullable=True, default=None)
     driver_payment_transfer_id = Column(String(255), nullable=True, default=None)
@@ -235,6 +235,7 @@ class DriverDB(Base):
     __tablename__ = "drivers"
 
     id       = Column(Integer, primary_key=True, index=True)
+    gid      = Column(String(255), nullable=True, unique=True)
     login    = Column(String(100), unique=True, nullable=False, index=True)
     password = Column(String(255), nullable=False)
     status   = Column(String(50), default="PENDING")   # PENDING | ACTIVE | INACTIVE

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from starlette import status
+from ulid import ULID
 
 from core import config
 from core.database import get_db
@@ -52,18 +53,178 @@ def _calculate_delivery_fee(total_distance_km):
 def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db)):
     existing = db.query(DriverDB).filter(DriverDB.login == payload.login).first()
     if existing: raise HTTPException(status_code=400, detail="Login já existe.")
-    driver = DriverDB(login=payload.login, password=_hash_password(payload.password), status="PENDING")
+    driver = DriverDB(gid=str(ULID()), login=payload.login, password=_hash_password(payload.password), status="PENDING")
     db.add(driver)
     db.commit()
     db.refresh(driver)
-    return {"message": "Registado. Complete o onboarding Stripe."}
+    return {
+        "gid": driver.gid,
+        "status": driver.status,
+        "profile_complete": False,
+        "message": "Registado. Complete o onboarding Stripe.",
+    }
+
+
+@router.post("/login", response_model=DriverLoginResponse)
+def login_driver(payload: DriverLoginRequest, db: Session = Depends(get_db)):
+    driver = db.query(DriverDB).filter(DriverDB.login == payload.login).first()
+    if not driver or not _verify_password(payload.password, driver.password):
+        raise HTTPException(status_code=401, detail="Login ou senha inválidos.")
+
+    return DriverLoginResponse(
+        authenticated=True,
+        gid=driver.gid,
+        name=driver.name,
+        status=driver.status,
+        profile_complete=bool(driver.name and driver.vehicle_type),
+        message="Login efetuado com sucesso.",
+    )
+
+
+def _get_driver_by_gid_or_404(gid: str, db: Session) -> DriverDB:
+    """Busca o estafeta pelo gid (identidade pública/estável usada pelo app)."""
+    driver = db.query(DriverDB).filter(DriverDB.gid == gid).first()
+    if not driver and gid.isdigit():
+        # Fallback: apps antigos ainda podem enviar o id numérico
+        driver = db.query(DriverDB).filter(DriverDB.id == int(gid)).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Estafeta não encontrado.")
+    return driver
+
+
+def _stripe_account_for(driver: DriverDB) -> str:
+    """Garante que o estafeta tem uma conta Stripe Connect Express e devolve o id."""
+    if driver.stripe_account_id:
+        return driver.stripe_account_id
+
+    stripe_email = driver.login if "@" in driver.login else f"{driver.login}@leiriaeats.com"
+    account = stripe.Account.create(
+        type="express",
+        country="PT",
+        email=stripe_email,
+        capabilities={
+            "card_payments": {"requested": True},
+            "transfers": {"requested": True},
+        },
+    )
+    driver.stripe_account_id = account.id
+    driver.status = "STRIPE_PENDING"
+    return driver.stripe_account_id
+
+
+@router.post("/{gid}/stripe-onboarding")
+def create_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
+    """
+    POST /drivers/{gid}/stripe-onboarding
+    Obtém (ou renova) o link de onboarding do Stripe Connect para o estafeta.
+    """
+    driver = _get_driver_by_gid_or_404(gid, db)
+    try:
+        _stripe_account_for(driver)
+        db.commit()
+
+        account_link = stripe.AccountLink.create(
+            account=driver.stripe_account_id,
+            refresh_url=f"https://api.leiriaeats.com/drivers/{driver.gid}/stripe-onboarding-refresh",
+            return_url=f"https://api.leiriaeats.com/drivers/{driver.gid}/stripe-onboarding-success",
+            type="account_onboarding",
+        )
+        return {
+            "onboarding_url": account_link.url,
+            "stripe_account_id": driver.stripe_account_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{gid}/stripe-onboarding/complete")
+def complete_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
+    """
+    POST /drivers/{gid}/stripe-onboarding/complete
+    Verifica junto da Stripe se o onboarding foi concluído e sincroniza o estado local.
+    """
+    driver = _get_driver_by_gid_or_404(gid, db)
+    if not driver.stripe_account_id:
+        raise HTTPException(status_code=400, detail="Estafeta não tem conta Stripe.")
+
+    try:
+        account = stripe.Account.retrieve(driver.stripe_account_id)
+        details_submitted = getattr(account, "details_submitted", False)
+        charges_enabled = getattr(account, "charges_enabled", False)
+        payouts_enabled = getattr(account, "payouts_enabled", False)
+        is_complete = details_submitted and charges_enabled and payouts_enabled
+
+        driver.stripe_onboarding_completed = is_complete
+        if is_complete and driver.status != "ACTIVE":
+            driver.status = "ACTIVE"
+        db.commit()
+
+        return {
+            "onboarding_completed": is_complete,
+            "charges_enabled": charges_enabled,
+            "payouts_enabled": payouts_enabled,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{gid}/stripe-dashboard")
+def get_driver_stripe_dashboard(gid: str, db: Session = Depends(get_db)):
+    """
+    POST /drivers/{gid}/stripe-dashboard
+    Gera um link de uso único para o Stripe Express Dashboard do estafeta.
+    """
+    driver = _get_driver_by_gid_or_404(gid, db)
+    if not driver.stripe_account_id:
+        raise HTTPException(status_code=400, detail="Estafeta ainda não tem conta Stripe configurada.")
+
+    try:
+        login_link = stripe.Account.create_login_link(driver.stripe_account_id)
+        return {
+            "gid": driver.gid,
+            "stripe_account_id": driver.stripe_account_id,
+            "dashboard_url": login_link.url,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/{gid}/profile", response_model=DriverProfileResponse)
+def update_driver_profile(gid: str, payload: UpdateDriverProfileRequest, db: Session = Depends(get_db)):
+    """
+    PUT /drivers/{gid}/profile
+    Guarda os dados pessoais/veículo do estafeta (PASSO 3 do registo).
+    """
+    driver = _get_driver_by_gid_or_404(gid, db)
+
+    if payload.personal_info:
+        for field in ("name", "phone", "email", "address", "city", "postal_code"):
+            value = getattr(payload.personal_info, field)
+            if value is not None:
+                setattr(driver, field, value)
+
+    if payload.vehicle_info:
+        field_map = {"type": "vehicle_type", "plate": "vehicle_plate", "model": "vehicle_model", "color": "vehicle_color"}
+        for src, dst in field_map.items():
+            value = getattr(payload.vehicle_info, src)
+            if value is not None:
+                setattr(driver, dst, value)
+
+    db.commit()
+    db.refresh(driver)
+    return driver
+
 
 @router.get("/orders", response_model=List[dict])
 def get_available_orders(driver_id: int, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
-    # Agora buscamos em SubOrderDB
+    # Agora buscamos em SubOrderDB, identificando o estafeta pelo gid
     sub_orders = db.query(SubOrderDB).join(OrderDB).filter(
-        SubOrderDB.driver_id == driver_id,
+        SubOrderDB.driver_gid == driver.gid,
         SubOrderDB.status.in_(["Oferta enviada", "A aguardar estafeta", "A caminho"]),
     ).order_by(SubOrderDB.id.desc()).all()
 
@@ -88,7 +249,8 @@ def get_available_orders(driver_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{sub_order_id}/accept")
 def accept_order(sub_order_id: int, driver_id: int, db: Session = Depends(get_db)):
-    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_order_id, SubOrderDB.driver_id == driver_id).first()
+    driver = _get_driver_or_404(driver_id, db)
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_order_id, SubOrderDB.driver_gid == driver.gid).first()
     if not sub: raise HTTPException(status_code=404, detail="Sub-pedido não encontrado ou não atribuído.")
     sub.status = "A aguardar estafeta"
     db.commit()

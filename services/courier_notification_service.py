@@ -33,12 +33,12 @@ def _assign_nearest_driver(sub_order: SubOrderDB, db) -> DriverDB | None:
         logger.warning(f"⚠️ Sub-Pedido #{sub_order.id} — restaurante sem GPS.")
         return None
 
-    if sub_order.driver_id is not None:
+    if sub_order.driver_gid is not None:
         return None
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=DRIVER_ONLINE_MINUTES)
-    busy_driver_ids = db.query(SubOrderDB.driver_id).filter(
-        SubOrderDB.driver_id.isnot(None),
+    busy_driver_gids = db.query(SubOrderDB.driver_gid).filter(
+        SubOrderDB.driver_gid.isnot(None),
         SubOrderDB.status.in_(["Oferta enviada", "A aguardar estafeta", "A caminho"]),
     )
 
@@ -47,7 +47,7 @@ def _assign_nearest_driver(sub_order: SubOrderDB, db) -> DriverDB | None:
         DriverDB.last_seen >= cutoff,
         DriverDB.latitude.isnot(None),
         DriverDB.longitude.isnot(None),
-        DriverDB.id.notin_(busy_driver_ids),
+        DriverDB.gid.notin_(busy_driver_gids),
     ).all()
 
     if not candidates:
@@ -57,8 +57,8 @@ def _assign_nearest_driver(sub_order: SubOrderDB, db) -> DriverDB | None:
         candidates,
         key=lambda d: _haversine(sub_order.restaurant_latitude, sub_order.restaurant_longitude, d.latitude, d.longitude),
     )
-    
-    sub_order.driver_id = nearest.id
+
+    sub_order.driver_gid = nearest.gid
     sub_order.driver_name = nearest.name
     sub_order.status = "Oferta enviada"
     db.commit()
@@ -104,7 +104,7 @@ def _check_and_notify() -> None:
         for sub_id in expired_offers:
             sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_id).first()
             if sub and sub.status == "Oferta enviada":
-                sub.driver_id = None
+                sub.driver_gid = None
                 sub.driver_name = None
                 sub.status = "Em preparo"
                 db.commit()
@@ -116,7 +116,7 @@ def _check_and_notify() -> None:
             .join(OrderDB)
             .filter(SubOrderDB.status.in_(ACTIVE_STATUSES))
             .filter(SubOrderDB.base_time > 0)
-            .filter(SubOrderDB.driver_id.is_(None))
+            .filter(SubOrderDB.driver_gid.is_(None))
             .filter(OrderDB.delivery_type != "pickup")
             .all()
         )

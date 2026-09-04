@@ -71,10 +71,11 @@ class DriverLoginRequest(BaseModel):
 
 class DriverLoginResponse(BaseModel):
     authenticated: bool
-    driver_id: int
-    name: str
-    status: str
-    message: str
+    gid: Optional[str] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    profile_complete: bool = False
+    message: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -83,6 +84,7 @@ class DriverLoginResponse(BaseModel):
 
 class DriverProfileResponse(BaseModel):
     id: int
+    gid: Optional[str] = None
     login: str
     status: str
 
