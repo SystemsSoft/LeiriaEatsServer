@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 DB_USER = "dbmasteruser"
 DB_PASS = "dbmasteruser"
-DB_HOST = "ls-8097ab8779ed2a3c062eeb7627e27d8f5aaa96b9.codoai20o7g2.us-east-1.rds.amazonaws.com"
+DB_HOST = "ls-073c7d247d948b05548eb632ccb2e59c161e7a10.cwtokk0amd7p.us-east-1.rds.amazonaws.com"
 DB_PORT = "3306"
 DB_NAME = "KomaDB"
 
