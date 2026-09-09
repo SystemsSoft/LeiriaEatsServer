@@ -30,6 +30,9 @@ class ProductItem(BaseModel):
     rating: Optional[float] = None
     is_popular: Optional[bool] = False
     is_available: Optional[bool] = True
+    is_surprise_box: Optional[bool] = False
+    surprise_box_pickup_start: Optional[str] = None
+    surprise_box_pickup_end: Optional[str] = None
     serves_people: Optional[int] = None
     portion_size: Optional[str] = None
     preparation_time_minutes: Optional[int] = None

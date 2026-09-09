@@ -15,6 +15,8 @@ class Product(BaseModel):
     quantity: Optional[int] = 1  # Quantidade detectada pela IA (padrão: 1)
     rating: Optional[float] = None  # Rating médio do produto
     is_surprise_box: bool = False
+    surprise_box_pickup_start: Optional[str] = None
+    surprise_box_pickup_end: Optional[str] = None
 
     class Config:
         from_attributes = True
