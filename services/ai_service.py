@@ -28,6 +28,12 @@ class AIService:
     _product_by_id: dict = {}  # {id: Product} — evita O(n) por lookup (F2.2 do plano)
     _restaurant_name_by_product_id: dict = {}  # {id: restaurant_name} — ver Fase 2.3 do PLANO_LIMITE_RESTAURANTES.md
     _restaurantes_aptos_pagamento: set = set()  # GIDs com conta Stripe apta a receber (Fase 0, PLANO_PAGAMENTO_2_ETAPAS.md)
+    # {product_id: (pickup_start, pickup_end)} — janela de recolha da Caixa Surpresa do
+    # restaurante dono do produto ("HH:mm" ou None). Mesmo motivo de
+    # _restaurant_name_by_product_id: os objetos do pool ficam desanexados da sessão do
+    # SQLAlchemy depois da reindexação, então o relacionamento .restaurant não pode ser
+    # acessado depois — precisa ser pré-computado aqui, no momento da indexação.
+    _restaurant_surprise_box_window_by_product_id: dict = {}
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -533,6 +539,7 @@ class AIService:
         product_owner_name = []
         product_by_id = {}
         restaurant_name_by_product_id = {}
+        restaurant_surprise_box_window_by_product_id = {}
 
         # Fase 0 do PLANO_PAGAMENTO_2_ETAPAS.md: restaurante só entra aqui se tiver conta
         # Stripe capaz de RECEBER dinheiro. Usa stripe_onboarding_completed (não `status`)
@@ -558,6 +565,10 @@ class AIService:
                 # restaurante independente do tipo do objeto no pool (ver
                 # PLANO_LIMITE_RESTAURANTES.md, Fase 2.3).
                 restaurant_name_by_product_id[p.id] = r.name
+                restaurant_surprise_box_window_by_product_id[p.id] = (
+                    getattr(r, "surprise_box_pickup_start", None),
+                    getattr(r, "surprise_box_pickup_end", None),
+                )
 
         embeddings_products = model.encode(product_texts, convert_to_tensor=True) if product_texts else None
 
@@ -572,6 +583,7 @@ class AIService:
         cls._product_owner_name = product_owner_name
         cls._product_by_id = product_by_id
         cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
         cls._restaurantes_aptos_pagamento = restaurantes_aptos_pagamento
         cls._embeddings_products = embeddings_products
 

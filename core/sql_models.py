@@ -33,6 +33,10 @@ class RestaurantDB(Base):
     # --- SURPRISE BOX ---
     has_surprise_box = Column(Boolean, default=False, nullable=False)
     surprise_box_qty = Column(Integer, default=0, nullable=False)
+    # Faixa de horário em que a caixa surpresa pode ser recolhida, formato "HH:mm"
+    # (mesmo padrão de RestaurantHourDB.open_time/close_time)
+    surprise_box_pickup_start = Column(String(5), nullable=True)
+    surprise_box_pickup_end = Column(String(5), nullable=True)
 
     products = relationship("ProductDB", back_populates="restaurant")
     hours = relationship("RestaurantHourDB", back_populates="restaurant")
@@ -81,6 +85,7 @@ class ProductDB(Base):
     # Status e popularidade
     is_popular = Column(Boolean, default=False)  # Se é item destaque/popular
     is_available = Column(Boolean, default=True)  # Se está disponível no momento
+    is_surprise_box = Column(Boolean, default=False)  # Se é um item de Caixa Surpresa
     
     # Tempo de preparo estruturado
     preparation_time_minutes = Column(Integer, nullable=True)  # Tempo em minutos (ex: 30)

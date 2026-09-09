@@ -14,6 +14,7 @@ class Product(BaseModel):
     preparation_time: Optional[str] = "20-30 min"
     quantity: Optional[int] = 1  # Quantidade detectada pela IA (padrão: 1)
     rating: Optional[float] = None  # Rating médio do produto
+    is_surprise_box: bool = False
 
     class Config:
         from_attributes = True
@@ -32,6 +33,8 @@ class Restaurant(BaseModel):
     longitude: Optional[float] = None
     has_surprise_box: bool = False
     surprise_box_qty: int = 0
+    surprise_box_pickup_start: Optional[str] = None  # "HH:mm"
+    surprise_box_pickup_end: Optional[str] = None    # "HH:mm"
 
     # O nome aqui deve ser 'products' para bater com o banco de dados
     products: List[Product] = []

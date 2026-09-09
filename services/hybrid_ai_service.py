@@ -71,6 +71,12 @@ class HybridAIService:
         "mousse", "brigadeiro", "açaí", "acai", "brownie"
     }
 
+    # Palavras sobre a Caixa Surpresa (venda de excedentes do dia a preço reduzido)
+    _SURPRISE_BOX_INDICATORS = {
+        "caixa surpresa", "caixa misteriosa", "sacola surpresa",
+        "combo surpresa", "surpresa", "excedente", "excedentes"
+    }
+
 
 
     @staticmethod
@@ -109,6 +115,7 @@ class HybridAIService:
             "asks_quantity": any(q in msg_lower for q in HybridAIService._QUANTITY_INDICATORS),
             "mentions_drink": any(d in msg_lower for d in HybridAIService._DRINK_INDICATORS),
             "mentions_dessert": any(d in msg_lower for d in HybridAIService._DESSERT_INDICATORS),
+            "mentions_surprise_box": any(s in msg_lower for s in HybridAIService._SURPRISE_BOX_INDICATORS),
         }
 
         # Detectar se é pedido específico de produto (ex: "quero pizza grande")
@@ -131,8 +138,8 @@ class HybridAIService:
                 "comparison": has_comparison
             }
 
-        # Se pergunta sobre quantidade, bebida ou sobremesa
-        if details["asks_quantity"] or details["mentions_drink"] or details["mentions_dessert"]:
+        # Se pergunta sobre quantidade, bebida, sobremesa ou caixa surpresa
+        if details["asks_quantity"] or details["mentions_drink"] or details["mentions_dessert"] or details["mentions_surprise_box"]:
             return {
                 "type": "specific_question",
                 "details": details,
@@ -207,6 +214,28 @@ class HybridAIService:
         return [
             p for p in candidate_pool
             if p.id in ids_no_carrinho or getattr(p, "restaurant_gid", "") in aptos
+        ]
+
+    @staticmethod
+    def _filtrar_pool_por_caixa_surpresa(candidate_pool: list, session: UserSession,
+                                          mentions_surprise_box: bool) -> list:
+        """
+        Quando o cliente pergunta especificamente pela Caixa Surpresa, o pool passa a
+        conter só os produtos marcados com is_surprise_box=True — sem isso a IA
+        continuaria enxergando o cardápio normal junto e podia responder de forma
+        genérica em vez de apresentar só a oferta de excedentes do dia.
+
+        Itens já no carrinho continuam SEMPRE visíveis, pela mesma razão dos outros
+        filtros de pool: o cliente precisa conseguir removê-los pela própria conversa
+        mesmo que não sejam itens de Caixa Surpresa.
+        """
+        if not mentions_surprise_box:
+            return candidate_pool
+
+        ids_no_carrinho = {item.product_id for item in session.cart}
+        return [
+            p for p in candidate_pool
+            if p.id in ids_no_carrinho or getattr(p, "is_surprise_box", False)
         ]
 
     @staticmethod
@@ -481,6 +510,9 @@ class HybridAIService:
         candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
         # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0
         candidate_pool = HybridAIService._filtrar_pool_por_aptidao_de_pagamento(candidate_pool, session)
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa(
+            candidate_pool, session, intent_info.get("details", {}).get("mentions_surprise_box", False)
+        )
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -507,6 +539,9 @@ class HybridAIService:
                 "rating": getattr(product, "rating", None),
                 "is_popular": getattr(product, "is_popular", False),
                 "is_available": getattr(product, "is_available", True),
+                "is_surprise_box": getattr(product, "is_surprise_box", False),
+                "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[0],
+                "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[1],
                 "serves_people": getattr(product, "serves_people", 1),
                 "quantity": 0 # Valor base
             }
@@ -644,6 +679,9 @@ class HybridAIService:
                             "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                             "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                             "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
+                            "is_surprise_box": getattr(full_p, "is_surprise_box", False),
+                            "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[0],
+                            "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[1],
                             "serves_people": getattr(full_p, "serves_people", 1)
                         })
 
@@ -907,6 +945,9 @@ class HybridAIService:
         candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
         # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0
         candidate_pool = HybridAIService._filtrar_pool_por_aptidao_de_pagamento(candidate_pool, session)
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa(
+            candidate_pool, session, intent_info.get("details", {}).get("mentions_surprise_box", False)
+        )
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -936,6 +977,9 @@ class HybridAIService:
                 "rating": _get("rating"),
                 "is_available": _get("is_available", True),
                 "is_popular": _get("is_popular", False),
+                "is_surprise_box": _get("is_surprise_box", False),
+                "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[0],
+                "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[1],
                 # Porção e pessoas
                 "serves_people": _get("serves_people"),
                 "portion_size": _get("portion_size"),
@@ -1136,6 +1180,9 @@ class HybridAIService:
                         "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                         "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                         "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
+                        "is_surprise_box": getattr(full_p, "is_surprise_box", False),
+                        "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[0],
+                        "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[1],
                         "serves_people": getattr(full_p, "serves_people", 1)
                     })
 

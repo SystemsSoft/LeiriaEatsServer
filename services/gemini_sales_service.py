@@ -230,7 +230,11 @@ REGRAS OBRIGATÓRIAS:
    - Se o cliente pedir algo de um restaurante novo nessa situação, explique o limite com
      naturalidade e ofereça remover os itens de um dos restaurantes atuais para abrir espaço.
    - NUNCA use a tag [[ADD_TO_CART:...]] para um produto de um restaurante fora da lista quando
-     o limite estiver atingido — mesmo que o cliente insista."""
+     o limite estiver atingido — mesmo que o cliente insista.
+8. Caixa Surpresa: ao oferecer um produto marcado "🎁 caixa surpresa", informe SEMPRE o horário
+   de recolha indicado entre parênteses (ex.: "recolha das 18:00 às 20:00"). Se o produto não
+   tiver horário de recolha definido, avise o cliente que o restaurante ainda não configurou o
+   horário e sugira confirmar diretamente com o restaurante."""
 
             # F3: variante da system instruction para o modo function calling — mesmas
             # regras de 1 a 3 e 6, mas a regra 4/5 usa as FERRAMENTAS em vez de tags de
@@ -272,7 +276,11 @@ REGRAS OBRIGATÓRIAS:
      naturalidade e ofereça remover os itens de um dos restaurantes atuais para abrir espaço.
    - Se você chamar adicionar_ao_carrinho para um restaurante fora da lista e o resultado vier
      com erro=LIMITE_DE_RESTAURANTES_ATINGIDO, NÃO afirme ao cliente que adicionou — explique o
-     limite usando os "restaurantes_atuais" do resultado."""
+     limite usando os "restaurantes_atuais" do resultado.
+9. Caixa Surpresa: ao oferecer um produto marcado "🎁 caixa surpresa", informe SEMPRE o horário
+   de recolha indicado entre parênteses (ex.: "recolha das 18:00 às 20:00"). Se o produto não
+   tiver horário de recolha definido, avise o cliente que o restaurante ainda não configurou o
+   horário e sugira confirmar diretamente com o restaurante."""
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -598,6 +606,13 @@ REGRAS OBRIGATÓRIAS:
                     extras.append(f"🌶️ {p['spice_level']}")
                 if p.get('is_popular'):
                     extras.append("⭐ popular")
+                if p.get('is_surprise_box'):
+                    pickup_start = p.get('surprise_box_pickup_start')
+                    pickup_end = p.get('surprise_box_pickup_end')
+                    if pickup_start and pickup_end:
+                        extras.append(f"🎁 caixa surpresa (recolha das {pickup_start} às {pickup_end})")
+                    else:
+                        extras.append("🎁 caixa surpresa")
                 if p.get('rating'):
                     extras.append(f"avaliação: {p['rating']:.1f}")
 

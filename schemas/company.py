@@ -49,6 +49,8 @@ class CompanyCreateRequest(BaseModel):
     
     has_surprise_box: bool = False
     surprise_box_qty: int = 0
+    surprise_box_pickup_start: Optional[str] = None  # "HH:mm"
+    surprise_box_pickup_end: Optional[str] = None    # "HH:mm"
 
 class CompanyUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -61,6 +63,8 @@ class CompanyUpdateRequest(BaseModel):
     gid: Optional[str] = None
     has_surprise_box: Optional[bool] = None
     surprise_box_qty: Optional[int] = None
+    surprise_box_pickup_start: Optional[str] = None  # "HH:mm"
+    surprise_box_pickup_end: Optional[str] = None    # "HH:mm"
 
 class UsesPlatformCourierRequest(BaseModel):
     use_own_delivery: bool
@@ -117,6 +121,8 @@ class CompanyResponse(BaseModel):
     
     has_surprise_box: bool = False
     surprise_box_qty: int = 0
+    surprise_box_pickup_start: Optional[str] = None  # "HH:mm"
+    surprise_box_pickup_end: Optional[str] = None    # "HH:mm"
 
     # OBS: NUNCA retornamos o campo 'password' aqui por segurança
 

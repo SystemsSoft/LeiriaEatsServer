@@ -22,6 +22,7 @@ class ProductCreateRequest(BaseModel):
     calories: Optional[int] = None
     is_popular: Optional[bool] = False
     is_available: Optional[bool] = True
+    is_surprise_box: Optional[bool] = False
     preparation_time_minutes: Optional[int] = None
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
@@ -48,6 +49,7 @@ class ProductResponse(BaseModel):
     calories: Optional[int] = None
     is_popular: Optional[bool] = None
     is_available: Optional[bool] = None
+    is_surprise_box: Optional[bool] = None
     preparation_time_minutes: Optional[int] = None
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
