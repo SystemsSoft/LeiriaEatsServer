@@ -317,6 +317,41 @@ def _validar_restaurantes_aptos_pagamento(sub_orders: list, db: Session) -> Opti
     return None
 
 
+def _validar_caixa_surpresa_exclusiva(sub_orders: list, delivery_type: str, db: Session) -> Optional[str]:
+    """
+    Um pedido com item de Caixa Surpresa é exclusivo (mesma regra aplicada no chat de
+    IA — ver HybridAIService._bloqueado_por_caixa_surpresa_exclusiva): não pode conter
+    nenhum outro produto (nem outro item de Caixa Surpresa), e a entrega é sempre
+    recolha no restaurante.
+
+    Este é o gate que não pode ser contornado, pelo mesmo motivo dos outros dois acima:
+    o app monta `sub_orders`/`delivery_type` por conta própria, então a regra aplicada
+    só na conversa com a IA seria cosmética.
+    """
+    todos_gids = {item.product_gid for so in sub_orders for item in so.items if item.product_gid}
+    if not todos_gids:
+        return None
+
+    produtos = db.query(ProductDB).filter(ProductDB.gid.in_(todos_gids)).all()
+    gids_surpresa = {p.gid for p in produtos if p.is_surprise_box}
+    if not gids_surpresa:
+        return None
+
+    if len(todos_gids) > 1 or not todos_gids.issubset(gids_surpresa):
+        return (
+            "Um pedido com item de Caixa Surpresa é exclusivo — não pode conter nenhum "
+            "outro produto. Finalize este pedido separadamente ou remova os demais itens."
+        )
+
+    if delivery_type != "pickup":
+        return (
+            "Pedidos com Caixa Surpresa só podem ser recolhidos no restaurante — "
+            "selecione a opção de recolha para continuar."
+        )
+
+    return None
+
+
 @router.post("/orders/initiate-checkout")
 def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Session = Depends(get_db)):
     """
@@ -343,6 +378,11 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     erro_aptidao = _validar_restaurantes_aptos_pagamento(order_data.sub_orders, db)
     if erro_aptidao:
         raise HTTPException(status_code=400, detail=erro_aptidao)
+
+    # Exclusividade da Caixa Surpresa — ver _validar_caixa_surpresa_exclusiva.
+    erro_caixa_surpresa = _validar_caixa_surpresa_exclusiva(order_data.sub_orders, order_data.delivery_type, db)
+    if erro_caixa_surpresa:
+        raise HTTPException(status_code=400, detail=erro_caixa_surpresa)
 
     from ulid import ULID
     master_order_gid = order_data.gid if order_data.gid else str(ULID())

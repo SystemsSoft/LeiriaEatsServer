@@ -239,6 +239,26 @@ class HybridAIService:
         ]
 
     @staticmethod
+    def _filtrar_pool_por_caixa_surpresa_exclusiva_no_carrinho(candidate_pool: list, session: UserSession) -> list:
+        """
+        Um pedido com item de Caixa Surpresa é exclusivo (ver
+        UserSession.tem_item_caixa_surpresa_no_carrinho): assim que um item desses entra
+        no carrinho, o pool oferecido à IA passa a conter só esse(s) item(ns) já
+        presente(s) — nenhum outro produto do cardápio (normal ou de outra Caixa
+        Surpresa) aparece como opção, mesmo que o cliente peça algo diferente.
+
+        Diferente dos outros filtros de pool, aqui NÃO existe exceção para "item já no
+        carrinho de outro tipo" — a exclusividade é justamente sobre não haver outro
+        tipo de item. Só os produtos que já estão no carrinho continuam visíveis, para
+        o cliente conseguir ajustar quantidade ou remover pela própria conversa.
+        """
+        if not session.tem_item_caixa_surpresa_no_carrinho():
+            return candidate_pool
+
+        ids_no_carrinho = {item.product_id for item in session.cart}
+        return [p for p in candidate_pool if p.id in ids_no_carrinho]
+
+    @staticmethod
     def _bloqueado_por_limite_restaurantes(session: UserSession, gid_restaurante_produto: str,
                                             delta: int) -> bool:
         """
@@ -256,6 +276,27 @@ class HybridAIService:
         restaurantes_atuais = session.restaurantes_no_carrinho()
         e_restaurante_novo = gid_restaurante_produto not in restaurantes_atuais
         return e_restaurante_novo and len(restaurantes_atuais) >= HybridAIService.MAX_RESTAURANTES_POR_PEDIDO
+
+    @staticmethod
+    def _bloqueado_por_caixa_surpresa_exclusiva(session: UserSession, produto: Dict, delta: int) -> bool:
+        """
+        Um pedido com item de Caixa Surpresa é exclusivo: nenhum outro produto pode
+        entrar no mesmo carrinho, e nenhuma Caixa Surpresa pode ser adicionada a um
+        carrinho que já tenha outro item (de qualquer tipo).
+
+        Só bloqueia ADIÇÃO (delta > 0) de um produto DIFERENTE do que já está no
+        carrinho — aumentar a quantidade do próprio item de Caixa Surpresa já
+        presente continua permitido. Remoção (delta <= 0) nunca é bloqueada, pela
+        mesma razão do limite de restaurantes: é assim que a exclusividade libera
+        sozinha quando o cliente desiste do item.
+        """
+        if delta <= 0:
+            return False
+        produto_id = produto.get("id")
+        cart_tem_outro_item = any(item.product_id != produto_id for item in session.cart)
+        if not cart_tem_outro_item:
+            return False
+        return session.tem_item_caixa_surpresa_no_carrinho() or bool(produto.get("is_surprise_box", False))
 
     @staticmethod
     def _executar_ferramenta(nome_ferramenta: str, args: Dict, session: UserSession,
@@ -296,6 +337,17 @@ class HybridAIService:
                              "restaurantes atuais para abrir espaço."),
                 }
 
+            # Caixa Surpresa é exclusiva — ver _bloqueado_por_caixa_surpresa_exclusiva.
+            if HybridAIService._bloqueado_por_caixa_surpresa_exclusiva(session, produto, delta):
+                return {
+                    "ok": False,
+                    "erro": "CAIXA_SURPRESA_EXCLUSIVA",
+                    "dica": ("Explique que um pedido com Caixa Surpresa é exclusivo — não é "
+                             "possível adicionar outros produtos. O cliente precisa finalizar "
+                             "este pedido ou remover o item de Caixa Surpresa antes de buscar "
+                             "outra coisa. A entrega deste pedido é só recolha no restaurante."),
+                }
+
             atual = next((i.quantity for i in session.cart if i.product_id == produto["id"]), 0)
             alvo = max(0, min(atual + delta, HybridAIService.MAX_QTD_ITEM_FUNCTION_CALLING))
             if alvo == atual:
@@ -306,6 +358,7 @@ class HybridAIService:
                 restaurant_gid=produto["restaurant_gid"], quantity=alvo - atual,
                 serves_people=produto.get("serves_people") or 1, category=produto.get("category", ""),
                 restaurant_name=produto.get("restaurant_name", ""),
+                is_surprise_box=produto.get("is_surprise_box", False),
             )
             estado_turno["carrinho_mudou"] = True
             return {"ok": True, "produto": produto["name"], "quantidade_final": alvo}
@@ -513,6 +566,7 @@ class HybridAIService:
         candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa(
             candidate_pool, session, intent_info.get("details", {}).get("mentions_surprise_box", False)
         )
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa_exclusiva_no_carrinho(candidate_pool, session)
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -565,6 +619,7 @@ class HybridAIService:
             # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2
             "restaurantes_no_pedido": session.nomes_restaurantes_no_carrinho(),
             "max_restaurantes_por_pedido": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
+            "tem_caixa_surpresa_no_carrinho": session.tem_item_caixa_surpresa_no_carrinho(),
         }
         ms_pool = (time.time() - start_pool) * 1000
         print(f"⏱️  [Context Prep] Tempo: {ms_pool:.1f}ms")
@@ -637,12 +692,17 @@ class HybridAIService:
                     tags_descartadas_motivo.append("LIMITE_DE_RESTAURANTES")
                     print(f"⚠️ [Gemini Stream] Limite de {HybridAIService.MAX_RESTAURANTES_POR_PEDIDO} "
                           f"restaurantes atingido — GID {prod_gid} descartado.")
+                elif HybridAIService._bloqueado_por_caixa_surpresa_exclusiva(session, product_info, qty):
+                    # Caixa Surpresa é exclusiva — ver _bloqueado_por_caixa_surpresa_exclusiva.
+                    tags_descartadas_motivo.append("CAIXA_SURPRESA_EXCLUSIVA")
+                    print(f"⚠️ [Gemini Stream] Pedido exclusivo de Caixa Surpresa — GID {prod_gid} descartado.")
                 else:
                     session.add_to_cart(
                         product_id=product_info["id"], name=product_info["name"],
                         price=product_info["price"], restaurant_gid=product_info["restaurant_gid"],
                         quantity=qty, serves_people=product_info.get("serves_people") or 1,
                         restaurant_name=product_info.get("restaurant_name", ""),
+                        is_surprise_box=product_info.get("is_surprise_box", False),
                     )
                     tags_aplicadas += 1
 
@@ -948,6 +1008,7 @@ class HybridAIService:
         candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa(
             candidate_pool, session, intent_info.get("details", {}).get("mentions_surprise_box", False)
         )
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa_exclusiva_no_carrinho(candidate_pool, session)
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -1025,6 +1086,7 @@ class HybridAIService:
             # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2
             "restaurantes_no_pedido": session.nomes_restaurantes_no_carrinho(),
             "max_restaurantes_por_pedido": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
+            "tem_caixa_surpresa_no_carrinho": session.tem_item_caixa_surpresa_no_carrinho(),
         }
 
         # ⭐ USAR GEMINI SEMPRE (API cloud - sem peso no servidor)
@@ -1095,6 +1157,9 @@ class HybridAIService:
                         print(f"⚠️ [Gemini] Limite de {HybridAIService.MAX_RESTAURANTES_POR_PEDIDO} "
                               f"restaurantes atingido — GID {prod_gid} descartado.")
                         tags_descartadas_motivo.append("LIMITE_DE_RESTAURANTES")
+                    elif HybridAIService._bloqueado_por_caixa_surpresa_exclusiva(session, product_info, qty):
+                        print(f"⚠️ [Gemini] Pedido exclusivo de Caixa Surpresa — GID {prod_gid} descartado.")
+                        tags_descartadas_motivo.append("CAIXA_SURPRESA_EXCLUSIVA")
                     else:
                         print(f"🛒 [Gemini] Adicionando ao carrinho: {product_info['name']} x{qty}")
                         session.add_to_cart(
@@ -1106,6 +1171,7 @@ class HybridAIService:
                             serves_people=product_info.get("serves_people") or 1,
                             category=product_info.get("category", ""),
                             restaurant_name=product_info.get("restaurant_name", ""),
+                            is_surprise_box=product_info.get("is_surprise_box", False),
                         )
                         tags_aplicadas += 1
 

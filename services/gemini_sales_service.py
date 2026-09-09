@@ -234,7 +234,14 @@ REGRAS OBRIGATÓRIAS:
 8. Caixa Surpresa: ao oferecer um produto marcado "🎁 caixa surpresa", informe SEMPRE o horário
    de recolha indicado entre parênteses (ex.: "recolha das 18:00 às 20:00"). Se o produto não
    tiver horário de recolha definido, avise o cliente que o restaurante ainda não configurou o
-   horário e sugira confirmar diretamente com o restaurante."""
+   horário e sugira confirmar diretamente com o restaurante.
+9. Exclusividade da Caixa Surpresa: um pedido com item de Caixa Surpresa é EXCLUSIVO — não pode
+   ter nenhum outro produto junto, nem outro item de Caixa Surpresa.
+   - Se a secção "CAIXA SURPRESA NO CARRINHO" (quando presente) indicar que já há um item desses
+     no pedido, NÃO use [[ADD_TO_CART:...]] para nenhum outro produto — explique com naturalidade
+     que esse pedido é exclusivo e que o cliente precisa finalizar ou remover o item de Caixa
+     Surpresa antes de adicionar qualquer outra coisa.
+   - Avise também que a entrega deste pedido é sempre recolha no restaurante, nunca por estafeta."""
 
             # F3: variante da system instruction para o modo function calling — mesmas
             # regras de 1 a 3 e 6, mas a regra 4/5 usa as FERRAMENTAS em vez de tags de
@@ -280,7 +287,16 @@ REGRAS OBRIGATÓRIAS:
 9. Caixa Surpresa: ao oferecer um produto marcado "🎁 caixa surpresa", informe SEMPRE o horário
    de recolha indicado entre parênteses (ex.: "recolha das 18:00 às 20:00"). Se o produto não
    tiver horário de recolha definido, avise o cliente que o restaurante ainda não configurou o
-   horário e sugira confirmar diretamente com o restaurante."""
+   horário e sugira confirmar diretamente com o restaurante.
+10. Exclusividade da Caixa Surpresa: um pedido com item de Caixa Surpresa é EXCLUSIVO — não pode
+    ter nenhum outro produto junto, nem outro item de Caixa Surpresa.
+    - Se a secção "CAIXA SURPRESA NO CARRINHO" (quando presente) indicar que já há um item
+      desses no pedido, NÃO chame adicionar_ao_carrinho para nenhum outro produto — explique com
+      naturalidade que esse pedido é exclusivo e que o cliente precisa finalizar ou remover o
+      item de Caixa Surpresa antes de adicionar qualquer outra coisa.
+    - Avise também que a entrega deste pedido é sempre recolha no restaurante, nunca por estafeta.
+    - Se você chamar adicionar_ao_carrinho e o resultado vier com erro=CAIXA_SURPRESA_EXCLUSIVA,
+      NÃO afirme ao cliente que adicionou — explique a exclusividade."""
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -704,12 +720,25 @@ REGRAS OBRIGATÓRIAS:
             else:
                 restaurant_section = f"\n\n🏪 RESTAURANTES NO PEDIDO ({qtd_atual}/{max_restaurantes}): {nomes}"
 
+        # Pedido com item de Caixa Surpresa é exclusivo — ver
+        # HybridAIService._bloqueado_por_caixa_surpresa_exclusiva. Só aparece quando há
+        # de fato um item desses no carrinho, mesmo padrão de restaurant_section acima.
+        surprise_box_section = ""
+        if context.get("tem_caixa_surpresa_no_carrinho"):
+            surprise_box_section = (
+                "\n\n🎁 CAIXA SURPRESA NO CARRINHO — PEDIDO EXCLUSIVO: este pedido já tem um item "
+                "de Caixa Surpresa. NÃO ofereça nem adicione nenhum outro produto (nem outro item "
+                "de Caixa Surpresa) — o cliente precisa finalizar este pedido ou remover o item de "
+                "Caixa Surpresa antes de buscar qualquer outra coisa. A entrega deste pedido é "
+                "SEMPRE recolha no restaurante, nunca entrega por estafeta."
+            )
+
         # Prompt final - nota de confirmação
         order_note = ""
         if context.get("order_confirmed"):
             order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
-        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{order_note}
+        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{surprise_box_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"
