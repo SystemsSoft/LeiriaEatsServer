@@ -87,6 +87,24 @@ class GeminiSalesAgent:
     _usage_monitor = GeminiUsageMonitor()
     _ultimo_tamanho_prompt = 0  # F0: exposto para a telemetria estimar tokens de entrada
 
+    # Orçamento de latência do turno de chat (Plano de Performance, Fase 2.1). Medido em
+    # produção: 26 turnos em 14 dias passaram de 10s, consumindo 62% de toda a espera
+    # acumulada — alguns chegando a 110s por varrerem todas as chaves em 3 rodadas de
+    # retry contra um 503 do tier gratuito que não é resolvido trocando de chave. Ao
+    # estourar este orçamento, o turno vai direto para a resposta de fallback em vez de
+    # continuar tentando — não muda o que é dito ao cliente no fallback (já existia),
+    # só corta quanto tempo ele espera até recebê-lo.
+    _STREAM_DEADLINE_SECONDS = 10.0
+
+    # Plano de Performance, Fase 1.1 — só os N produtos mais relevantes (os primeiros do
+    # pool, que já vem ordenado pelo ranking do E5 — ver hybrid_ai_service.py) recebem o
+    # bloco de detalhe pesado (descrição/ingredientes/alérgenos/dieta/recomendado). Medido
+    # em produção: com 15 produtos, só esses 5 campos custam ~64% do tamanho do prompt.
+    # Os demais produtos continuam com nome, preço, GID e os extras curtos (categoria,
+    # porção, popular, caixa surpresa etc.) — a IA ainda vê e pode adicionar qualquer um
+    # ao carrinho; só não recebe o texto longo dos que não são o foco do turno.
+    _DETALHE_COMPLETO_TOP_N = 3
+
     # F2.3: roteamento de modelo por turno.
     # gemini-1.5-flash e gemini-2.5-flash(-lite) foram descontinuados por esta conta
     # (404 NOT_FOUND) — confirmado ao vivo em 2026-08-27. "gemini-flash-lite-latest" é
@@ -318,12 +336,26 @@ REGRAS OBRIGATÓRIAS:
             yield cls._STATIC_RESPONSES[msg_lower]
             return
 
+        # 1.1 Verificar cache — mesma proteção de generate_response (linha ~472-476):
+        # NUNCA cachear/servir do cache uma resposta com ação de carrinho (tags [[...]]),
+        # porque uma tag [[ADD_TO_CART:...]] servida do cache mexeria no carrinho errado
+        # de outra sessão. A chave já considera carrinho e histórico (_generate_cache_key),
+        # então um cache hit só acontece quando o contexto é equivalente.
+        cache_key = cls._generate_cache_key(user_message, context)
+        cached_response = cls._cache.get(cache_key)
+        if cached_response:
+            print(f"💾 [Gemini Stream] Cache hit para: '{user_message}'")
+            yield cached_response
+            return
+
         # 2. Verificar limite de requisições
         if not cls._usage_monitor.can_make_request():
             yield cls._generate_fallback_response(user_message, context)
             return
 
-        # 3. Gerar stream com Gemini com Auto-Retry
+        # 3. Gerar stream com Gemini com Auto-Retry, sob orçamento de latência
+        # (_STREAM_DEADLINE_SECONDS) — ver nota junto da constante.
+        turn_start = time.time()
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
@@ -338,9 +370,14 @@ REGRAS OBRIGATÓRIAS:
 
                 # Tentar com os modelos disponíveis (Failover de Modelo + Chaves)
                 modelos_a_tentar = [modelo, cls.MODELO_ESTAVEL] if modelo != cls.MODELO_ESTAVEL else [modelo]
-                
+
                 for mod in modelos_a_tentar:
                     for key_index, client in enumerate(cls._clients):
+                        if time.time() - turn_start > cls._STREAM_DEADLINE_SECONDS:
+                            print(f"⏱️ [Gemini Stream] Orçamento de {cls._STREAM_DEADLINE_SECONDS}s "
+                                  f"estourado antes da chave {key_index+1}/modelo {mod} — indo para fallback.")
+                            yield cls._generate_fallback_response(user_message, context)
+                            return
                         try:
                             # Usar generate_content_stream
                             stream = client.models.generate_content_stream(
@@ -359,21 +396,29 @@ REGRAS OBRIGATÓRIAS:
                             # Registrar uso (contamos como 1 req)
                             cls._usage_monitor.record_request()
 
+                            # Acumula o texto completo para poder cachear ao final (mesma
+                            # proteção anti-tag do item 1.1) sem alterar o que é entregue
+                            # ao cliente turno a turno — o yield por chunk continua igual.
+                            full_response = ""
                             for chunk in stream:
                                 if chunk.text:
+                                    full_response += chunk.text
                                     yield chunk.text
-                            
+
+                            if full_response and "[[" not in full_response:
+                                cls._cache.set(cache_key, full_response)
+
                             return # Sucesso absoluto
 
                         except Exception as e_key:
                             erro_msg = str(e_key)
                             is_quota_error = "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg
                             is_server_error = "503" in erro_msg or "UNAVAILABLE" in erro_msg
-                            
+
                             if is_quota_error and key_index < len(cls._clients) - 1:
                                 print(f"⚠️ [Gemini Stream] Chave {key_index+1} esgotou cota (429). Pulando para próxima...")
-                                continue 
-                            
+                                continue
+
                             if is_server_error:
                                 if key_index < len(cls._clients) - 1:
                                     print(f"⚠️ [Gemini Stream] Modelo {mod} instável (503) na chave {key_index+1}. Tentando próxima chave...")
@@ -382,7 +427,7 @@ REGRAS OBRIGATÓRIAS:
                                 elif mod != modelos_a_tentar[-1]:
                                     print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves. Tentando modelo estável...")
                                     break # Sai do loop de chaves para tentar o próximo modelo
-                            
+
                             raise e_key # Se nada resolveu, sobe para o retry temporal de 1.5s
 
             except Exception as e:
@@ -391,13 +436,14 @@ REGRAS OBRIGATÓRIAS:
                 # transitórios e valem retry. Sem tratar 429, cota estourada caía direto
                 # no fallback genérico no meio de uma venda, sem nenhuma nova tentativa.
                 is_retryable = any(code in erro_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
-                if is_retryable and attempt < max_retries:
-                    wait_time = 1.5 * (attempt + 1)
-                    print(f"⚠️ [Gemini Stream] Erro transitório detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time}s... ({erro_str[:120]})")
+                tempo_restante = cls._STREAM_DEADLINE_SECONDS - (time.time() - turn_start)
+                if is_retryable and attempt < max_retries and tempo_restante > 0:
+                    wait_time = min(1.5 * (attempt + 1), tempo_restante)
+                    print(f"⚠️ [Gemini Stream] Erro transitório detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time:.1f}s... ({erro_str[:120]})")
                     time.sleep(wait_time)
                     continue
 
-                print(f"❌ [Gemini Stream] Erro final após {attempt} retentativas: {e}")
+                print(f"❌ [Gemini Stream] Erro final após {attempt} retentativas ({time.time()-turn_start:.1f}s decorridos): {e}")
                 yield cls._generate_fallback_response(user_message, context)
                 return
 
@@ -601,7 +647,7 @@ REGRAS OBRIGATÓRIAS:
         products_text = ""
         if products:
             products_text = "\n\n📦 PRODUTOS DISPONÍVEIS (Use o CÓDIGO GID para adicionar ao carrinho):\n"
-            for p in products[:15]:
+            for idx, p in enumerate(products[:15]):
                 line = f"• [CÓDIGO: {p['gid']}] {p['name']} - € {p['price']:.2f}"
 
                 # Detalhes complementares
@@ -636,21 +682,25 @@ REGRAS OBRIGATÓRIAS:
                     line += f" ({', '.join(extras)})"
                 products_text += line + "\n"
 
-                # Descrição
-                if p.get('description'):
-                    products_text += f"  Descrição: {p['description']}\n"
-                # Ingredientes
-                if p.get('ingredients'):
-                    products_text += f"  Ingredientes: {p['ingredients']}\n"
-                # Alérgenos
-                if p.get('allergens'):
-                    products_text += f"  ⚠️ Alérgenos: {p['allergens']}\n"
-                # Tags dietéticas
-                if p.get('dietary_tags'):
-                    products_text += f"  🌱 Dieta: {p['dietary_tags']}\n"
-                # Recomendado para
-                if p.get('recommended_for'):
-                    products_text += f"  🕐 Recomendado para: {p['recommended_for']}\n"
+                # Bloco de detalhe pesado — só para os _DETALHE_COMPLETO_TOP_N primeiros
+                # (ver nota junto da constante). Os demais produtos do pool continuam
+                # listados acima com nome/preço/GID/extras curtos, só sem este bloco.
+                if idx < cls._DETALHE_COMPLETO_TOP_N:
+                    # Descrição
+                    if p.get('description'):
+                        products_text += f"  Descrição: {p['description']}\n"
+                    # Ingredientes
+                    if p.get('ingredients'):
+                        products_text += f"  Ingredientes: {p['ingredients']}\n"
+                    # Alérgenos
+                    if p.get('allergens'):
+                        products_text += f"  ⚠️ Alérgenos: {p['allergens']}\n"
+                    # Tags dietéticas
+                    if p.get('dietary_tags'):
+                        products_text += f"  🌱 Dieta: {p['dietary_tags']}\n"
+                    # Recomendado para
+                    if p.get('recommended_for'):
+                        products_text += f"  🕐 Recomendado para: {p['recommended_for']}\n"
         else:
             products_text = "\n\n⚠️ NENHUM PRODUTO DISPONÍVEL NO MOMENTO. Informe o cliente educadamente."
 

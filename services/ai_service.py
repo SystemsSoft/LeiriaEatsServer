@@ -426,6 +426,90 @@ class AIService:
         cls._data_cache = data
         cls._index_data(data)
 
+    @classmethod
+    def reindex_single_product(cls, product_id: int, db: Session):
+        """
+        Reindexação incremental (Plano de Performance, Fase 3.2) — atualiza o índice de
+        embeddings para UM produto sem re-encodar o catálogo inteiro.
+
+        Medido em produção: reload_data() completo leva 26-32s e roda de forma síncrona
+        dentro do request de criar/editar/deletar produto — além do cliente esperar esse
+        tempo todo, o encode consome os 2 vCPUs da instância e degrada qualquer chat
+        simultâneo (correlaciona com a cauda de latência do E5). Esta função faz o mesmo
+        trabalho só para o produto afetado: ordem de ~100ms em vez de ~30s.
+
+        Índice de embeddings de RESTAURANTE (nomes/categorias) não é tocado aqui — só é
+        usado por process_search em modo "restaurant"/"auto" e não muda quando um produto
+        individual é criado/editado/removido.
+
+        Se o índice ainda não foi construído (bootstrap), cai para reload_data() completo,
+        que já é a operação correta nesse caso.
+        """
+        if cls._embeddings_products is None or not cls._product_obj_cache:
+            cls.reload_data(db)
+            return
+
+        from core.sql_models import ProductDB
+
+        product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+
+        # Cópias das estruturas atuais — o rebind atômico ao final (mesmo padrão de
+        # _index_data) só troca a referência quando TUDO já está pronto, para requests
+        # concorrentes nunca verem um estado parcial.
+        product_obj_cache = list(cls._product_obj_cache)
+        product_owner_name = list(cls._product_owner_name)
+        product_by_id = dict(cls._product_by_id)
+        restaurant_name_by_product_id = dict(cls._restaurant_name_by_product_id)
+        restaurant_surprise_box_window_by_product_id = dict(cls._restaurant_surprise_box_window_by_product_id)
+        embeddings_products = cls._embeddings_products
+
+        idx_existente = next((i for i, p in enumerate(product_obj_cache) if p.id == product_id), None)
+
+        if product is None:
+            # Produto foi removido (ou não existe mais) — tira do índice se estava nele.
+            if idx_existente is None:
+                return
+            keep = [i for i in range(len(product_obj_cache)) if i != idx_existente]
+            product_obj_cache = [product_obj_cache[i] for i in keep]
+            product_owner_name = [product_owner_name[i] for i in keep]
+            embeddings_products = embeddings_products[keep] if keep else None
+            product_by_id.pop(product_id, None)
+            restaurant_name_by_product_id.pop(product_id, None)
+            restaurant_surprise_box_window_by_product_id.pop(product_id, None)
+        else:
+            restaurant = product.restaurant
+            texto = cls._texto_para_indice(product, restaurant.category if restaurant else "")
+            novo_embedding = cls.get_model().encode([texto], convert_to_tensor=True)
+
+            if idx_existente is not None:
+                product_obj_cache[idx_existente] = product
+                product_owner_name[idx_existente] = restaurant.name if restaurant else ""
+                embeddings_products = embeddings_products.clone()
+                embeddings_products[idx_existente] = novo_embedding[0]
+            else:
+                product_obj_cache = product_obj_cache + [product]
+                product_owner_name = product_owner_name + [restaurant.name if restaurant else ""]
+                embeddings_products = (
+                    torch.cat([embeddings_products, novo_embedding], dim=0)
+                    if embeddings_products is not None else novo_embedding
+                )
+
+            product_by_id[product.id] = product
+            if restaurant:
+                restaurant_name_by_product_id[product.id] = restaurant.name
+                restaurant_surprise_box_window_by_product_id[product.id] = (
+                    getattr(restaurant, "surprise_box_pickup_start", None),
+                    getattr(restaurant, "surprise_box_pickup_end", None),
+                )
+
+        # Rebind atômico — mesmo padrão de _index_data.
+        cls._product_obj_cache = product_obj_cache
+        cls._product_owner_name = product_owner_name
+        cls._product_by_id = product_by_id
+        cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
+        cls._embeddings_products = embeddings_products
+
     @staticmethod
     def _texto_para_indice(p, categoria_restaurante: str) -> str:
         """

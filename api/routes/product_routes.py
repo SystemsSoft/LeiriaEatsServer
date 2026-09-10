@@ -1,6 +1,6 @@
 # Arquivo: api/routes/product_routes.py
 from typing import List
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -17,7 +17,7 @@ router = APIRouter()
 
 # --- CRIAR ---
 @router.post("/product", response_model=ProductResponse, status_code=201)
-def create_product(product_data: ProductCreateRequest, db: Session = Depends(get_db)):
+def create_product(product_data: ProductCreateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     print(f"🍔 Criando produto: {product_data.name}")
 
     # Pega o GID de qualquer um dos campos (preferência para restaurant_gid)
@@ -67,9 +67,10 @@ def create_product(product_data: ProductCreateRequest, db: Session = Depends(get
         db.commit()
         db.refresh(new_product)
 
-        # Recarrega o cache do AIService para incluir o novo produto nas buscas
-        AIService.reload_data(db)
-        print(f"🔄 Cache do AIService recarregado com o novo produto")
+        # Reindexação incremental em background (Plano de Performance, Fase 3.1/3.2) —
+        # não bloqueia a resposta HTTP nem disputa CPU com chats em andamento.
+        background_tasks.add_task(AIService.reindex_single_product, new_product.id, db)
+        print(f"🔄 Reindexação do novo produto agendada em background")
     except Exception as e:
         db.rollback()
         print(f"❌ Erro ao criar produto: {str(e)}")
@@ -118,7 +119,7 @@ def get_products_by_restaurant(gid: str, db: Session = Depends(get_db)):
 
 # --- ATUALIZAR ---
 @router.put("/product/{gid}", response_model=ProductResponse)
-def update_product(gid: str, product_data: ProductCreateRequest, db: Session = Depends(get_db)):
+def update_product(gid: str, product_data: ProductCreateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     db_product = db.query(ProductDB).filter(ProductDB.gid == gid).first()
 
     if not db_product:
@@ -158,26 +159,31 @@ def update_product(gid: str, product_data: ProductCreateRequest, db: Session = D
     ).scalar()
     db_product.rating = avg
 
-    # Recarrega o cache do AIService para atualizar o produto nas buscas
-    AIService.reload_data(db)
-    print(f"🔄 Cache do AIService recarregado após atualização do produto")
+    # Reindexação incremental em background — ver nota em create_product.
+    background_tasks.add_task(AIService.reindex_single_product, db_product.id, db)
+    print(f"🔄 Reindexação do produto atualizado agendada em background")
 
     return db_product
 
 
 # --- DELETAR ---
 @router.delete("/product/{gid}")
-def delete_product(gid: str, db: Session = Depends(get_db)):
+def delete_product(gid: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     db_product = db.query(ProductDB).filter(ProductDB.gid == gid).first()
 
     if not db_product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
+    # Captura o id ANTES do delete+commit — depois do commit o objeto fica expirado e
+    # acessar db_product.id disparava um novo SELECT por um produto que já não existe.
+    deleted_product_id = db_product.id
+
     db.delete(db_product)
     db.commit()
 
-    # Recarrega o cache do AIService para remover o produto das buscas
-    AIService.reload_data(db)
-    print(f"🔄 Cache do AIService recarregado após deletar o produto")
+    # Reindexação incremental em background — ver nota em create_product. Como o
+    # produto já foi deletado, reindex_single_product vai apenas removê-lo do índice.
+    background_tasks.add_task(AIService.reindex_single_product, deleted_product_id, db)
+    print(f"🔄 Remoção do produto do índice agendada em background")
 
     return {"message": "Deletado com sucesso"}

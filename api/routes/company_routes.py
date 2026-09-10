@@ -1,6 +1,6 @@
 # Arquivo: api/routes/company_routes.py
 import stripe
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -37,7 +37,7 @@ def get_all_restaurants(db: Session = Depends(get_db)):
 
 
 @router.post("/companies", response_model=CompanyResponse, status_code=201)
-def register_company(company_data: CompanyCreateRequest, db: Session = Depends(get_db)):
+def register_company(company_data: CompanyCreateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     Cria uma nova empresa no banco de dados.
     """
@@ -47,9 +47,10 @@ def register_company(company_data: CompanyCreateRequest, db: Session = Depends(g
         new_company = RestaurantRepository.create_company(db, company_data)
         print(f"✅ Empresa criada com ID: {new_company.id}")
 
-        # Recarrega o cache do AIService para incluir o novo restaurante nas buscas
-        AIService.reload_data(db)
-        print(f"🔄 Cache do AIService recarregado com o novo restaurante")
+        # Recarrega o cache do AIService em background (Plano de Performance, Fase 3.1)
+        # — reload_data completo leva ~30s; não deve bloquear a resposta do cadastro.
+        background_tasks.add_task(AIService.reload_data, db)
+        print(f"🔄 Recarga do cache do AIService agendada em background")
 
         return new_company
     except Exception as e:
@@ -66,7 +67,7 @@ def get_company(gid: str, db: Session = Depends(get_db)):
 
 
 @router.put("/companies/{gid}", response_model=CompanyResponse)
-def update_company(gid: str, company_update: CompanyUpdateRequest, db: Session = Depends(get_db)):
+def update_company(gid: str, company_update: CompanyUpdateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     db_company = RestaurantRepository.get_by_gid(db, gid)
     if not db_company:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
@@ -78,9 +79,10 @@ def update_company(gid: str, company_update: CompanyUpdateRequest, db: Session =
     db.commit()
     db.refresh(db_company)
 
-    # Recarrega o cache do AIService após atualizar empresa
-    AIService.reload_data(db)
-    print(f"🔄 Cache do AIService recarregado após atualização da empresa")
+    # Recarrega o cache do AIService em background após atualizar empresa — ver nota em
+    # register_company.
+    background_tasks.add_task(AIService.reload_data, db)
+    print(f"🔄 Recarga do cache do AIService agendada em background")
 
     return db_company
 
@@ -555,7 +557,7 @@ def onboarding_refresh():
 
 
 @router.post("/connect/check-status/{gid}")
-def check_stripe_status(gid: str, db: Session = Depends(get_db)):
+def check_stripe_status(gid: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     Verifica manualmente o status do onboarding Stripe e atualiza o banco.
     Útil quando o webhook não dispara ou demora muito.
@@ -595,9 +597,10 @@ def check_stripe_status(gid: str, db: Session = Depends(get_db)):
             db.commit()
             print(f"✅ Status atualizado: {old_status} → ACTIVE, {old_license} → ATIVO")
 
-            # Recarrega o cache do AIService após ativar o restaurante
-            AIService.reload_data(db)
-            print(f"🔄 Cache do AIService recarregado após ativar restaurante")
+            # Recarrega o cache do AIService em background após ativar o restaurante —
+            # ver nota em register_company.
+            background_tasks.add_task(AIService.reload_data, db)
+            print(f"🔄 Recarga do cache do AIService agendada em background")
         else:
             db.commit()
             print(f"⚠️ Status mantido: {restaurant.status} (onboarding incomplete)")
@@ -620,7 +623,7 @@ def check_stripe_status(gid: str, db: Session = Depends(get_db)):
 
 
 @router.get("/connect/dashboard/{gid}")
-def get_stripe_dashboard_url(gid: str, db: Session = Depends(get_db)):
+def get_stripe_dashboard_url(gid: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     Gera um link de acesso ao dashboard financeiro da Stripe para o restaurante.
     Verifica o estado real do onboarding na API da Stripe e sincroniza o campo local.
@@ -649,9 +652,10 @@ def get_stripe_dashboard_url(gid: str, db: Session = Depends(get_db)):
             print(f"✅ Status atualizado para ACTIVE e license para ATIVO (restaurante {gid})")
             db.commit()
 
-            # Recarrega o cache do AIService após ativar o restaurante
-            AIService.reload_data(db)
-            print(f"🔄 Cache do AIService recarregado após ativar restaurante")
+            # Recarrega o cache do AIService em background após ativar o restaurante —
+            # ver nota em register_company.
+            background_tasks.add_task(AIService.reload_data, db)
+            print(f"🔄 Recarga do cache do AIService agendada em background")
         else:
             db.commit()
 
