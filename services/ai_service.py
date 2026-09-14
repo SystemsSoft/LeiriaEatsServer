@@ -451,6 +451,14 @@ class AIService:
 
         from core.sql_models import ProductDB
 
+        # update_product (product_routes.py) reusa esta MESMA sessão `db` e, depois do
+        # commit, sobrescreve db_product.rating em memória (sem persistir) com a média
+        # calculada de ProductRatingDB, só para moldar a resposta HTTP daquele request.
+        # Sem o expire_all() abaixo, o identity map do SQLAlchemy devolve esse mesmo
+        # objeto já mutado na query de baixo — e o cache global de busca/chat fica com
+        # um rating errado (geralmente None) até o próximo reload_data() completo.
+        db.expire_all()
+
         product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
 
         # Cópias das estruturas atuais — o rebind atômico ao final (mesmo padrão de
