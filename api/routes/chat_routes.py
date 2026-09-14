@@ -89,6 +89,7 @@ def chat_sales(request: ChatRequest, db: Session = Depends(get_db)):
         intent=result["intent"],
         session_id=result["session_id"],
         cart=result["cart"],
+        show_cart=result.get("show_cart", False),
         order_confirmed=result.get("order_confirmed", False)
     )
 
