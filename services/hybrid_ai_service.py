@@ -587,6 +587,7 @@ class HybridAIService:
                 # Ver PLANO_LIMITE_RESTAURANTES.md Fase 2.3 — usado pela IA e pelo
                 # executor para se referir ao restaurante pelo nome, não pelo GID.
                 "restaurant_name": AIService._restaurant_name_by_product_id.get(product.id, ""),
+                "restaurant_plan": AIService._restaurant_plan_by_product_id.get(product.id, ""),
                 "image_url": getattr(product, "image_url", ""),
                 "description": getattr(product, "description", ""),
                 "category": getattr(product, "category", ""),
@@ -737,6 +738,7 @@ class HybridAIService:
                             "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                             "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
                             "restaurant_name": AIService._restaurant_name_by_product_id.get(full_p.id, ""),
+                        "restaurant_plan": AIService._restaurant_plan_by_product_id.get(full_p.id, ""),
                             "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                             "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                             "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
@@ -1033,6 +1035,7 @@ class HybridAIService:
                 "restaurant_gid": (getattr(product, "restaurant_gid", "") or restaurant_gid) or "", # Garantir que nunca retorne null
                 # Ver PLANO_LIMITE_RESTAURANTES.md Fase 2.3.
                 "restaurant_name": AIService._restaurant_name_by_product_id.get(product.id, ""),
+                "restaurant_plan": AIService._restaurant_plan_by_product_id.get(product.id, ""),
                 "image_url": _get("image_url"),
                 "description": _get("description", ""),
                 "category": _get("category", ""),
@@ -1245,6 +1248,7 @@ class HybridAIService:
                         "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                         "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
                         "restaurant_name": AIService._restaurant_name_by_product_id.get(full_p.id, ""),
+                        "restaurant_plan": AIService._restaurant_plan_by_product_id.get(full_p.id, ""),
                         "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                         "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                         "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),

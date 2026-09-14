@@ -46,6 +46,7 @@ class ProductItem(BaseModel):
     search_tags: Optional[str] = None
     restaurant_gid: Optional[str] = None
     restaurant_name: Optional[str] = None
+    restaurant_plan: Optional[str] = None
     quantity: int = 0
 
 

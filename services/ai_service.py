@@ -27,6 +27,7 @@ class AIService:
     _product_owner_name = []  # Nome do restaurante dono para o 'reply'
     _product_by_id: dict = {}  # {id: Product} — evita O(n) por lookup (F2.2 do plano)
     _restaurant_name_by_product_id: dict = {}  # {id: restaurant_name} — ver Fase 2.3 do PLANO_LIMITE_RESTAURANTES.md
+    _restaurant_plan_by_product_id: dict = {}  # {id: restaurant_plan} — "ESSENCE"/"SMART", usado pra separar sugestões no chat
     _restaurantes_aptos_pagamento: set = set()  # GIDs com conta Stripe apta a receber (Fase 0, PLANO_PAGAMENTO_2_ETAPAS.md)
     # {product_id: (pickup_start, pickup_end)} — janela de recolha da Caixa Surpresa do
     # restaurante dono do produto ("HH:mm" ou None). Mesmo motivo de
@@ -468,6 +469,7 @@ class AIService:
         product_owner_name = list(cls._product_owner_name)
         product_by_id = dict(cls._product_by_id)
         restaurant_name_by_product_id = dict(cls._restaurant_name_by_product_id)
+        restaurant_plan_by_product_id = dict(cls._restaurant_plan_by_product_id)
         restaurant_surprise_box_window_by_product_id = dict(cls._restaurant_surprise_box_window_by_product_id)
         embeddings_products = cls._embeddings_products
 
@@ -483,6 +485,7 @@ class AIService:
             embeddings_products = embeddings_products[keep] if keep else None
             product_by_id.pop(product_id, None)
             restaurant_name_by_product_id.pop(product_id, None)
+            restaurant_plan_by_product_id.pop(product_id, None)
             restaurant_surprise_box_window_by_product_id.pop(product_id, None)
         else:
             restaurant = product.restaurant
@@ -505,6 +508,7 @@ class AIService:
             product_by_id[product.id] = product
             if restaurant:
                 restaurant_name_by_product_id[product.id] = restaurant.name
+                restaurant_plan_by_product_id[product.id] = getattr(restaurant, "plan", None)
                 restaurant_surprise_box_window_by_product_id[product.id] = (
                     getattr(restaurant, "surprise_box_pickup_start", None),
                     getattr(restaurant, "surprise_box_pickup_end", None),
@@ -515,6 +519,7 @@ class AIService:
         cls._product_owner_name = product_owner_name
         cls._product_by_id = product_by_id
         cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurant_plan_by_product_id = restaurant_plan_by_product_id
         cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
         cls._embeddings_products = embeddings_products
 
@@ -631,6 +636,7 @@ class AIService:
         product_owner_name = []
         product_by_id = {}
         restaurant_name_by_product_id = {}
+        restaurant_plan_by_product_id = {}
         restaurant_surprise_box_window_by_product_id = {}
 
         # Fase 0 do PLANO_PAGAMENTO_2_ETAPAS.md: restaurante só entra aqui se tiver conta
@@ -657,6 +663,7 @@ class AIService:
                 # restaurante independente do tipo do objeto no pool (ver
                 # PLANO_LIMITE_RESTAURANTES.md, Fase 2.3).
                 restaurant_name_by_product_id[p.id] = r.name
+                restaurant_plan_by_product_id[p.id] = getattr(r, "plan", None)
                 restaurant_surprise_box_window_by_product_id[p.id] = (
                     getattr(r, "surprise_box_pickup_start", None),
                     getattr(r, "surprise_box_pickup_end", None),
@@ -675,6 +682,7 @@ class AIService:
         cls._product_owner_name = product_owner_name
         cls._product_by_id = product_by_id
         cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurant_plan_by_product_id = restaurant_plan_by_product_id
         cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
         cls._restaurantes_aptos_pagamento = restaurantes_aptos_pagamento
         cls._embeddings_products = embeddings_products
