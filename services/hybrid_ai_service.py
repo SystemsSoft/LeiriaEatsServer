@@ -736,6 +736,7 @@ class HybridAIService:
                         cart_products.append({
                             "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                             "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
+                            "restaurant_name": AIService._restaurant_name_by_product_id.get(full_p.id, ""),
                             "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                             "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                             "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
@@ -1243,6 +1244,7 @@ class HybridAIService:
                     cart_products.append({
                         "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                         "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
+                        "restaurant_name": AIService._restaurant_name_by_product_id.get(full_p.id, ""),
                         "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                         "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                         "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
