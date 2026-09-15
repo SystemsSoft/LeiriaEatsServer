@@ -59,7 +59,8 @@ def create_product(product_data: ProductCreateRequest, background_tasks: Backgro
         is_surprise_box=product_data.is_surprise_box,
         preparation_time_minutes=product_data.preparation_time_minutes,
         recommended_for=product_data.recommended_for,
-        search_tags=product_data.search_tags
+        search_tags=product_data.search_tags,
+        transit_tolerance_minutes=product_data.transit_tolerance_minutes
     )
 
     try:
@@ -145,6 +146,7 @@ def update_product(gid: str, product_data: ProductCreateRequest, background_task
     db_product.preparation_time_minutes = product_data.preparation_time_minutes
     db_product.recommended_for = product_data.recommended_for
     db_product.search_tags = product_data.search_tags
+    db_product.transit_tolerance_minutes = product_data.transit_tolerance_minutes
 
     if product_data.image_url:
         db_product.image_url = product_data.image_url

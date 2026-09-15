@@ -1,5 +1,5 @@
 # Arquivo: schemas/product.py
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 class ProductCreateRequest(BaseModel):
@@ -27,6 +27,21 @@ class ProductCreateRequest(BaseModel):
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
 
+    # Obrigatório no formulário do KomaRestaurant (PLANO_RECOLHA_MULTI_RESTAURANTE.md, 4.4).
+    # Continua Optional aqui — e não `int` obrigatório — para não quebrar de imediato a
+    # criação/edição de produto vinda de uma versão do app publicada antes deste campo
+    # existir; a obrigatoriedade real é aplicada no formulário. Quando vier preenchido, é
+    # validado; quando não vier, cai no fallback por categoria em tempo de leitura
+    # (services/transit_tolerance_service.resolve_transit_tolerance).
+    transit_tolerance_minutes: Optional[int] = None
+
+    @field_validator("transit_tolerance_minutes")
+    @classmethod
+    def _validar_tolerancia(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (5 <= v <= 120):
+            raise ValueError("transit_tolerance_minutes deve estar entre 5 e 120 minutos")
+        return v
+
 class ProductResponse(BaseModel):
     id: int
     name: str
@@ -53,6 +68,7 @@ class ProductResponse(BaseModel):
     preparation_time_minutes: Optional[int] = None
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
+    transit_tolerance_minutes: Optional[int] = None
 
     class Config:
         from_attributes = True

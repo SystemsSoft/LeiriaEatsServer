@@ -89,7 +89,14 @@ class ProductDB(Base):
     
     # Tempo de preparo estruturado
     preparation_time_minutes = Column(Integer, nullable=True)  # Tempo em minutos (ex: 30)
-    
+
+    # Minutos que o prato aguenta em trânsito mantendo qualidade (gelado derrete, chocolate
+    # quente esfria) — usado pelo sequenciador de recolhas multi-restaurante para não recolher
+    # um perecível cedo demais. Obrigatório no formulário/API de criação (ver
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, 4.4/5.5); nullable aqui porque o histórico de
+    # produtos já cadastrados não tem esse valor — ver scripts/backfill_transit_tolerance.py.
+    transit_tolerance_minutes = Column(Integer, nullable=True)
+
     # Recomendação por horário (separado por vírgula)
     # Ex: "café da manhã, almoço", "jantar, lanche", "sobremesa"
     recommended_for = Column(String(200), nullable=True)
