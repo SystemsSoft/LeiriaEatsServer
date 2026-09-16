@@ -160,14 +160,14 @@ class SubOrderDB(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     gid = Column(String(255), nullable=True, unique=True)
-    master_order_gid = Column(String(255), ForeignKey("orders.gid"), nullable=False)
-    
+    master_order_gid = Column(String(255), ForeignKey("orders.gid"), nullable=False, index=True)
+
     restaurant_gid = Column(String(255), ForeignKey("restaurants.gid"))
     restaurant_name = Column(String(255))
     restaurant_category = Column(String(100))
     restaurant_image_url = Column(String(500))
-    
-    status = Column(String(50), default="Pendente")
+
+    status = Column(String(50), default="Pendente", index=True)
     total = Column(Float)
     delivery_fee = Column(Float, default=0.0)
     base_time = Column(Integer, default=0)
@@ -217,6 +217,66 @@ class OrderItemDB(Base):
     image_url = Column(String(500))
 
     sub_order = relationship("SubOrderDB", back_populates="items", foreign_keys=[sub_order_gid], primaryjoin="OrderItemDB.sub_order_gid == SubOrderDB.gid")
+
+
+class DeliveryRouteDB(Base):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, secção 5.1 e Fase 3 — a unidade que o estafeta
+    aceita passa a ser a rota (N paragens de recolha + 1 entrega), não o sub-pedido
+    isolado. Uma rota agrupa os sub-pedidos de um único master_order (Opção B, secção 3);
+    não ser filha do pedido no desenho (é uma entidade própria) deixa a Opção C
+    (agrupar entre pedidos distintos, hoje fora de escopo) possível sem nova migração.
+    """
+    __tablename__ = "delivery_routes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gid = Column(String(255), unique=True, nullable=False)
+    # Sem ForeignKey de verdade: orders.gid não tem chave única no banco de produção
+    # (mesma lacuna pré-existente de OrderItemDB.sub_order_gid — confirmado via
+    # information_schema, não é regressão desta migração). Índice normal basta para as
+    # queries que o worker de despacho faz.
+    master_order_gid = Column(String(255), nullable=False, index=True)
+    driver_gid = Column(String(255), ForeignKey("drivers.gid"), nullable=True, index=True)
+
+    # OFFERED | ACCEPTED | IN_PROGRESS | COMPLETED | EXPIRED | CANCELLED
+    status = Column(String(30), nullable=False, default="OFFERED", index=True)
+
+    offered_at   = Column(DateTime(timezone=True), nullable=True)
+    accepted_at  = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    estimated_delivery_at = Column(DateTime(timezone=True), nullable=True)
+    sequence_version = Column(Integer, nullable=False, default=1)  # incrementa a cada recálculo
+
+    master_order = relationship("OrderDB", foreign_keys=[master_order_gid], primaryjoin="DeliveryRouteDB.master_order_gid == OrderDB.gid")
+    driver = relationship("DriverDB", foreign_keys=[driver_gid], primaryjoin="DeliveryRouteDB.driver_gid == DriverDB.gid")
+    stops = relationship("RouteStopDB", back_populates="route", cascade="all, delete-orphan", foreign_keys="RouteStopDB.route_gid", primaryjoin="DeliveryRouteDB.gid == RouteStopDB.route_gid", order_by="RouteStopDB.sequence")
+
+
+class RouteStopDB(Base):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, secção 5.2 — uma paragem por sub-pedido dentro de
+    uma rota. É aqui que vive a ordem de recolha (campo `sequence`), que antes desta fase
+    não existia em lugar nenhum do schema.
+    """
+    __tablename__ = "route_stops"
+
+    id = Column(Integer, primary_key=True, index=True)
+    route_gid = Column(String(255), ForeignKey("delivery_routes.gid"), nullable=False, index=True)
+    # Sem ForeignKey de verdade contra sub_orders.gid — mesma lacuna de master_order_gid
+    # acima (sub_orders.gid também não tem chave única em produção).
+    sub_order_gid = Column(String(255), nullable=False, index=True)
+
+    sequence = Column(Integer, nullable=False)  # 1, 2, 3 — ordem de recolha decidida pelo RouteSequencer
+    ready_at_estimated = Column(DateTime(timezone=True), nullable=True)
+    ready_at_confirmed = Column(DateTime(timezone=True), nullable=True)  # espelha SubOrderDB.ready_at no momento do cálculo
+    arrived_at   = Column(DateTime(timezone=True), nullable=True)
+    picked_up_at = Column(DateTime(timezone=True), nullable=True)
+
+    route = relationship("DeliveryRouteDB", back_populates="stops", foreign_keys=[route_gid], primaryjoin="RouteStopDB.route_gid == DeliveryRouteDB.gid")
+    sub_order = relationship("SubOrderDB", foreign_keys=[sub_order_gid], primaryjoin="RouteStopDB.sub_order_gid == SubOrderDB.gid")
+
+    __table_args__ = (UniqueConstraint("route_gid", "sub_order_gid", name="uq_route_sub_order"),)
 
 
 class SavedPaymentMethodDB(Base):
