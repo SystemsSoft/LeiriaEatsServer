@@ -4,6 +4,7 @@ import logging
 import math
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from sqlalchemy import func
 from sqlalchemy.exc import OperationalError
 from core.database import SessionLocal
 from core.sql_models import OrderDB, DriverDB, SubOrderDB
@@ -16,9 +17,27 @@ POLL_INTERVAL_SECONDS = 60
 DRIVER_ONLINE_MINUTES = 2
 ACCEPT_TIMEOUT_SECONDS = 60
 ACTIVE_STATUSES = {"Em preparo"}
+# PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.2: o app do restaurante grava "Em Preparo"
+# (P maiúsculo) — a query abaixo usada compara em minúsculas pra não depender de as duas
+# pontas escreverem a mesma grafia. Confirmado em produção: comparação exata (BINARY)
+# retornava 0 sub-pedidos elegíveis para despacho, mesmo com sub-pedidos "Em Preparo" reais.
+_ACTIVE_STATUSES_LOWER = {s.lower() for s in ACTIVE_STATUSES}
 
 _notified_sub_order_ids: set[int] = set()
 _pending_acceptance: dict[int, datetime] = {}
+
+
+def clear_dispatch_state(sub_order_id: int) -> None:
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.3 — sempre que o estafeta de um sub-pedido
+    é removido fora do fluxo normal do worker (reset manual em order_routes.py, ou recusa
+    em drivers.py), o estado em memória deste worker (_notified_sub_order_ids /
+    _pending_acceptance) precisa ser limpo. Sem isso, o loop de despacho (que faz
+    `if sub.id in _notified_sub_order_ids: continue`) ignora o sub-pedido para sempre,
+    mesmo depois do status voltar para "Em Preparo".
+    """
+    _notified_sub_order_ids.discard(sub_order_id)
+    _pending_acceptance.pop(sub_order_id, None)
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371
@@ -114,7 +133,7 @@ def _check_and_notify() -> None:
         active_subs = (
             db.query(SubOrderDB)
             .join(OrderDB)
-            .filter(SubOrderDB.status.in_(ACTIVE_STATUSES))
+            .filter(func.lower(SubOrderDB.status).in_(_ACTIVE_STATUSES_LOWER))
             .filter(SubOrderDB.base_time > 0)
             .filter(SubOrderDB.driver_gid.is_(None))
             .filter(OrderDB.delivery_type != "pickup")

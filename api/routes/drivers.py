@@ -14,6 +14,7 @@ from ulid import ULID
 from core import config
 from core.database import get_db
 from core.sql_models import DriverDB, OrderDB, RestaurantDB, SubOrderDB
+from services.courier_notification_service import clear_dispatch_state
 from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
@@ -255,6 +256,36 @@ def accept_order(sub_order_id: int, driver_id: int, db: Session = Depends(get_db
     sub.status = "A aguardar estafeta"
     db.commit()
     return {"message": "Aceite."}
+
+@router.post("/{sub_order_id}/reject")
+def reject_order(sub_order_id: int, driver_id: int, db: Session = Depends(get_db)):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.3 — endpoint que não existia: o app do
+    estafeta (KomaPartner) chamava POST /drivers/{id}/orders/{id}/reject, que devolvia
+    405 (rota inexistente), então o botão "Recusar" nunca funcionou de verdade contra a
+    API real.
+
+    Só remove a atribuição se o sub-pedido ainda estiver com ESTE estafeta (mesma guarda
+    de accept_order) — evita recusar um sub-pedido que o worker já reatribuiu a outro.
+    Devolve ao estado "Em Preparo" para o worker de despacho voltar a oferecer a outro
+    estafeta, e limpa o estado em memória do worker (ver clear_dispatch_state) para não
+    ficar preso fora do pool de notificação.
+    """
+    driver = _get_driver_or_404(driver_id, db)
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_order_id, SubOrderDB.driver_gid == driver.gid).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado ou não atribuído.")
+
+    sub.driver_gid = None
+    sub.driver_name = None
+    sub.driver_delivery_fee = None
+    sub.driver_payment_transfer_id = None
+    sub.status = "Em Preparo"
+    db.commit()
+
+    clear_dispatch_state(sub_order_id)
+
+    return {"message": "Recusado.", "sub_order_id": sub_order_id, "status": sub.status}
 
 @router.post("/{sub_order_id}/delivered")
 def mark_as_delivered(sub_order_id: int, db: Session = Depends(get_db)):

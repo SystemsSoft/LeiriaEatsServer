@@ -14,6 +14,7 @@ from core.database import get_db, SessionLocal
 from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB, SubOrderDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import OrderRequest, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest, SubOrderResponse, OrderItemResponse
+from services.courier_notification_service import clear_dispatch_state
 
 router = APIRouter()
 
@@ -1029,46 +1030,71 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
 
 @router.patch("/orders/{order_id}/base_time")
 def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)):
-    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    order.base_time = payload["base_time"]
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.1 — `order_id` aqui é o id NUMÉRICO do
+    SUB-PEDIDO, não do pedido master: é o valor que o app do restaurante recebe como
+    `id` em GET /orders/{restaurant_gid} (SubOrderResponse.id = sub.id, ver
+    get_restaurant_orders acima). O tempo de preparo é por restaurante — faz sentido
+    viver em SubOrderDB.base_time, não em OrderDB, que nem tem essa coluna.
+
+    Bug anterior: escrevia em `OrderDB.base_time`, um atributo que o modelo não mapeia
+    — o SQLAlchemy criava um atributo Python solto, o commit() não gerava UPDATE
+    nenhum, e a rota devolvia 200 sem persistir nada (confirmado: 17/17 pedidos e
+    23/25 sub-pedidos com base_time=0 em produção antes deste fix).
+    """
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == order_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+    sub.base_time = payload["base_time"]
     db.commit()
-    return {"order_id": order_id, "base_time": order.base_time}
+    return {"order_id": order_id, "base_time": sub.base_time}
 
 
 @router.post("/orders/{order_id}/reset-delivery")
 def reset_order_delivery(order_id: int, db: Session = Depends(get_db)):
     """
-    Remove o estafeta atual de um pedido e reinicia a busca.
-    Limpa os campos driver_id, driver_name e informações de pagamento ao estafeta.
+    Remove o estafeta atual de um sub-pedido e reinicia a busca.
+
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.4 — `order_id` é o id numérico do
+    SUB-PEDIDO (mesmo motivo de update_base_time, acima). Bug anterior: acedia
+    `order.driver_name`/`order.driver_id`/`order.driver_delivery_fee`/
+    `order.driver_payment_transfer_id` num `OrderDB` que não tem nenhuma dessas
+    colunas (foram para SubOrderDB na migração de sub-pedidos) — todo acesso a
+    `order.driver_id` lançava AttributeError, e a rota devolvia 500.
     """
-    print(f"🔄 Reiniciando busca de estafeta para o pedido #{order_id}")
-    
-    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    
-    # Armazena o nome do driver anterior para log
-    previous_driver = order.driver_name or f"ID {order.driver_id}"
-    
-    # Remove a atribuição do driver
-    order.driver_id = None
-    order.driver_name = None
-    
-    # Limpa os campos de pagamento ao estafeta (se houver)
-    order.driver_delivery_fee = None
-    order.driver_payment_transfer_id = None
-    
+    print(f"🔄 Reiniciando busca de estafeta para o sub-pedido #{order_id}")
+
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == order_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+
+    # Armazena o estafeta anterior para log
+    previous_driver = sub.driver_name or (f"GID {sub.driver_gid}" if sub.driver_gid else "nenhum")
+
+    # Remove a atribuição do estafeta e os dados de pagamento a ele
+    sub.driver_gid = None
+    sub.driver_name = None
+    sub.driver_delivery_fee = None
+    sub.driver_payment_transfer_id = None
+
+    # Devolve ao estado que o worker de despacho automático (courier_notification_service)
+    # considera elegível — sem isto, um sub-pedido que já tinha oferta enviada ficaria preso
+    # fora do pool e "reiniciar busca" não reiniciaria busca nenhuma.
+    sub.status = "Em Preparo"
+
     db.commit()
-    
-    print(f"✅ Estafeta {previous_driver} removido do pedido #{order_id}. Busca reiniciada.")
-    
+
+    # Sem isto, o worker de despacho (courier_notification_service) continuaria a ignorar
+    # este sub-pedido — ele já o tinha marcado como "notificado" na tentativa anterior.
+    clear_dispatch_state(order_id)
+
+    print(f"✅ Estafeta {previous_driver} removido do sub-pedido #{order_id}. Busca reiniciada.")
+
     return {
         "message": "Estafeta removido e busca reiniciada com sucesso",
         "order_id": order_id,
         "previous_driver": previous_driver,
-        "status": order.status
+        "status": sub.status
     }
 
 
