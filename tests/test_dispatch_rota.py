@@ -97,6 +97,7 @@ def teste_oferece_rota_para_pedido_com_dois_restaurantes_prontos():
         rota = rotas[0]
         assert rota.status == "OFFERED", rota.status
         assert rota.driver_gid == driver.gid
+        assert rota.estimated_fee is not None and rota.estimated_fee >= 2.50, rota.estimated_fee
 
         stops = db.query(RouteStopDB).filter(RouteStopDB.route_gid == rota.gid).order_by(RouteStopDB.sequence).all()
         assert len(stops) == 2, f"esperava 2 paragens, achou {len(stops)}"

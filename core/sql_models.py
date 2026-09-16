@@ -246,6 +246,10 @@ class DeliveryRouteDB(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
     estimated_delivery_at = Column(DateTime(timezone=True), nullable=True)
+    # Taxa estimada da rota inteira, calculada no momento da oferta (mesma fórmula
+    # _calculate_delivery_fee já usada no fluxo antigo de sub-pedido único) — sem isto o
+    # app do estafeta (Fase 4) não tem o que mostrar como ganho antes de aceitar.
+    estimated_fee = Column(Float, nullable=True)
     sequence_version = Column(Integer, nullable=False, default=1)  # incrementa a cada recálculo
 
     master_order = relationship("OrderDB", foreign_keys=[master_order_gid], primaryjoin="DeliveryRouteDB.master_order_gid == OrderDB.gid")

@@ -361,6 +361,7 @@ def get_driver_routes(driver_id: int, db: Session = Depends(get_db)):
             "route_gid": route.gid,
             "status": route.status,
             "estimated_delivery_at": route.estimated_delivery_at,
+            "estimated_fee": route.estimated_fee,
             "delivery_latitude": master.delivery_latitude if master else None,
             "delivery_longitude": master.delivery_longitude if master else None,
             "delivery_address": master.delivery_address if master else None,

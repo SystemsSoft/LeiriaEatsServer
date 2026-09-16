@@ -34,6 +34,10 @@ def create_indexes():
     statements = [
         "CREATE INDEX idx_sub_orders_status ON sub_orders(status)",
         "CREATE INDEX idx_sub_orders_master ON sub_orders(master_order_gid)",
+        # Adicionado após a Fase 3 inicial: o app do estafeta (Fase 4) precisa de um valor
+        # de ganho estimado antes de aceitar a rota — sem isto GET /drivers/routes não
+        # tinha o que devolver.
+        "ALTER TABLE delivery_routes ADD COLUMN estimated_fee FLOAT NULL",
     ]
     with engine.connect() as conn:
         for stmt in statements:

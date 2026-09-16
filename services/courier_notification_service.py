@@ -62,6 +62,13 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _calculate_delivery_fee(total_distance_km: float) -> float:
+    """Mesma fórmula de api/routes/drivers.py::_calculate_delivery_fee — duplicada (não
+    importada) para não criar import circular (drivers.py já importa deste módulo)."""
+    fee = 1.20 + (total_distance_km * 0.35)
+    return max(2.50, round(fee, 2))
+
+
 def _compute_ready_at(sub_order: SubOrderDB) -> datetime:
     # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 2 — quando o restaurante já confirmou
     # prontidão real (botão "Pedido pronto"), esse timestamp é mais confiável que a
@@ -191,6 +198,19 @@ def _try_offer_route(db, master_order_gid: str, subs: list[SubOrderDB], now: dat
     if notify_at > now:
         return  # ainda não é a hora de oferecer esta rota
 
+    # Distância total da rota (driver -> paragens na ordem escolhida -> cliente), em linha
+    # reta — mesma convenção (sem fator de estrada) do cálculo antigo de taxa por
+    # sub-pedido único, para não mudar a escala de preço já em uso.
+    ordered_locations = [driver_location]
+    for stop_id in result.order:
+        ordered_locations.append(next(s for s in stops if s.stop_id == stop_id).location)
+    ordered_locations.append(customer_location)
+    total_distance_km = sum(
+        _haversine(a.latitude, a.longitude, b.latitude, b.longitude)
+        for a, b in zip(ordered_locations, ordered_locations[1:])
+    )
+    estimated_fee = _calculate_delivery_fee(total_distance_km)
+
     subs_by_id = {str(sub.id): sub for sub in subs}
     route = DeliveryRouteDB(
         gid=str(ULID()),
@@ -199,6 +219,7 @@ def _try_offer_route(db, master_order_gid: str, subs: list[SubOrderDB], now: dat
         status="OFFERED",
         offered_at=now,
         estimated_delivery_at=result.delivery_at,
+        estimated_fee=estimated_fee,
         sequence_version=1,
     )
     db.add(route)
