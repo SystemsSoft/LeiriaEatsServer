@@ -46,6 +46,14 @@ class Settings:
     # margem quando o número real for confirmado.
     PRAZO_SEGURANCA_AUTORIZACAO_MINUTOS: int = int(os.getenv("PRAZO_SEGURANCA_AUTORIZACAO_MINUTOS", 60))
 
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 5 — caminho para o JSON de credenciais da
+    # service account do Firebase (Console Firebase > Configurações do projeto > Contas
+    # de serviço > Gerar nova chave privada). Nunca commitar esse arquivo — fica fora do
+    # repo, referenciado só pelo caminho. Sem isto configurado, o envio de push é um
+    # no-op silencioso (só loga um aviso uma vez) e o despacho continua funcionando 100%
+    # por polling, que nunca deixa de ser o mecanismo de verdade.
+    FIREBASE_SERVICE_ACCOUNT_PATH: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+
     def __init__(self):
         # Aviso de segurança no terminal se a chave não for achada
         if not self.STRIPE_API_KEY:
@@ -60,6 +68,9 @@ class Settings:
             print("⚠️ AVISO: STRIPE_WEBHOOK_SECRET não encontrada no arquivo .env")
         else:
             print(f"✅ Stripe Webhook configurado (Secret: {self.STRIPE_WEBHOOK_SECRET[:8]}...)")
+
+        if not self.FIREBASE_SERVICE_ACCOUNT_PATH:
+            print("ℹ️  FIREBASE_SERVICE_ACCOUNT_PATH não configurado — push de novas rotas desativado, só polling.")
 
 
 settings = Settings()

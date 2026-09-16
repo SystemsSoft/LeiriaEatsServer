@@ -12,6 +12,7 @@ from core.config import settings
 from core.sql_models import OrderDB, DriverDB, SubOrderDB, DeliveryRouteDB, RouteStopDB
 from services.route_sequencer import Point, Stop, sequence_stops, travel_minutes
 from services.transit_tolerance_service import tolerancia_padrao_por_categoria
+from services import push_notification_service
 
 logger = logging.getLogger("courier_notification")
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
@@ -244,6 +245,12 @@ def _try_offer_route(db, master_order_gid: str, subs: list[SubOrderDB], now: dat
         f"📨 Rota {route.gid} oferecida a {driver.name} — {len(stops)} paragem(ns), "
         f"entrega estimada às {result.delivery_at.astimezone(LISBON_TZ).strftime('%H:%M')}."
     )
+    # Fase 5 — melhor esforço: nunca deixa uma falha de push impedir o despacho, que já
+    # está persistido e servido via GET /drivers/routes independentemente disto.
+    try:
+        push_notification_service.send_route_offer(driver, route)
+    except Exception as exc:
+        logger.warning(f"⚠️ send_route_offer falhou para a rota {route.gid}: {exc}")
 
 
 def _expire_pending_routes(db, now: datetime) -> None:

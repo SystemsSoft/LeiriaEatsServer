@@ -353,6 +353,11 @@ class DriverDB(Base):
     longitude  = Column(Float,    nullable=True)   # última longitude conhecida
     last_seen  = Column(DateTime(timezone=True), nullable=True)  # timestamp do último update
 
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 5 — token FCM do dispositivo, para
+    # notificar o estafeta de uma nova rota sem esperar o próximo poll (até 10s + até 60s
+    # de janela de aceite). Nullable: sempre há fallback por polling se vazio ou expirado.
+    fcm_token  = Column(String(500), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))
 

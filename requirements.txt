@@ -21,3 +21,4 @@ tzdata
 google-genai
 redis
 python-ulid
+firebase-admin

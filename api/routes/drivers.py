@@ -20,6 +20,7 @@ from schemas.driver import (
     DriverLoginRequest,
     DriverLoginResponse,
     DriverLocationUpdate,
+    DriverFcmTokenUpdate,
     UpdateDriverProfileRequest,
     DriverProfileResponse,
 )
@@ -460,5 +461,19 @@ def update_location(driver_id: int, payload: DriverLocationUpdate, db: Session =
     driver.latitude = payload.latitude
     driver.longitude = payload.longitude
     driver.last_seen = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/{driver_id}/fcm-token")
+def update_fcm_token(driver_id: int, payload: DriverFcmTokenUpdate, db: Session = Depends(get_db)):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 5 — registra/atualiza o token FCM do
+    dispositivo do estafeta, chamado pelo app após o login e sempre que o token for
+    renovado. Sem chamar isto, o estafeta continua recebendo ofertas normalmente — só
+    via polling, sem o aviso instantâneo do push (ver services/push_notification_service.py).
+    """
+    driver = _get_driver_or_404(driver_id, db)
+    driver.fcm_token = payload.token
     db.commit()
     return {"status": "ok"}
