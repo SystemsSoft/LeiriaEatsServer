@@ -366,6 +366,7 @@ def get_driver_routes(driver_id: int, db: Session = Depends(get_db)):
             "delivery_longitude": master.delivery_longitude if master else None,
             "delivery_address": master.delivery_address if master else None,
             "customer_name": master.customer_name if master else None,
+            "tracking_code": master.tracking_code if master else None,
             "stops": stops,
         })
     return result
