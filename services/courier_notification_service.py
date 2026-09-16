@@ -91,6 +91,13 @@ def _send_courier_notification(sub_order: SubOrderDB, driver: DriverDB) -> None:
     logger.info(f"🔔 [COURIER] Sub-Pedido #{sub_order.id} | Pronto: {ready_at.strftime('%H:%M')}")
 
 def _compute_ready_at(sub_order: SubOrderDB) -> datetime:
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 2 — quando o restaurante já confirmou
+    # prontidão real (botão "Pedido pronto"), esse timestamp é mais confiável que a
+    # estimativa por base_time e tem prioridade sobre ela.
+    if sub_order.ready_at is not None:
+        ready_at = sub_order.ready_at
+        return ready_at if ready_at.tzinfo is not None else ready_at.replace(tzinfo=timezone.utc)
+
     created = sub_order.master_order.created_at
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)

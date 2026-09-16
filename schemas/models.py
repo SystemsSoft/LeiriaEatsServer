@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Optional
+from datetime import datetime
 
 # --- MODELO DO PRODUTO ---
 class Product(BaseModel):
@@ -120,6 +121,7 @@ class SubOrderResponse(BaseModel):
     total: float
     delivery_fee: float
     base_time: int
+    ready_at: Optional[datetime] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     vehicle_type: Optional[str] = None

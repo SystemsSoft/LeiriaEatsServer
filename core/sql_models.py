@@ -171,7 +171,14 @@ class SubOrderDB(Base):
     total = Column(Float)
     delivery_fee = Column(Float, default=0.0)
     base_time = Column(Integer, default=0)
-    
+
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 2 — sinal real de prontidão, gravado pelo
+    # botão "Pedido pronto" do KomaRestaurant. Não substitui `status` (ver secção 6 do
+    # plano: trocar o vocabulário de status mexe na guarda de captura de pagamento, risco
+    # à parte); é um timestamp paralelo que o worker de despacho passa a preferir à
+    # estimativa por base_time quando presente.
+    ready_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
     # ── Estafeta atribuído (específico por sub-pedido/restaurante) ──────────
     driver_gid  = Column(String(255), ForeignKey("drivers.gid"), nullable=True)
     driver_name = Column(String(255), nullable=True)

@@ -621,6 +621,7 @@ def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
                     total=sub.total if sub.total else 0.0,
                     delivery_fee=sub.delivery_fee if sub.delivery_fee else 0.0,
                     base_time=sub.base_time if sub.base_time else 0,
+                    ready_at=sub.ready_at,
                     driver_name=sub.driver_name,
                     # Outros campos do driver podem ser buscados se necessário
                     items=items_resp
@@ -689,6 +690,7 @@ def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
                 total=sub.total if sub.total else 0.0,
                 delivery_fee=sub.delivery_fee if sub.delivery_fee else 0.0,
                 base_time=sub.base_time if sub.base_time else 0,
+                ready_at=sub.ready_at,
                 driver_name=sub.driver_name,
                 items=items_resp
             ))
@@ -1048,6 +1050,29 @@ def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)
     sub.base_time = payload["base_time"]
     db.commit()
     return {"order_id": order_id, "base_time": sub.base_time}
+
+
+@router.post("/orders/{order_id}/ready")
+def mark_sub_order_ready(order_id: int, db: Session = Depends(get_db)):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 2 — botão "Pedido pronto" do KomaRestaurant.
+    `order_id` é o id numérico do sub-pedido (mesma convenção de base_time/reset-delivery).
+
+    Grava o sinal REAL de prontidão em `SubOrderDB.ready_at`. Deliberadamente não mexe em
+    `status` — trocar o vocabulário de status é um risco à parte que toca a guarda de
+    captura de pagamento (ver secção 6 do plano); este endpoint fica isolado disso.
+
+    Idempotente: um segundo clique não sobrescreve o horário já gravado (o worker de
+    despacho, em courier_notification_service.py, passa a preferir este timestamp à
+    estimativa por base_time assim que ele existir).
+    """
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == order_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+    if sub.ready_at is None:
+        sub.ready_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"order_id": order_id, "ready_at": sub.ready_at}
 
 
 @router.post("/orders/{order_id}/reset-delivery")
