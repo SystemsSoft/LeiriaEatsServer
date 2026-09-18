@@ -5,9 +5,13 @@
 # importa nada de core/, api/, services/ do Koma: zero acoplamento em runtime.
 # Rodar com:
 #   uvicorn conectaai.main:app --host 0.0.0.0 --port 8081
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from conectaai.core.config import settings
 from conectaai.core.database import Base, engine
 from conectaai.models import sql_models  # noqa: F401 — garante que os models sejam registrados na Base antes do create_all
 
@@ -46,6 +50,9 @@ app.include_router(notification_routes.router)
 app.include_router(opportunity_routes.router)
 app.include_router(favorite_routes.router)
 app.include_router(ai_routes.router)
+
+os.makedirs(os.path.join(settings.UPLOAD_DIR, "avatars"), exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
 
 @app.get("/health")

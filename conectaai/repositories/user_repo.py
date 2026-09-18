@@ -1,4 +1,5 @@
 # Arquivo: conectaai/repositories/user_repo.py
+import secrets
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -17,8 +18,12 @@ class UserRepository:
         return db.query(UserDB).filter(UserDB.id == user_id).first()
 
     @staticmethod
-    def create(db: Session, *, role: str, name: str, email: str, password: str) -> UserDB:
-        user = UserDB(role=role, name=name, email=email, password_hash=hash_password(password))
+    def create(db: Session, *, role: str, name: str, email: str, password: Optional[str] = None) -> UserDB:
+        # `password=None` cobre contas criadas via Google — não têm senha
+        # própria, então geramos uma aleatória só para preencher a coluna
+        # (não-nula); essa conta nunca faz login por senha.
+        real_password = password or secrets.token_hex(32)
+        user = UserDB(role=role, name=name, email=email, password_hash=hash_password(real_password))
         db.add(user)
         db.flush()  # garante user.id antes de criar o perfil dependente
 

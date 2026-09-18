@@ -31,3 +31,37 @@ class ConversationRepository:
         db.commit()
         db.refresh(conversation)
         return conversation
+
+    @staticmethod
+    def get_or_create(
+        db: Session,
+        *,
+        creator_id: str,
+        company_id: str,
+        campaign_id: Optional[str],
+        campaign_name: str,
+    ) -> ConversationDB:
+        existing = (
+            db.query(ConversationDB)
+            .options(joinedload(ConversationDB.messages))
+            .filter(
+                ConversationDB.creator_id == creator_id,
+                ConversationDB.company_id == company_id,
+                ConversationDB.campaign_id == campaign_id,
+            )
+            .first()
+        )
+        if existing:
+            return existing
+
+        conversation = ConversationDB(
+            creator_id=creator_id,
+            company_id=company_id,
+            campaign_id=campaign_id,
+            campaign_name=campaign_name,
+            status="Em negociação",
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        return conversation

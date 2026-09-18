@@ -12,6 +12,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -66,18 +67,21 @@ class CreatorDB(Base):
     username = Column(String(120), default="")
     city = Column(String(120), default="")
     bio = Column(Text, default="")
+    avatar_url = Column(String(500), default="")
     categories = Column(JSON, default=list)
     followers = Column(Integer, default=0)
     engagement_rate = Column(Float, default=0)
     price_min = Column(Float, default=0)
     price_max = Column(Float, default=0)
     platforms = Column(JSON, default=list)
+    content_types = Column(JSON, default=list)
     rating = Column(Float, default=0)
     available = Column(Boolean, default=True)
     audience_info = Column(JSON, default=dict)
     portfolio = Column(JSON, default=list)
     followers_history = Column(JSON, default=list)
     engagement_history = Column(JSON, default=list)
+    profile_views = Column(Integer, default=0)
 
     user = relationship("UserDB", back_populates="creator")
 
@@ -188,3 +192,19 @@ class FavoriteDB(Base):
     target_type = Column(String(20), nullable=False)  # "creator" | "opportunity"
     target_id = Column(String(32), nullable=False)
     created_at = Column(DateTime, default=_now)
+
+
+class RatingDB(Base):
+    """Avaliação de uma empresa sobre um creator — uma por par empresa+creator
+    (reenviar substitui a nota anterior). Só pode ser criada depois de uma
+    proposta aceita entre os dois (checado na rota, não aqui)."""
+
+    __tablename__ = "ratings"
+    __table_args__ = (UniqueConstraint("company_id", "creator_id", name="uq_rating_company_creator"),)
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    company_id = Column(String(32), ForeignKey("companies.id"), nullable=False)
+    creator_id = Column(String(32), ForeignKey("creators.id"), nullable=False)
+    score = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=_now)
+    updated_at = Column(DateTime, default=_now, onupdate=_now)

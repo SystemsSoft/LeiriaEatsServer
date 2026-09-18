@@ -35,3 +35,19 @@ class ProposalRepository:
         db.commit()
         db.refresh(proposal)
         return proposal
+
+    @staticmethod
+    def has_accepted_between(db: Session, company_id: str, creator_id: str) -> bool:
+        """Confirma se já existe uma parceria fechada (proposta aceita) entre
+        essa empresa e esse creator — usado para só liberar avaliação depois
+        de uma ação real, não avulsa."""
+        return (
+            db.query(ProposalDB)
+            .filter(
+                ProposalDB.company_id == company_id,
+                ProposalDB.creator_id == creator_id,
+                ProposalDB.status == "accepted",
+            )
+            .first()
+            is not None
+        )

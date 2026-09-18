@@ -20,6 +20,13 @@ class SendMessageRequest(BaseModel):
     text: str
 
 
+class StartConversationRequest(BaseModel):
+    creator_id: str
+    company_id: str
+    campaign_id: Optional[str] = None
+    campaign_name: str = ""
+
+
 class ConversationResponse(BaseModel):
     id: str
     creator_id: str
