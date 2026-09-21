@@ -1,21 +1,32 @@
 # Arquivo: conectaai/schemas/ai_structured.py
 #
 # Contratos de saída do Gemini (JSON mode, via response_schema em
-# gemini_client.generate_json). `extra="forbid"` recusa qualquer campo que o
-# modelo tenha inventado — se a resposta não bater exatamente com o schema,
-# a chamada falha e cai no fallback determinístico, nunca é aceita "quase certa".
+# gemini_client.generate_json).
+#
+# NÃO usar `model_config = ConfigDict(extra="forbid")` aqui: isso faz o
+# `model_json_schema()` do Pydantic emitir `"additionalProperties": false`,
+# e a API do Gemini rejeita esse campo em response_schema com 400
+# INVALID_ARGUMENT ("Unknown name additional_properties") — o dialeto de
+# schema que ela aceita é um subconjunto restrito do OpenAPI 3.0. Descoberto
+# em teste real de produção (ai_call_logs, 21/09/2026): as duas primeiras
+# tentativas reais falharam exatamente por isso e caíram no fallback
+# determinístico — o que é o comportamento seguro esperado, mas significa
+# que o caminho Gemini nunca tinha sido exercitado de verdade até então.
+# Sem extra="forbid", um campo hallucinated a mais na resposta é só
+# ignorado (comportamento default do Pydantic) — não é um problema de
+# segurança, porque services/negotiation/policy.py só lê os campos
+# conhecidos (price, deliverables, deadline_days, exclusivity) e ignora
+# qualquer outra coisa de qualquer forma.
 #
 # IMPORTANTE: nenhum desses modelos é gravado direto no banco. Toda instância
 # passa por services/negotiation/policy.py antes de virar `terms_after_policy`
 # — o LLM só propõe, o código decide o que vale.
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class ProposedDeliverable(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     content_type: str
     quantity: int = Field(ge=0, le=100)
 
@@ -23,8 +34,6 @@ class ProposedDeliverable(BaseModel):
 class ProposedTerms(BaseModel):
     """Termos que o agente propõe neste turno. Todos opcionais — o modelo só
     preenche o que está mudando; o que fica None mantém o valor anterior."""
-
-    model_config = ConfigDict(extra="forbid")
 
     price: Optional[float] = Field(default=None, ge=0, le=1_000_000)
     deliverables: Optional[List[ProposedDeliverable]] = None
@@ -38,8 +47,6 @@ class NegotiationTurnOutput(BaseModel):
     Python a partir de `terms_after_policy`, nunca do valor que o LLM
     escreveu livre no texto."""
 
-    model_config = ConfigDict(extra="forbid")
-
     intent: Literal["offer", "counter_offer", "accept", "reject"]
     proposed_terms: ProposedTerms
     message_template: str = Field(max_length=400)
@@ -49,8 +56,6 @@ class NegotiationTurnOutput(BaseModel):
 class ExtractedTerms(BaseModel):
     """Extração dos termos finais a partir do histórico da negociação, usada
     para montar o Agreement quando `is_final_agreement=True`."""
-
-    model_config = ConfigDict(extra="forbid")
 
     price: float = Field(ge=0, le=1_000_000)
     deliverables: List[ProposedDeliverable] = Field(default_factory=list)
@@ -64,8 +69,6 @@ class CampaignMandateDraft(BaseModel):
     """Preview gerado a partir do briefing em texto livre da empresa — não
     persiste nada sozinho; só populam o formulário de campanha + mandato que
     o humano confirma em /mandates."""
-
-    model_config = ConfigDict(extra="forbid")
 
     campaign_name: str = Field(max_length=255)
     objective: str = Field(max_length=255)

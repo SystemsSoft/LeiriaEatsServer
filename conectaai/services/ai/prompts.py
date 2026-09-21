@@ -48,6 +48,31 @@ def build_negotiation_turn_prompt(*, side: str, mandate: dict, round_no: int, co
     return system_instruction, user_content
 
 
+_CAMPAIGN_DRAFT_SYSTEM = """Você ajuda uma empresa a estruturar uma campanha publicitária com creators a partir
+de uma descrição em linguagem natural, em português do Brasil.
+
+Extraia da descrição:
+- campaign_name: nome curto e descritivo para a campanha
+- objective: o objetivo resumido em 1 frase
+- target_count: quantos creators a empresa quer (se não disser, assuma 1)
+- desired_categories: nicho/categoria (ex.: beleza, fitness, moda) — lista vazia se não houver pista
+- city: cidade ou região mencionada, ou vazio
+- budget_total: orçamento total em reais mencionado no texto
+- ideal_price: quanto pagaria por creator idealmente (budget_total / target_count, salvo se o texto disser outro valor)
+- price_ceiling: teto por creator (um pouco acima do ideal_price, ex. +30%, salvo se o texto der outro número)
+- deliverables: tipos de conteúdo pedidos (Reel, Story, Post etc.) com quantidade mínima e máxima
+- clarifying_question: se faltar informação crítica (principalmente orçamento OU quantidade de creators),
+  uma pergunta curta e específica para pedir isso ao usuário; caso contrário, string vazia
+
+Nunca invente um valor de orçamento sem nenhuma base no texto — nesse caso, deixe budget_total em 0 e
+use clarifying_question para pedir o orçamento."""
+
+
+def build_campaign_draft_prompt(text: str) -> tuple[str, str]:
+    truncated = (text or "")[:2000]
+    return _CAMPAIGN_DRAFT_SYSTEM, f"Descrição da empresa:\n{truncated}"
+
+
 def render_message(template: str, terms: dict) -> str:
     """Preenche o template com os valores JÁ validados pelo policy.apply —
     nunca com o que o LLM escreveu livremente. Se sobrar um placeholder sem
