@@ -16,6 +16,7 @@ from conectaai.core.database import Base, engine
 from conectaai.models import sql_models  # noqa: F401 — garante que os models sejam registrados na Base antes do create_all
 
 from conectaai.api.routes import (
+    agreement_routes,
     ai_routes,
     auth_routes,
     campaign_routes,
@@ -23,6 +24,8 @@ from conectaai.api.routes import (
     conversation_routes,
     creator_routes,
     favorite_routes,
+    mandate_routes,
+    negotiation_routes,
     notification_routes,
     opportunity_routes,
     proposal_routes,
@@ -50,9 +53,27 @@ app.include_router(notification_routes.router)
 app.include_router(opportunity_routes.router)
 app.include_router(favorite_routes.router)
 app.include_router(ai_routes.router)
+app.include_router(mandate_routes.router)
+app.include_router(negotiation_routes.router)
+app.include_router(agreement_routes.router)
 
 os.makedirs(os.path.join(settings.UPLOAD_DIR, "avatars"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+
+
+@app.on_event("startup")
+def _sweep_stuck_negotiations():
+    """Qualquer negociação presa em `running` com lease vencido é de um
+    processo anterior que morreu no meio (ex.: restart do deploy_conectaai.sh)
+    — devolve pra `queued` para ser retomada no próximo /resume ou GET."""
+    from conectaai.core.database import SessionLocal
+    from conectaai.repositories.negotiation_repo import NegotiationRepository
+
+    db = SessionLocal()
+    try:
+        NegotiationRepository.sweep_expired_leases(db)
+    finally:
+        db.close()
 
 
 @app.get("/health")

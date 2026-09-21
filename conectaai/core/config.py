@@ -22,8 +22,20 @@ class ConectaAISettings:
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRES_MINUTES: int = int(os.getenv("CONECTAAI_JWT_EXPIRES_MINUTES", 60 * 24 * 7))  # 7 dias
 
-    # --- IA generativa (v1.1, opcional) — reaproveita a mesma chave do Koma ---
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").split(",")[0].strip()
+    # --- IA generativa (negociação entre agentes) — reaproveita a mesma variável
+    # de ambiente do Koma (GEMINI_API_KEY), mas aqui guardamos a lista inteira
+    # (não só a 1ª) para ter failover próprio entre chaves, isolado do processo
+    # do Koma. Sem nenhuma chave configurada, o módulo usa o agente
+    # determinístico (services/negotiation/policy.py) em vez do Gemini. ---
+    GEMINI_API_KEYS: list = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip()]
+    GEMINI_MODEL: str = os.getenv("CONECTAAI_GEMINI_MODEL", "gemini-flash-lite-latest")
+    GEMINI_EMBEDDING_MODEL: str = os.getenv("CONECTAAI_GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+
+    # --- Negociação entre agentes ---
+    NEGOTIATION_MAX_ROUNDS_DEFAULT: int = int(os.getenv("CONECTAAI_NEGOTIATION_MAX_ROUNDS", 4))
+    NEGOTIATION_TURN_DEADLINE_S: float = float(os.getenv("CONECTAAI_NEGOTIATION_TURN_DEADLINE_S", 12))
+    NEGOTIATION_LEASE_SECONDS: int = int(os.getenv("CONECTAAI_NEGOTIATION_LEASE_SECONDS", 180))
+    NEGOTIATION_MAX_CONCURRENT: int = int(os.getenv("CONECTAAI_NEGOTIATION_MAX_CONCURRENT", 2))
 
     # --- Login com Google (Firebase Auth) ---
     # Id do projeto Firebase do app ConectaAI (não é segredo — já é público no
