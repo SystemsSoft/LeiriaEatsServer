@@ -11,6 +11,15 @@ class StartNegotiationRequest(BaseModel):
     company_mandate_id: str
 
 
+class StartNegotiationAsCreatorRequest(BaseModel):
+    """O creator inicia a negociação a partir de uma oportunidade encontrada
+    na busca semântica (`/ai/match/opportunities`) — informa só o mandato da
+    empresa que encontrou; o resto (company_id, campaign_id) é derivado dele,
+    e o mandato do próprio creator é o dele já ativo (precisa existir)."""
+
+    company_mandate_id: str
+
+
 class NegotiationTurnResponse(BaseModel):
     id: str
     round_no: int

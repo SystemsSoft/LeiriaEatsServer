@@ -20,6 +20,7 @@ from conectaai.schemas.negotiation import (
     NegotiationAuditResponse,
     NegotiationResponse,
     RaiseAutoLimitRequest,
+    StartNegotiationAsCreatorRequest,
     StartNegotiationRequest,
 )
 from conectaai.services.negotiation.runner import run_negotiation
@@ -130,11 +131,64 @@ def create_negotiation(
     return _to_response(negotiation)
 
 
+@router.post("/creator-start", response_model=NegotiationResponse, status_code=201)
+def create_negotiation_as_creator(
+    data: StartNegotiationAsCreatorRequest,
+    current_user: CurrentUser = Depends(require_role("creator")),
+    db: Session = Depends(get_db),
+):
+    """Caminho inverso de `create_negotiation`: o creator encontrou uma
+    oportunidade pela busca semântica (`/ai/match/opportunities`, que
+    devolve `mandate_id`) e quer negociar a partir dela. Diferente do lado
+    da empresa, aqui o mandato do creator é obrigatório — é ele quem está
+    tomando a iniciativa, então precisa ter um agente ativo representando-o
+    (sem fallback manual: se não tem mandato, a orientação é ativar o
+    agente primeiro em /creator/agent, não abrir uma negociação capenga)."""
+    creator = CreatorRepository.get_by_user_id(db, current_user.user_id)
+    if not creator:
+        raise HTTPException(status_code=404, detail="Creator não encontrado")
+
+    creator_mandate = MandateRepository.get_active_for_owner(db, owner_type="creator", owner_id=creator.id, campaign_id=None)
+    if not creator_mandate:
+        raise HTTPException(status_code=400, detail="Ative seu agente (com um mandato) antes de negociar — veja /creator/agent")
+
+    company_mandate = MandateRepository.get_by_id(db, data.company_mandate_id)
+    if not company_mandate or not company_mandate.active or company_mandate.owner_type != "company":
+        raise HTTPException(status_code=400, detail="Mandato da empresa inválido ou inativo")
+
+    company = CompanyRepository.get_by_id(db, company_mandate.owner_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+
+    conversation = ConversationRepository.get_or_create(
+        db,
+        creator_id=creator.id,
+        company_id=company.id,
+        campaign_id=company_mandate.campaign_id,
+        campaign_name=company_mandate.objective or "",
+    )
+
+    negotiation = NegotiationRepository.create(
+        db,
+        {
+            "company_id": company.id,
+            "creator_id": creator.id,
+            "campaign_id": company_mandate.campaign_id,
+            "conversation_id": conversation.id,
+            "company_mandate_id": company_mandate.id,
+            "creator_mandate_id": creator_mandate.id,
+            "state": "draft",
+            "max_rounds": min(company_mandate.max_rounds or 4, creator_mandate.max_rounds or 4),
+        },
+    )
+    return _to_response(negotiation)
+
+
 @router.post("/{negotiation_id}/start", response_model=NegotiationResponse, status_code=202)
 def start_negotiation(
     negotiation_id: str,
     background_tasks: BackgroundTasks,
-    current_user: CurrentUser = Depends(require_role("company")),
+    current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     negotiation = NegotiationRepository.get_by_id(db, negotiation_id)

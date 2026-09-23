@@ -72,3 +72,46 @@ class ConfirmCampaignDraftRequest(BaseModel):
 class ConfirmCampaignDraftResponse(BaseModel):
     campaign: CampaignResponse
     mandate: MandateResponse
+
+
+class MatchCreatorsRequest(BaseModel):
+    text: str
+    limit: int = 10
+
+
+class MatchedCreator(BaseModel):
+    creator: CreatorResponse
+    match_score: int
+    match_reason: str
+
+
+class MatchCreatorsResponse(BaseModel):
+    text: str
+    results: List[MatchedCreator]
+    total_found: int
+    source: str  # "semantic" | "heuristic"
+
+
+class MatchOpportunitiesRequest(BaseModel):
+    text: str
+    limit: int = 10
+
+
+class MatchedOpportunity(BaseModel):
+    mandate_id: str
+    campaign_id: Optional[str]
+    company_id: str
+    company_name: str
+    objective: str
+    ideal_price: float
+    price_ceiling: float
+    deliverables: List[DeliverableSpec]
+    match_score: int
+    match_reason: str
+
+
+class MatchOpportunitiesResponse(BaseModel):
+    text: str
+    results: List[MatchedOpportunity]
+    total_found: int
+    source: str  # "semantic" | "heuristic"
