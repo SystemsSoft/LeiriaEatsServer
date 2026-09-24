@@ -9,8 +9,10 @@ mesmas regras de limite de restaurantes e exclusividade de Caixa Surpresa.
 
 Achados validados nesta sessão (com scripts isolados, antes de escrever este
 arquivo) — não repetir esses testes sem necessidade:
-- A chave PAGA do Koma NÃO tem acesso à Live API (erro 1008 "Your project has been
-  denied access"), testado de 3 formas (SDK v1beta, SDK v1alpha, WebSocket bruto).
+- A chave PAGA do Koma estava SEM acesso à Live API (erro 1008 "Your project has been
+  denied access", testado de 3 formas) — era bloqueio do projeto no Google, não do código:
+  em 24/09/2026 o acesso foi liberado e ela passou a funcionar (Live, texto e TTS). Por isso
+  ela é a última da fila de failover: as gratuitas primeiro, a paga como rede de segurança.
   As 4 chaves GRATUITAS têm acesso confirmado. `settings.GEMINI_API_KEYS` já lista
   as gratuitas antes da paga, então o failover abaixo já tenta na ordem certa.
 - O modelo "gemini-2.5-flash-native-audio-latest" (o mesmo que a Megan usa) só

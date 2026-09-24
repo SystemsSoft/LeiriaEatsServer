@@ -156,6 +156,29 @@ class GeminiSalesAgent:
         recentes = [m for m in sem_repetir if agora - cls._modelos_com_falha.get(m, 0.0) < cls._JANELA_MODELO_COM_FALHA_S]
         return [m for m in sem_repetir if m not in recentes] + recentes
 
+    # Chaves (índice, modelo) que falharam há pouco → instante. Ficam no FIM da fila por
+    # _JANELA_CHAVE_COM_FALHA_S: uma chave gratuita que deu timeout (10s cada!) não é tentada de
+    # novo no turno seguinte antes das que estão funcionando.
+    _chaves_com_falha: Dict = {}
+    _JANELA_CHAVE_COM_FALHA_S = 120.0
+
+    @classmethod
+    def _ordenar_chaves(cls, modelo: str) -> List[int]:
+        """Ordem de tentativa das chaves: 1ª gratuita, PAGA (a última da lista), demais gratuitas — e
+        as que falharam há pouco para este modelo vão para o fim.
+
+        Antes era a ordem do .env (4 gratuitas e a paga por último). Com o tier gratuito dando 503 e
+        timeouts de 10s, o orçamento do turno (_STREAM_DEADLINE_SECONDS) acabava antes de a chave paga
+        — a única saudável — ser tentada: em 24/09/2026 todo turno do chat caía no texto de emergência
+        (~21s) com a chave paga funcionando e nunca chamada. Agora, depois da 1ª falha, a paga é a
+        próxima (quando há mais de 2 chaves)."""
+        n = len(cls._clients)
+        base = list(range(n)) if n <= 2 else [0, n - 1] + list(range(1, n - 1))
+        agora = time.time()
+        ruins = [i for i in base
+                 if agora - cls._chaves_com_falha.get((i, modelo), 0.0) < cls._JANELA_CHAVE_COM_FALHA_S]
+        return [i for i in base if i not in ruins] + ruins
+
     @staticmethod
     def _thinking_config(modelo: str):
         """Os modelos gemini-3.x "pensam" por padrão e esse raciocínio consome os max_output_tokens (250):
@@ -433,7 +456,9 @@ REGRAS OBRIGATÓRIAS:
 
                 for mod in modelos_a_tentar:
                     falhas_de_modelo = 0  # 503/timeout neste modelo (sobrecarga é do MODELO, não da chave)
-                    for key_index, client in enumerate(cls._clients):
+                    ordem_chaves = cls._ordenar_chaves(mod)
+                    for posicao, key_index in enumerate(ordem_chaves):
+                        client = cls._clients[key_index]
                         if time.time() - turn_start > cls._STREAM_DEADLINE_SECONDS:
                             print(f"⏱️ [Gemini Stream] Orçamento de {cls._STREAM_DEADLINE_SECONDS}s "
                                   f"estourado antes da chave {key_index+1}/modelo {mod} — indo para fallback.")
@@ -472,6 +497,7 @@ REGRAS OBRIGATÓRIAS:
                                 cls._cache.set(cache_key, full_response)
 
                             cls._modelos_com_falha.pop(mod, None)
+                            cls._chaves_com_falha.pop((key_index, mod), None)
                             return # Sucesso absoluto
 
                         except Exception as e_key:
@@ -489,7 +515,9 @@ REGRAS OBRIGATÓRIAS:
                             # abaixo impedia de chegar ao modelo seguinte.)
                             is_negado = ("403" in erro_msg or "PERMISSION_DENIED" in erro_msg
                                          or "404" in erro_msg or "NOT_FOUND" in erro_msg)
-                            e_ultima_chave = key_index >= len(cls._clients) - 1
+                            e_ultima_chave = posicao >= len(ordem_chaves) - 1
+                            if is_quota_error or is_negado or is_server_error or is_timeout_error:
+                                cls._chaves_com_falha[(key_index, mod)] = time.time()
 
                             if (is_quota_error or is_negado) and not e_ultima_chave:
                                 motivo = "esgotou cota (429)" if is_quota_error else "sem acesso ao modelo (403/404)"
