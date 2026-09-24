@@ -134,6 +134,34 @@ class GeminiSalesAgent:
     MODELO_ACAO = "gemini-flash-lite-latest"
     MODELO_ESTAVEL = "gemini-flash-lite-latest"
 
+    # Modelo de RESERVA, tentado quando o principal falha em TODAS as chaves. Antes o "estável" era o
+    # mesmo modelo do principal, então o failover de modelo era só nominal: numa sobrecarga do Google
+    # ("503 This model is currently experiencing high demand") toda mensagem caía na resposta estática
+    # "Temos disponível: … Qual prefere?", ignorando o pedido do cliente (bug: "adiciona o vegetariano"
+    # / "duas unidades" devolviam sempre a mesma lista). Validado em 24/09/2026: gemini-flash-lite-latest
+    # e gemini-3.x-lite davam 503 nas 4 chaves gratuitas enquanto este respondia em ~1,4s. É um
+    # "-preview": se sumir (404), o failover só o pula — revalidar o nome de tempos em tempos.
+    MODELO_RESERVA = "gemini-3-flash-preview"
+
+    # Modelos que falharam em todas as chaves há pouco (modelo → instante). Passam para o FIM da fila
+    # por _JANELA_MODELO_COM_FALHA_S, para o turno seguinte não gastar o orçamento de tempo
+    # (_STREAM_DEADLINE_SECONDS) tentando de novo, chave por chave, um modelo que acabou de cair.
+    _modelos_com_falha: Dict[str, float] = {}
+    _JANELA_MODELO_COM_FALHA_S = 60.0
+
+    @classmethod
+    def _ordenar_modelos(cls, candidatos: List[str]) -> List[str]:
+        sem_repetir = list(dict.fromkeys(candidatos))
+        agora = time.time()
+        recentes = [m for m in sem_repetir if agora - cls._modelos_com_falha.get(m, 0.0) < cls._JANELA_MODELO_COM_FALHA_S]
+        return [m for m in sem_repetir if m not in recentes] + recentes
+
+    @staticmethod
+    def _thinking_config(modelo: str):
+        """Os modelos gemini-3.x "pensam" por padrão e esse raciocínio consome os max_output_tokens (250):
+        a resposta sai cortada ou vazia. MINIMAL mantém a resposta completa e rápida (medido: ~1,4s)."""
+        return types.ThinkingConfig(thinking_level="MINIMAL") if modelo.startswith("gemini-3") else None
+
     @classmethod
     def _escolher_modelo(cls, context: Dict) -> str:
         """Turno com carrinho não-vazio ou intenção de busca/pergunta específica de
@@ -401,9 +429,10 @@ REGRAS OBRIGATÓRIAS:
                 cls._ultimo_tamanho_prompt = len(prompt)
 
                 # Tentar com os modelos disponíveis (Failover de Modelo + Chaves)
-                modelos_a_tentar = [modelo, cls.MODELO_ESTAVEL] if modelo != cls.MODELO_ESTAVEL else [modelo]
+                modelos_a_tentar = cls._ordenar_modelos([modelo, cls.MODELO_ESTAVEL, cls.MODELO_RESERVA])
 
                 for mod in modelos_a_tentar:
+                    falhas_de_modelo = 0  # 503/timeout neste modelo (sobrecarga é do MODELO, não da chave)
                     for key_index, client in enumerate(cls._clients):
                         if time.time() - turn_start > cls._STREAM_DEADLINE_SECONDS:
                             print(f"⏱️ [Gemini Stream] Orçamento de {cls._STREAM_DEADLINE_SECONDS}s "
@@ -422,6 +451,7 @@ REGRAS OBRIGATÓRIAS:
                                     top_k=40,
                                     max_output_tokens=250,
                                     response_modalities=['TEXT'],
+                                    thinking_config=cls._thinking_config(mod),
                                     http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
                                 )
                             )
@@ -441,6 +471,7 @@ REGRAS OBRIGATÓRIAS:
                             if full_response and "[[" not in full_response:
                                 cls._cache.set(cache_key, full_response)
 
+                            cls._modelos_com_falha.pop(mod, None)
                             return # Sucesso absoluto
 
                         except Exception as e_key:
@@ -452,20 +483,45 @@ REGRAS OBRIGATÓRIAS:
                             # tratado como instabilidade transitória, igual ao 503.
                             is_timeout_error = "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
 
-                            if is_quota_error and key_index < len(cls._clients) - 1:
-                                print(f"⚠️ [Gemini Stream] Chave {key_index+1} esgotou cota (429). Pulando para próxima...")
+                            # 403 (projeto/chave sem acesso) e 404 (modelo inexistente nesta chave) não
+                            # melhoram tentando de novo, mas NÃO devem derrubar o turno: pula a chave.
+                            # (A chave paga, sempre a última, devolve 403 — e por ser a última o `raise`
+                            # abaixo impedia de chegar ao modelo seguinte.)
+                            is_negado = ("403" in erro_msg or "PERMISSION_DENIED" in erro_msg
+                                         or "404" in erro_msg or "NOT_FOUND" in erro_msg)
+                            e_ultima_chave = key_index >= len(cls._clients) - 1
+
+                            if (is_quota_error or is_negado) and not e_ultima_chave:
+                                motivo = "esgotou cota (429)" if is_quota_error else "sem acesso ao modelo (403/404)"
+                                print(f"⚠️ [Gemini Stream] Chave {key_index+1} {motivo}. Pulando para próxima...")
                                 continue
 
-                            if is_server_error or is_timeout_error:
+                            if (is_server_error or is_timeout_error) and not e_ultima_chave:
                                 motivo = "instável (503)" if is_server_error else f"não respondeu em {cls._REQUEST_TIMEOUT_MS}ms (timeout)"
-                                if key_index < len(cls._clients) - 1:
-                                    print(f"⚠️ [Gemini Stream] Modelo {mod} {motivo} na chave {key_index+1}. Tentando próxima chave...")
-                                    if is_server_error:
-                                        time.sleep(0.5)
-                                    continue
-                                elif mod != modelos_a_tentar[-1]:
-                                    print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves ({motivo}). Tentando modelo estável...")
-                                    break # Sai do loop de chaves para tentar o próximo modelo
+                                falhas_de_modelo += 1
+                                # "503 high demand" atinge o modelo inteiro: as outras chaves batem no
+                                # mesmo modelo sobrecarregado (cada uma custando até 10s de timeout). Depois
+                                # de 2 falhas assim, passa para o próximo modelo em vez de gastar o
+                                # orçamento do turno chave por chave (era isso que deixava o modelo de
+                                # reserva sem tempo de rodar).
+                                if falhas_de_modelo >= 2 and mod != modelos_a_tentar[-1]:
+                                    cls._modelos_com_falha[mod] = time.time()
+                                    print(f"🚨 [Gemini Stream] Modelo {mod} {motivo} em {falhas_de_modelo} chaves. "
+                                          f"Tentando o próximo modelo ({modelos_a_tentar[modelos_a_tentar.index(mod)+1]})...")
+                                    break
+                                print(f"⚠️ [Gemini Stream] Modelo {mod} {motivo} na chave {key_index+1}. Tentando próxima chave...")
+                                if is_server_error:
+                                    time.sleep(0.5)
+                                continue
+
+                            # Última chave também falhou: o modelo está fora em TODAS. Se ainda há outro
+                            # modelo na fila, passa para ele em vez de desistir do turno.
+                            if (is_quota_error or is_server_error or is_timeout_error or is_negado) \
+                                    and mod != modelos_a_tentar[-1]:
+                                cls._modelos_com_falha[mod] = time.time()
+                                print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves. "
+                                      f"Tentando o próximo modelo ({modelos_a_tentar[modelos_a_tentar.index(mod)+1]})...")
+                                break # Sai do loop de chaves para tentar o próximo modelo
 
                             raise e_key # Se nada resolveu, sobe para o retry temporal de 1.5s
 
@@ -907,7 +963,11 @@ Responda considerando TODO o contexto acima. Seja consultivo e natural."""
             product_list.append(f"{p['name']} ({price})")
 
         products_str = ", ".join(product_list)
-        return f"Temos disponível: {products_str}. Qual prefere?"
+        # Este texto só sai quando a IA está indisponível. Antes repetia a lista como se tivesse entendido
+        # o pedido ("adiciona o vegetariano" → a mesma lista de sempre), o que parecia um bug da busca.
+        # Agora avisa que o pedido NÃO foi processado.
+        return (f"De momento estou com dificuldade em processar o seu pedido, por isso ainda não o fiz. "
+                f"Entretanto, temos disponível: {products_str}. Pode repetir daqui a instantes?")
 
     # Modelo de TTS avulso (texto → áudio, sem conversa/tools) — usado pra unificar a
     # voz do app inteiro (chat normal, onboarding, sacola, perfil) com a MESMA voz da
