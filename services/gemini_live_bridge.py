@@ -63,6 +63,8 @@ REGRAS DA CHAMADA DE VOZ (prevalecem sobre as regras acima em caso de conflito):
 - Faça NO MÁXIMO UMA pergunta por vez. Depois de perguntar, PARE de falar e AGUARDE o cliente
   responder: nunca junte duas perguntas na mesma fala, nunca responda à sua própria pergunta e
   nunca volte a falar sem que o cliente tenha dito alguma coisa.
+- Ao oferecer opções, cite até 6 produtos só pelo nome, numa frase curta ("Temos A, B e C."), sem
+  descrever cada um — os produtos citados aparecem como cartões na tela.
 - Se o cliente ficar em silêncio, fique em silêncio também: não repita a pergunta, não pergunte se
   ele ainda está na linha nem puxe conversa.
 - Cumprimente só uma vez, na primeira fala da chamada, e apenas com "Olá" (e o nome do cliente, se
@@ -129,6 +131,10 @@ class GeminiLiveBridge:
         # A IA já falou nesta ligação? Distingue INÍCIO de chamada (cumprimenta) de
         # RECONEXÃO no meio dela (retoma em silêncio) — ver _attempt_session.
         self._ia_ja_falou = False
+        # Texto que a IA já falou NO TURNO ATUAL e os produtos que ele já citou (ids, na ordem) — base
+        # dos cards da tela de ligação; ver _enviar_sugestoes_citadas.
+        self._texto_ia_turno = ""
+        self._ids_citados_enviados: List[int] = []
 
     def _acumular_fala(self, papel: str, texto: str):
         """A Gemini entrega a transcrição em FRAGMENTOS (palavra a palavra na fala da IA).
@@ -148,6 +154,27 @@ class GeminiLiveBridge:
             if texto:
                 self.session.add_message(p, texto)
             self._fala_em_curso[p] = ""
+
+    async def _enviar_sugestoes_citadas(self):
+        """Cards da tela de ligação = produtos cujo NOME aparece no que a IA falou no turno — a MESMA
+        regra do chat por texto (HybridAIService._filter_mentioned_products sobre a resposta), aplicada
+        à transcrição da fala. Antes os cards vinham da ferramenta `sugerir_produtos`, em que o modelo
+        escolhia livremente os GIDs (sem limite e sem relação com o que dizia). Roda a cada fragmento
+        de fala, então o card aparece assim que a IA cita o produto; só reenvia quando o conjunto muda,
+        e nunca envia lista vazia (os cards anteriores ficam até a IA citar outros)."""
+        citados = HybridAIService._filter_mentioned_products(self._texto_ia_turno, self.found_products)
+        ids = [p["id"] for p in citados]
+        if not ids or ids == self._ids_citados_enviados:
+            return
+        self._ids_citados_enviados = ids
+        await self._enviar_ao_app({
+            "type": "products_suggested",
+            "products": self._produtos_sugeridos_para_app([p["gid"] for p in citados]),
+        })
+
+    def _reiniciar_turno_da_ia(self):
+        self._texto_ia_turno = ""
+        self._ids_citados_enviados = []
 
     def _montar_pool_produtos(self) -> List[Dict]:
         """Todo o catálogo (AIService._product_obj_cache) no mesmo formato de dict
@@ -205,8 +232,8 @@ class GeminiLiveBridge:
         return itens
 
     def _produtos_sugeridos_para_app(self, gids: List[str]) -> List[Dict]:
-        """Mesmo formato de _carrinho_para_app, mas para os GIDs que a IA destacou via
-        a tool "sugerir_produtos" — produtos que ela está sugerindo, não
+        """Mesmo formato de _carrinho_para_app, mas para os GIDs dos produtos que a IA CITOU na fala
+        (ver _enviar_sugestoes_citadas) — produtos que ela está sugerindo, não
         necessariamente no carrinho ainda. Sem quantidade de carrinho (sempre 1),
         já que aqui é só "isto pode te interessar".
         """
@@ -394,13 +421,10 @@ class GeminiLiveBridge:
                         if estado_turno.get("show_cart"):
                             await self._enviar_ao_app({"type": "show_cart"})
                             estado_turno["show_cart"] = False
-                        gids_sugeridos = estado_turno.get("gids_sugeridos")
-                        if gids_sugeridos is not None:
-                            await self._enviar_ao_app({
-                                "type": "products_suggested",
-                                "products": self._produtos_sugeridos_para_app(gids_sugeridos),
-                            })
-                            estado_turno["gids_sugeridos"] = None
+                        # `sugerir_produtos` continua sendo respondida à Gemini (função chamada precisa de
+                        # resposta), mas NÃO gera mais cards: eles vêm dos produtos citados na fala
+                        # (_enviar_sugestoes_citadas), como no chat por texto.
+                        estado_turno["gids_sugeridos"] = None
 
                     sc = message.server_content
                     if sc:
@@ -412,6 +436,8 @@ class GeminiLiveBridge:
                             texto = sc.output_transcription.text
                             self._acumular_fala("assistant", texto)
                             await self._enviar_ao_app({"type": "transcript", "role": "ai", "text": texto})
+                            self._texto_ia_turno += texto
+                            await self._enviar_sugestoes_citadas()
                         if sc.model_turn and sc.model_turn.parts:
                             for part in sc.model_turn.parts:
                                 if part.inline_data and part.inline_data.data:
@@ -427,9 +453,11 @@ class GeminiLiveBridge:
                             # que o tempo real — avisa pra ele limpar a fila (app antigo
                             # ignora este tipo de evento desconhecido, sem quebrar).
                             self._fechar_fala()
+                            self._reiniciar_turno_da_ia()
                             await self._enviar_ao_app({"type": "interrupted"})
                         if sc.turn_complete:
                             self._fechar_fala()
+                            self._reiniciar_turno_da_ia()
                             SessionManager.save(self.session)
                             await self._enviar_ao_app({"type": "turn_complete"})
 

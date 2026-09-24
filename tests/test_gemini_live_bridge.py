@@ -478,6 +478,113 @@ async def teste_queda_dupla_do_websocket_nao_deixa_excecao_sem_recolher():
     print("OK  - queda dupla do websocket (receber+enviar) não deixa exceção sem recolher")
 
 
+def _catalogo_de_teste():
+    """Instala um catálogo pequeno no AIService e devolve o valor anterior para restaurar."""
+    anterior = (AIService._product_obj_cache, AIService._restaurant_name_by_product_id,
+                AIService._restaurant_plan_by_product_id)
+    itens = [(1, "Pizza de Calabresa", 15.0), (2, "Pizza Napolitana", 20.0), (3, "Burrito Vegetariano", 10.0),
+             (4, "Shake Crocante", 5.0)]
+    AIService._product_obj_cache = [SimpleNamespace(
+        id=i, gid=f"G{i}", name=n, price=p, description="", image_url=None, restaurant_gid="R1", category="x",
+        is_available=True, is_surprise_box=False, serves_people=1) for i, n, p in itens]
+    AIService._restaurant_name_by_product_id = {i: "Rest" for i, _, _ in itens}
+    AIService._restaurant_plan_by_product_id = {}
+    return anterior
+
+
+def _restaurar_catalogo(anterior):
+    (AIService._product_obj_cache, AIService._restaurant_name_by_product_id,
+     AIService._restaurant_plan_by_product_id) = anterior
+
+
+def _chamada_sugerir_produtos(*gids):
+    return gtypes.LiveServerMessage(tool_call=gtypes.LiveServerToolCall(function_calls=[
+        gtypes.FunctionCall(id="fc1", name="sugerir_produtos", args={"gids": list(gids)})]))
+
+
+def _nomes_sugeridos(ws):
+    return [[p["name"] for p in e["products"]] for e in ws.enviados if e["type"] == "products_suggested"]
+
+
+async def teste_cards_sao_os_produtos_citados_na_fala_como_no_chat_de_texto():
+    """Mesma regra do chat por texto (HybridAIService._filter_mentioned_products): só vira card o
+    produto cujo NOME aparece no que a IA falou. Citar 2 → 2 cards; não citar nada → nenhum."""
+    anterior = _catalogo_de_teste()
+    try:
+        s1 = _SessaoLiveFake(_fala_ia("Olá, Bruno!"))
+        ws = _WSFake()
+        with _ponte_com([s1]):
+            tarefa = await _iniciar(_nova_ponte(), ws)
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 1)
+            assert _nomes_sugeridos(ws) == [], "saudação sem produtos não pode gerar cards"
+
+            s1.injetar(_fala_ia("Temos a Pizza de Calabresa", " e a Pizza Napolitana.", " Qual prefere?"))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 2)
+            ultimo = _nomes_sugeridos(ws)[-1]
+            assert set(ultimo) == {"Pizza de Calabresa", "Pizza Napolitana"}, ultimo
+            await _encerrar(ws, tarefa)
+    finally:
+        _restaurar_catalogo(anterior)
+    print("OK  - cards = produtos citados na fala (mesma regra do chat de texto)")
+
+
+async def teste_cards_aparecem_quando_a_ia_cita_e_nao_repetem():
+    anterior = _catalogo_de_teste()
+    try:
+        s1 = _SessaoLiveFake(_fala_ia("Olá!"))
+        ws = _WSFake()
+        with _ponte_com([s1]):
+            tarefa = await _iniciar(_nova_ponte(), ws)
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 1)
+            # fala em fragmentos: o card do Shake surge ao ser citado, e fragmentos seguintes sem
+            # produto novo NÃO reenviam a mesma lista
+            s1.injetar(_fala_ia("Claro,", " o Shake", " Crocante", " é uma ótima escolha,", " muito refrescante."))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 2)
+            assert _nomes_sugeridos(ws) == [["Shake Crocante"]], _nomes_sugeridos(ws)
+            await _encerrar(ws, tarefa)
+    finally:
+        _restaurar_catalogo(anterior)
+    print("OK  - o card aparece quando a IA cita o produto e a lista não é reenviada sem mudança")
+
+
+async def teste_ferramenta_sugerir_produtos_nao_gera_cards():
+    """`sugerir_produtos` é respondida à Gemini mas não decide mais os cards: se a IA a chama com GIDs
+    que NÃO cita na fala, nenhum card aparece (antes apareciam, sem limite)."""
+    anterior = _catalogo_de_teste()
+    try:
+        s1 = _SessaoLiveFake(_fala_ia("Olá!"))
+        ws = _WSFake()
+        with _ponte_com([s1]):
+            tarefa = await _iniciar(_nova_ponte(), ws)
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 1)
+            s1.injetar([_chamada_sugerir_produtos("G1", "G2", "G3", "G4")] + _fala_ia("Diga-me o que prefere."))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 2)
+            assert _nomes_sugeridos(ws) == [], f"a ferramenta não deveria gerar cards: {_nomes_sugeridos(ws)}"
+            await _encerrar(ws, tarefa)
+    finally:
+        _restaurar_catalogo(anterior)
+    print("OK  - a ferramenta sugerir_produtos não decide mais os cards")
+
+
+async def teste_cards_do_turno_anterior_nao_vazam_para_o_turno_seguinte():
+    anterior = _catalogo_de_teste()
+    try:
+        s1 = _SessaoLiveFake(_fala_ia("Olá!"))
+        ws = _WSFake()
+        with _ponte_com([s1]):
+            tarefa = await _iniciar(_nova_ponte(), ws)
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 1)
+            s1.injetar(_fala_ia("Temos o Burrito Vegetariano."))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 2)
+            s1.injetar(_fala_ia("E também o Shake Crocante."))   # 2º turno cita só o shake
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 3)
+            assert _nomes_sugeridos(ws) == [["Burrito Vegetariano"], ["Shake Crocante"]], _nomes_sugeridos(ws)
+            await _encerrar(ws, tarefa)
+    finally:
+        _restaurar_catalogo(anterior)
+    print("OK  - cada turno mostra só os produtos citados nele")
+
+
 if __name__ == "__main__":
     async def _todos():
         await teste_uma_unica_sessao_live_atravessa_varios_turnos()
@@ -491,6 +598,10 @@ if __name__ == "__main__":
         await teste_interrupcao_do_usuario_e_repassada_ao_app()
         await teste_watchdog_so_encerra_sem_nenhum_frame_do_app()
         await teste_queda_dupla_do_websocket_nao_deixa_excecao_sem_recolher()
+        await teste_cards_sao_os_produtos_citados_na_fala_como_no_chat_de_texto()
+        await teste_cards_aparecem_quando_a_ia_cita_e_nao_repetem()
+        await teste_ferramenta_sugerir_produtos_nao_gera_cards()
+        await teste_cards_do_turno_anterior_nao_vazam_para_o_turno_seguinte()
 
     asyncio.run(_todos())
     print("\nTodos os testes da ponte de voz passaram (sessão Live simulada — sem rede).")
