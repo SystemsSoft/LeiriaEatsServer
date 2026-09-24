@@ -6,6 +6,8 @@ com cache inteligente e monitoramento de uso (Otimizado para PT-PT)
 from google import genai
 from google.genai import types
 from typing import Dict, List, Optional
+import queue
+import threading
 import time
 from datetime import datetime
 from core.config import settings
@@ -187,6 +189,69 @@ class GeminiSalesAgent:
         ruins = [i for i in base
                  if agora - cls._chaves_com_falha.get((i, modelo), 0.0) < cls._JANELA_CHAVE_COM_FALHA_S]
         return [i for i in base if i not in ruins] + ruins
+
+    # Tempo máximo de espera pelo PRIMEIRO trecho de resposta de uma tentativa (chave+modelo). Medido em
+    # 24/09/2026: com o tier gratuito congestionado o 1º trecho levava ~6s (até 13s) e o timeout da
+    # requisição só dispara aos 10s (mínimo aceito pela API) — 25% dos turnos do chat em 24h bateram em
+    # ~20s e caíram no texto de emergência, com a chave paga (1º trecho em ~0,7s) esperando na fila. Sem
+    # 1º trecho neste prazo a tentativa é abandonada e passa-se à próxima chave. Numa chave saudável o
+    # 1º trecho mediano é ~0,6s (p90 ≈ 3s), então 3s só corta o rabo lento.
+    _TTFT_LIMITE_S = 3.0
+
+    @classmethod
+    def _stream_com_limite_ttft(cls, client, modelo: str, prompt: str, limite_s: float):
+        """generate_content_stream que desiste se o 1º trecho não chegar em `limite_s`.
+
+        O SDK só entrega um iterador bloqueante, então a chamada roda numa thread e os trechos vêm por
+        uma fila. Estourado o prazo levanta TimeoutError (o texto contém "timeout", que o tratamento de
+        erro do chamador já classifica como instabilidade transitória, igual ao timeout da requisição).
+        A requisição abandonada segue até o fim na thread, mas o resultado é descartado."""
+        fila: "queue.Queue" = queue.Queue()
+        parar = threading.Event()
+        FIM = object()
+
+        def trabalhador():
+            try:
+                stream = client.models.generate_content_stream(
+                    model=modelo,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=cls._system_instruction,
+                        temperature=0.7,
+                        top_p=0.9,
+                        top_k=40,
+                        max_output_tokens=250,
+                        response_modalities=['TEXT'],
+                        thinking_config=cls._thinking_config(modelo),
+                        http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
+                    )
+                )
+                for chunk in stream:
+                    if parar.is_set():
+                        return
+                    fila.put(("chunk", chunk.text))
+                fila.put(("fim", FIM))
+            except Exception as e:  # noqa: BLE001 — repassado ao chamador, que classifica o erro
+                fila.put(("erro", e))
+
+        threading.Thread(target=trabalhador, daemon=True, name="gemini-stream").start()
+        # Depois do 1º trecho vale só o timeout da própria requisição (a fila também é limitada a ele).
+        espera = limite_s
+        try:
+            while True:
+                try:
+                    tipo, valor = fila.get(timeout=espera)
+                except queue.Empty:
+                    raise TimeoutError(f"timeout: sem 1º trecho de resposta em {espera:.1f}s ({modelo})")
+                espera = cls._REQUEST_TIMEOUT_MS / 1000.0
+                if tipo == "erro":
+                    raise valor
+                if tipo == "fim":
+                    return
+                if valor:
+                    yield valor
+        finally:
+            parar.set()
 
     @staticmethod
     def _thinking_config(modelo: str):
@@ -464,7 +529,6 @@ REGRAS OBRIGATÓRIAS:
                 modelos_a_tentar = cls._ordenar_modelos([modelo, cls.MODELO_ESTAVEL, cls.MODELO_RESERVA])
 
                 for mod in modelos_a_tentar:
-                    falhas_de_modelo = 0  # 503/timeout neste modelo (sobrecarga é do MODELO, não da chave)
                     ordem_chaves = cls._ordenar_chaves(mod)
                     for posicao, key_index in enumerate(ordem_chaves):
                         client = cls._clients[key_index]
@@ -474,21 +538,8 @@ REGRAS OBRIGATÓRIAS:
                             yield cls._generate_fallback_response(user_message, context)
                             return
                         try:
-                            # Usar generate_content_stream
-                            stream = client.models.generate_content_stream(
-                                model=mod,
-                                contents=prompt,
-                                config=types.GenerateContentConfig(
-                                    system_instruction=cls._system_instruction,
-                                    temperature=0.7,
-                                    top_p=0.9,
-                                    top_k=40,
-                                    max_output_tokens=250,
-                                    response_modalities=['TEXT'],
-                                    thinking_config=cls._thinking_config(mod),
-                                    http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
-                                )
-                            )
+                            # Usar generate_content_stream (com limite de espera pelo 1º trecho)
+                            stream = cls._stream_com_limite_ttft(client, mod, prompt, cls._TTFT_LIMITE_S)
 
                             # Registrar uso (contamos como 1 req)
                             cls._usage_monitor.record_request()
@@ -497,10 +548,9 @@ REGRAS OBRIGATÓRIAS:
                             # proteção anti-tag do item 1.1) sem alterar o que é entregue
                             # ao cliente turno a turno — o yield por chunk continua igual.
                             full_response = ""
-                            for chunk in stream:
-                                if chunk.text:
-                                    full_response += chunk.text
-                                    yield chunk.text
+                            for texto in stream:
+                                full_response += texto
+                                yield texto
 
                             if full_response and "[[" not in full_response:
                                 cls._cache.set(cache_key, full_response)
@@ -535,15 +585,15 @@ REGRAS OBRIGATÓRIAS:
 
                             if (is_server_error or is_timeout_error) and not e_ultima_chave:
                                 motivo = "instável (503)" if is_server_error else f"não respondeu em {cls._REQUEST_TIMEOUT_MS}ms (timeout)"
-                                falhas_de_modelo += 1
-                                # "503 high demand" atinge o modelo inteiro: as outras chaves batem no
-                                # mesmo modelo sobrecarregado (cada uma custando até 10s de timeout). Depois
-                                # de 2 falhas assim, passa para o próximo modelo em vez de gastar o
-                                # orçamento do turno chave por chave (era isso que deixava o modelo de
-                                # reserva sem tempo de rodar).
-                                if falhas_de_modelo >= 2 and mod != modelos_a_tentar[-1]:
+                                # Sobrecarga ("503 high demand") atinge o MODELO inteiro. Só se considera o
+                                # modelo fora do ar quando a chave PAGA também falha: as gratuitas ficam
+                                # antes dela na fila (1ª, 2ª, paga) e falhar nelas só significa que o tier
+                                # gratuito está congestionado — a paga costuma responder em ~1s. Aí sim
+                                # passa para o próximo modelo, em vez de gastar o orçamento do turno chave
+                                # por chave.
+                                if key_index == len(cls._clients) - 1 and mod != modelos_a_tentar[-1]:
                                     cls._modelos_com_falha[mod] = time.time()
-                                    print(f"🚨 [Gemini Stream] Modelo {mod} {motivo} em {falhas_de_modelo} chaves. "
+                                    print(f"🚨 [Gemini Stream] Modelo {mod} {motivo} também na chave paga. "
                                           f"Tentando o próximo modelo ({modelos_a_tentar[modelos_a_tentar.index(mod)+1]})...")
                                     break
                                 print(f"⚠️ [Gemini Stream] Modelo {mod} {motivo} na chave {key_index+1}. Tentando próxima chave...")
