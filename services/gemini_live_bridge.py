@@ -65,7 +65,9 @@ REGRAS DA CHAMADA DE VOZ (prevalecem sobre as regras acima em caso de conflito):
   nunca volte a falar sem que o cliente tenha dito alguma coisa.
 - Se o cliente ficar em silêncio, fique em silêncio também: não repita a pergunta, não pergunte se
   ele ainda está na linha nem puxe conversa.
-- Só se apresente e cumprimente uma vez, na primeira fala da chamada."""
+- Cumprimente só uma vez, na primeira fala da chamada, e apenas com "Olá" (e o nome do cliente, se
+  souber). NÃO se apresente: nunca diga que é consultor de vendas, assistente, IA ou qualquer título —
+  nem nesta fala nem depois."""
 
 # Sem NENHUM frame de nenhum lado por esse tempo — sessão morta de vez, encerra tudo.
 # (Não existe mais um timeout de "sem resposta da Gemini": um usuário em silêncio
@@ -331,23 +333,27 @@ class GeminiLiveBridge:
             elif historico:
                 abertura = (
                     "IMPORTANTE — isto é o início de uma NOVA chamada de voz, mas este cliente já "
-                    "conversou connosco antes (resumo abaixo). Apresente-se rapidamente"
-                    + (f" e cumprimente o cliente pelo nome dele, {self.nome_usuario}," if self.nome_usuario else "")
-                    + " já nesta primeira fala. Depois pergunte no que pode ajudar (ou se quer "
+                    "conversou connosco antes (resumo abaixo). Cumprimente o cliente apenas com "
+                    + (f"\"Olá, {self.nome_usuario}!\"" if self.nome_usuario else "\"Olá!\"")
+                    + " — NÃO se apresente nem diga que é consultor de vendas ou assistente. Depois pergunte no que pode ajudar (ou se quer "
                     "continuar o pedido) e AGUARDE a resposta dele — não continue falando sozinho "
                     "nem faça mais perguntas antes disso. Não repita perguntas que o cliente já "
                     f"respondeu. Conversa anterior:\n{historico}"
                 )
             elif self.nome_usuario:
                 abertura = (
-                    "IMPORTANTE — isto é o início da chamada. Apresente-se rapidamente "
-                    f"e cumprimente o cliente pelo nome dele, {self.nome_usuario}, já "
-                    "nesta primeira fala. Depois pergunte no que pode ajudar e AGUARDE "
+                    "IMPORTANTE — isto é o início da chamada. Cumprimente o cliente apenas com "
+                    f"\"Olá, {self.nome_usuario}!\" já nesta primeira fala — NÃO se apresente e "
+                    "NÃO diga que é consultor de vendas nem assistente. Depois pergunte no que pode ajudar e AGUARDE "
                     "a resposta dele — não continue falando sozinho nem faça mais "
                     "perguntas antes disso."
                 )
             else:
-                abertura = "Olá!"
+                abertura = (
+                    "IMPORTANTE — isto é o início da chamada. Cumprimente o cliente apenas com "
+                    "\"Olá!\" — NÃO se apresente e NÃO diga que é consultor de vendas nem assistente. "
+                    "Depois pergunte no que pode ajudar e AGUARDE a resposta dele."
+                )
             await live_session.send_client_content(
                 turns=gtypes.Content(role="user", parts=[gtypes.Part(text=abertura)]),
                 turn_complete=fala_agora,
