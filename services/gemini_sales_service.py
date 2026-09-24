@@ -94,7 +94,22 @@ class GeminiSalesAgent:
     # estourar este orçamento, o turno vai direto para a resposta de fallback em vez de
     # continuar tentando — não muda o que é dito ao cliente no fallback (já existia),
     # só corta quanto tempo ele espera até recebê-lo.
-    _STREAM_DEADLINE_SECONDS = 10.0
+    #
+    # Ajustado de 10.0 para 20.0 junto com _REQUEST_TIMEOUT_MS abaixo — ver nota lá:
+    # o timeout mínimo aceite pela API já consome os 10s inteiros sozinho, então o
+    # orçamento do turno precisa sobrar espaço para pelo menos mais uma tentativa.
+    _STREAM_DEADLINE_SECONDS = 20.0
+
+    # Timeout por requisição individual (ms), aplicado via http_options do SDK. Sem
+    # isto, uma chave "travada" (sem devolver erro, só sem responder) prendia o loop
+    # de failover indefinidamente — o _STREAM_DEADLINE_SECONDS só é checado ENTRE
+    # tentativas, não interrompe uma chamada já em andamento.
+    #
+    # DEPLOY ANTERIOR (6000ms) QUEBROU 100% DAS CHAMADAS: a API do Gemini rejeita
+    # deadlines abaixo de 10s com 400 INVALID_ARGUMENT ("Manually set deadline 6s is
+    # too short. Minimum allowed deadline is 10s.") — todo turno caía direto no
+    # fallback estático, sem nenhuma resposta real da IA. 10000 é o mínimo aceite.
+    _REQUEST_TIMEOUT_MS = 10000
 
     # Plano de Performance, Fase 1.1 — só os N produtos mais relevantes (os primeiros do
     # pool, que já vem ordenado pelo ranking do E5 — ver hybrid_ai_service.py) recebem o
@@ -407,6 +422,7 @@ REGRAS OBRIGATÓRIAS:
                                     top_k=40,
                                     max_output_tokens=250,
                                     response_modalities=['TEXT'],
+                                    http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
                                 )
                             )
 
@@ -429,30 +445,40 @@ REGRAS OBRIGATÓRIAS:
 
                         except Exception as e_key:
                             erro_msg = str(e_key)
+                            erro_msg_lower = erro_msg.lower()
                             is_quota_error = "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg
                             is_server_error = "503" in erro_msg or "UNAVAILABLE" in erro_msg
+                            # Timeout do http_options (chave travada, sem erro explícito) —
+                            # tratado como instabilidade transitória, igual ao 503.
+                            is_timeout_error = "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
 
                             if is_quota_error and key_index < len(cls._clients) - 1:
                                 print(f"⚠️ [Gemini Stream] Chave {key_index+1} esgotou cota (429). Pulando para próxima...")
                                 continue
 
-                            if is_server_error:
+                            if is_server_error or is_timeout_error:
+                                motivo = "instável (503)" if is_server_error else f"não respondeu em {cls._REQUEST_TIMEOUT_MS}ms (timeout)"
                                 if key_index < len(cls._clients) - 1:
-                                    print(f"⚠️ [Gemini Stream] Modelo {mod} instável (503) na chave {key_index+1}. Tentando próxima chave...")
-                                    time.sleep(0.5)
+                                    print(f"⚠️ [Gemini Stream] Modelo {mod} {motivo} na chave {key_index+1}. Tentando próxima chave...")
+                                    if is_server_error:
+                                        time.sleep(0.5)
                                     continue
                                 elif mod != modelos_a_tentar[-1]:
-                                    print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves. Tentando modelo estável...")
+                                    print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves ({motivo}). Tentando modelo estável...")
                                     break # Sai do loop de chaves para tentar o próximo modelo
 
                             raise e_key # Se nada resolveu, sobe para o retry temporal de 1.5s
 
             except Exception as e:
                 erro_str = str(e)
-                # 503 (UNAVAILABLE) e 429 (RESOURCE_EXHAUSTED / cota estourada) são
+                # 503 (UNAVAILABLE), 429 (RESOURCE_EXHAUSTED / cota estourada) e timeout
+                # (chave travada, sem erro explícito — ver _REQUEST_TIMEOUT_MS) são
                 # transitórios e valem retry. Sem tratar 429, cota estourada caía direto
                 # no fallback genérico no meio de uma venda, sem nenhuma nova tentativa.
-                is_retryable = any(code in erro_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+                is_retryable = (
+                    any(code in erro_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+                    or "timed out" in erro_str.lower() or "timeout" in erro_str.lower()
+                )
                 tempo_restante = cls._STREAM_DEADLINE_SECONDS - (time.time() - turn_start)
                 if is_retryable and attempt < max_retries and tempo_restante > 0:
                     wait_time = min(1.5 * (attempt + 1), tempo_restante)
@@ -516,6 +542,7 @@ REGRAS OBRIGATÓRIAS:
                             top_k=40,
                             max_output_tokens=250,
                             response_modalities=['TEXT'],
+                            http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
                         )
                     )
                     # Registrar uso e sair do loop se sucesso
@@ -524,7 +551,12 @@ REGRAS OBRIGATÓRIAS:
                     break
                 except Exception as e_key:
                     erro_msg = str(e_key)
-                    if ("429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg) and key_index < len(cls._clients) - 1:
+                    erro_msg_lower = erro_msg.lower()
+                    is_transient = (
+                        "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg
+                        or "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
+                    )
+                    if is_transient and key_index < len(cls._clients) - 1:
                         print(f"⚠️ [Gemini] Chave {key_index+1} falhou. Tentando próxima... ({erro_msg[:60]})")
                         continue
                     raise e_key
@@ -592,6 +624,7 @@ REGRAS OBRIGATÓRIAS:
             top_k=40,
             max_output_tokens=250,
             tools=cls._TOOLS,
+            http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
         )
 
         acoes_executadas = []
@@ -629,7 +662,12 @@ REGRAS OBRIGATÓRIAS:
                     break # Sucesso total com este cliente
                 except Exception as e_key:
                     erro_msg = str(e_key)
-                    if ("429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg) and key_index < len(cls._clients) - 1:
+                    erro_msg_lower = erro_msg.lower()
+                    is_transient = (
+                        "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg
+                        or "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
+                    )
+                    if is_transient and key_index < len(cls._clients) - 1:
                         print(f"⚠️ [Gemini Tools] Chave {key_index+1} falhou. Tentando próxima... ({erro_msg[:60]})")
                         continue
                     raise e_key
@@ -870,6 +908,51 @@ Responda considerando TODO o contexto acima. Seja consultivo e natural."""
 
         products_str = ", ".join(product_list)
         return f"Temos disponível: {products_str}. Qual prefere?"
+
+    # Modelo de TTS avulso (texto → áudio, sem conversa/tools) — usado pra unificar a
+    # voz do app inteiro (chat normal, onboarding, sacola, perfil) com a MESMA voz da
+    # ligação ao vivo ("Aoede", ver gemini_live_bridge.py), em vez das vozes nativas
+    # do Android/iOS. Testado isoladamente antes de usar em produção: devolve PCM16
+    # mono 24kHz (mesmo formato do áudio da Live API — o app reaproveita o mesmo
+    # player). "gemini-3.8-flash-tts"/"-lite-tts" também funcionam mas devolvem WAV
+    # com cabeçalho (exigiria parsing extra no app); este devolve PCM cru direto.
+    TTS_MODEL = "models/gemini-3.1-flash-tts-preview"
+    TTS_VOICE = "Aoede"
+
+    @classmethod
+    def synthesize_speech(cls, text: str) -> Optional[bytes]:
+        """Sintetiza `text` em áudio PCM16 mono 24kHz com a voz padrão do app,
+        tentando as chaves configuradas em ordem (mesmo padrão de failover das
+        outras chamadas). Retorna None se todas falharem."""
+        if not cls.is_ready():
+            cls.initialize()
+        if not text.strip():
+            return None
+
+        config = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=cls.TTS_VOICE)
+                ),
+                # Sotaque de Portugal, não do Brasil — testado isoladamente: a API
+                # aceita "pt-PT" como language_code válido (sem erro de validação).
+                language_code="pt-PT",
+            ),
+            http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
+        )
+        for key_index, client in enumerate(cls._clients):
+            try:
+                response = client.models.generate_content(model=cls.TTS_MODEL, contents=text, config=config)
+                parts = response.candidates[0].content.parts
+                for part in parts:
+                    if part.inline_data and part.inline_data.data:
+                        return part.inline_data.data
+                return None
+            except Exception as e:
+                print(f"⚠️ [TTS] Chave {key_index+1} falhou: {type(e).__name__}: {e}")
+                continue
+        return None
 
     @classmethod
     def is_ready(cls) -> bool:

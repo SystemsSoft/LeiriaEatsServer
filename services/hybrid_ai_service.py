@@ -540,7 +540,19 @@ class HybridAIService:
             for gp in search_results.productResults:
                 if gp.id not in seen_ids_local: all_products.append(gp)
         else:
-            all_products = AIService._product_obj_cache if len(AIService._product_obj_cache) <= 50 else search_results.productResults
+            # Antes: catálogo pequeno (≤50) ignorava por completo o ranking do E5 e
+            # despejava todo o cache na sua ordem crua — a IA sempre via/sugeria os
+            # mesmos primeiros produtos, independente do que o usuário pedisse (bug:
+            # toda pergunta devolvia sempre os 3 mesmos itens). Agora os resultados
+            # relevantes do E5 vêm primeiro — são eles que definem o que aparece como
+            # sugestão — e o resto do catálogo só entra depois, como contexto extra.
+            e5_relevant = search_results.productResults
+            e5_ids = {p.id for p in e5_relevant}
+            other_products = (
+                [p for p in AIService._product_obj_cache if p.id not in e5_ids]
+                if len(AIService._product_obj_cache) <= 50 else []
+            )
+            all_products = e5_relevant + other_products
 
         candidate_pool = []
         seen_ids = set()
@@ -969,12 +981,19 @@ class HybridAIService:
                 if global_prod.id not in seen_ids_local:
                     all_products.append(global_prod)
         else:
-            # ⭐ MELHORIA: Em busca global, se o número de produtos total for pequeno,
-            # enviamos todos para a IA ter contexto completo.
+            # Antes: catálogo pequeno (≤50) ignorava o ranking do E5 e despejava tudo
+            # na ordem crua do cache — a IA sempre sugeria os mesmos primeiros
+            # produtos, não importa o que o usuário pedisse (bug: toda pergunta
+            # devolvia sempre "Caixa Surpresa, King Jr., Shake Crocante"). Agora os
+            # resultados relevantes do E5 vêm primeiro; o resto do catálogo só entra
+            # depois, como contexto extra pra IA, sem atropelar a relevância.
+            e5_relevant = search_results.productResults
+            e5_ids = {p.id for p in e5_relevant}
             if len(AIService._product_obj_cache) <= 50:
-                all_products = AIService._product_obj_cache
+                other_products = [p for p in AIService._product_obj_cache if p.id not in e5_ids]
             else:
-                all_products = search_results.productResults
+                other_products = []
+            all_products = e5_relevant + other_products
 
         # ⭐ NOVO: Unir resultados da busca com itens que já estão no carrinho
         # E também com produtos sugeridos na última interação (Memória de Sugestões)
