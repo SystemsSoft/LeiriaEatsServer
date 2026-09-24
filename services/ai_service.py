@@ -688,7 +688,22 @@ class AIService:
         cls._embeddings_products = embeddings_products
 
     @classmethod
-    def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto") -> SearchResponse:
+    def _limitar_por_plano(cls, resultados: list, limite: int) -> list:
+        """Mantém, em ordem de relevância, no máximo `limite` produtos de CADA plano de restaurante
+        (ESSENCE, SMART...). O corte global em 6 deixava só o plano que ranqueia melhor: numa pergunta
+        como "tem alguma pizza?" as 6 vagas iam todas para o ESSENCE e o SMART nunca chegava ao chat."""
+        contagem: dict = {}
+        saida = []
+        for item in resultados:
+            plano = (cls._restaurant_plan_by_product_id.get(item["obj"].id) or "").upper() or "SEM_PLANO"
+            if contagem.get(plano, 0) < limite:
+                contagem[plano] = contagem.get(plano, 0) + 1
+                saida.append(item)
+        return saida
+
+    @classmethod
+    def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto",
+                       limite_por_plano: Optional[int] = None) -> SearchResponse:
         if cls._data_cache is None:
             cls.reload_data(db)
 
@@ -817,7 +832,10 @@ class AIService:
         # Ordenar produtos pelo score fundido (RRF) — o corte por relevância (F5.1) já
         # foi aplicado acima, sobre o cosseno cru; aqui só falta truncar por quantidade.
         prod_results.sort(key=lambda x: x["score"], reverse=True)
-        prod_results = prod_results[:6]
+        # Padrão: os 6 mais relevantes no total. Com `limite_por_plano` (chat de IA): até esse número de
+        # cada plano, para "Melhores sugestões" (ESSENCE) e "Outras sugestões" (SMART) terem candidatos.
+        prod_results = (cls._limitar_por_plano(prod_results, limite_por_plano)
+                        if limite_por_plano else prod_results[:6])
 
         # Se detectou intenção de preço, ordenar produtos por preço
         if price_intent == "cheap":
@@ -869,7 +887,7 @@ class AIService:
 
             # Retornar sempre os top 6 produtos mais relevantes
             # O Gemini decide quais mencionar baseado no contexto
-            final_products = [item["obj"] for item in prod_results[:6]]
+            final_products = [item["obj"] for item in (prod_results if limite_por_plano else prod_results[:6])]
 
             # Adicionar quantidade ao primeiro produto
             if final_products:

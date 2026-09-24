@@ -511,7 +511,7 @@ class HybridAIService:
 
         start_time = time.time()
         if usar_e5:
-            search_results = AIService.process_search(user_query=user_message, db=db, scope="product")
+            search_results = AIService.process_search(user_query=user_message, db=db, scope="product", limite_por_plano=6)
         else:
             from schemas.models import SearchResponse
             search_results = SearchResponse(reply="", intent="skip_e5_menu_pequeno", restaurantResults=[], productResults=[])
@@ -732,6 +732,8 @@ class HybridAIService:
             # 1. Obter Sugestões (Mencionados no texto)
             # Nota: products_pool contém até 15-20 itens relevantes para a conversa
             suggested_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+            suggested_products = HybridAIService._completar_com_outras_sugestoes(
+                suggested_products, found_products, {p.id for p in search_results.productResults}, intent_type)
 
             # 2. Obter Detalhes do Carrinho (cartProducts)
             cart_products = []
@@ -934,7 +936,8 @@ class HybridAIService:
             search_results = AIService.process_search(
                 user_query=user_message,
                 db=db,
-                scope="product"
+                scope="product",
+                limite_por_plano=6
             )
         else:
             from schemas.models import SearchResponse
@@ -1251,6 +1254,8 @@ class HybridAIService:
             suggested_products = [pool_por_gid[g] for g in gids_sugeridos_fc if g in pool_por_gid]
         else:
             suggested_products = HybridAIService._filter_mentioned_products(ai_response, found_products)
+            suggested_products = HybridAIService._completar_com_outras_sugestoes(
+                suggested_products, found_products, {p.id for p in search_results.productResults}, intent_type)
 
         # 2. Obter Detalhes do Carrinho (cartProducts)
         cart_products = []
@@ -1355,6 +1360,27 @@ class HybridAIService:
             "order_confirmed": False,
             "restaurant_gid": session.restaurant_gid,
         }
+
+    @staticmethod
+    def _completar_com_outras_sugestoes(sugeridos: List[Dict], found_products: List[Dict],
+                                        ids_relevantes: set, intent_type: str, limite: int = 6) -> List[Dict]:
+        """"Outras sugestões" = produtos do plano SMART que a BUSCA achou relevantes para a pergunta,
+        mesmo que a IA não os cite pelo nome. Os cards eram só os produtos citados no texto, e a IA
+        cita os que a busca ranqueia primeiro — num restaurante ESSENCE com muitas pizzas, as 6 citações
+        iam todas para ele e as pizzas do restaurante SMART nunca apareciam ("tem alguma pizza?").
+
+        Só em pergunta de busca de produto e só se a IA já sugeriu algo (não cria cards em saudação nem
+        em pergunta de esclarecimento). Só entram produtos que passaram pelos filtros do turno
+        (found_products) E que vieram da busca (ids_relevantes) — nunca o resto do catálogo."""
+        if intent_type != "product_search" or not sugeridos:
+            return sugeridos
+        ja_sugeridos = {p["id"] for p in sugeridos}
+        extras = [
+            p for p in found_products
+            if p["id"] in ids_relevantes and p["id"] not in ja_sugeridos
+            and (p.get("restaurant_plan") or "").upper() == "SMART"
+        ]
+        return sugeridos + extras[:limite]
 
     @staticmethod
     def _filter_mentioned_products(ai_response: str, products: List[Dict]) -> List[Dict]:
