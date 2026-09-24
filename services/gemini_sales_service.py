@@ -162,18 +162,27 @@ class GeminiSalesAgent:
     _chaves_com_falha: Dict = {}
     _JANELA_CHAVE_COM_FALHA_S = 120.0
 
+    @staticmethod
+    def ordem_base_das_chaves(n: int) -> List[int]:
+        """Ordem de tentativa (índices de settings.GEMINI_API_KEYS, cuja ÚLTIMA é a paga): 1ª gratuita,
+        2ª gratuita, PAGA em terceiro, e as demais gratuitas só como reserva no fim. Usada pelo chat de
+        texto e pela ligação de voz (mesma ordem nos dois). Com ≤ 3 chaves fica a ordem natural."""
+        if n <= 3:
+            return list(range(n))
+        return [0, 1, n - 1] + list(range(2, n - 1))
+
     @classmethod
     def _ordenar_chaves(cls, modelo: str) -> List[int]:
-        """Ordem de tentativa das chaves: 1ª gratuita, PAGA (a última da lista), demais gratuitas — e
-        as que falharam há pouco para este modelo vão para o fim.
+        """Ordem de tentativa das chaves (ver ordem_base_das_chaves: 1ª e 2ª gratuitas, PAGA em terceiro,
+        demais gratuitas no fim) — e as que falharam há pouco para este modelo vão para o fim.
 
         Antes era a ordem do .env (4 gratuitas e a paga por último). Com o tier gratuito dando 503 e
         timeouts de 10s, o orçamento do turno (_STREAM_DEADLINE_SECONDS) acabava antes de a chave paga
         — a única saudável — ser tentada: em 24/09/2026 todo turno do chat caía no texto de emergência
-        (~21s) com a chave paga funcionando e nunca chamada. Agora, depois da 1ª falha, a paga é a
-        próxima (quando há mais de 2 chaves)."""
+        (~21s) com a chave paga funcionando e nunca chamada. Agora a paga é a 3ª tentada
+        (depois de 2 gratuitas)."""
         n = len(cls._clients)
-        base = list(range(n)) if n <= 2 else [0, n - 1] + list(range(1, n - 1))
+        base = cls.ordem_base_das_chaves(n)
         agora = time.time()
         ruins = [i for i in base
                  if agora - cls._chaves_com_falha.get((i, modelo), 0.0) < cls._JANELA_CHAVE_COM_FALHA_S]

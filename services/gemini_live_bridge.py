@@ -494,10 +494,14 @@ class GeminiLiveBridge:
         self.found_products = self._montar_pool_produtos()
 
         chaves = list(settings.GEMINI_API_KEYS)
+        # Mesma ordem do chat de texto: 1ª e 2ª gratuitas, PAGA em terceiro, demais gratuitas no fim
+        # (a paga é sempre a ÚLTIMA de settings.GEMINI_API_KEYS). O índice original vai no log.
+        ordem = GeminiSalesAgent.ordem_base_das_chaves(len(chaves))
         ultimo_erro = None
         try:
             for _volta in range(MAX_VOLTAS_PELAS_CHAVES):
-                for idx, key in enumerate(chaves):
+                for idx in ordem:
+                    key = chaves[idx]
                     label = f"chave[{idx}]" + (" (paga)" if idx == len(chaves) - 1 else " (gratuita)")
                     # v1alpha é exigido pela Live API para reconhecer campos de
                     # "setup" ainda em preview, como ProactivityConfig — sem isto a
