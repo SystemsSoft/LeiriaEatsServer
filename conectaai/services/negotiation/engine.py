@@ -13,6 +13,7 @@ from conectaai.core.config import settings
 from conectaai.models.sql_models import CommercialMandateDB, NegotiationDB, NegotiationTurnDB
 from conectaai.repositories.agreement_repo import AgreementRepository
 from conectaai.repositories.ai_call_log_repo import AiCallLogRepository
+from conectaai.repositories.conversation_repo import ConversationRepository
 from conectaai.repositories.mandate_repo import MandateRepository
 from conectaai.repositories.negotiation_repo import NegotiationRepository
 from conectaai.repositories.negotiation_turn_repo import NegotiationTurnRepository
@@ -23,6 +24,14 @@ from conectaai.services.negotiation.state_machine import can_transition
 
 _OTHER_ACTOR = {"company_agent": "creator_agent", "creator_agent": "company_agent"}
 _SIDE_OF_ACTOR = {"company_agent": "company", "creator_agent": "creator"}
+# Quem responde a cada jogada: sempre o AGENTE do lado oposto — inclusive quando
+# a jogada foi uma contraproposta de uma pessoa (human.py).
+_RESPONDER = {
+    "company_agent": "creator_agent",
+    "creator_agent": "company_agent",
+    "human_company": "creator_agent",
+    "human_creator": "company_agent",
+}
 
 
 def _now() -> datetime:
@@ -46,11 +55,37 @@ def _mandate_to_dict(mandate: CommercialMandateDB) -> Dict[str, Any]:
     }
 
 
-def _last_text_for(turns: List[NegotiationTurnDB], actor: str) -> str:
-    for turn in sorted(turns, key=lambda t: t.created_at, reverse=True):
-        if turn.actor == actor:
-            return turn.message_text
-    return ""
+def _side_of(actor: str) -> str:
+    """'company_agent' e 'human_company' -> 'company'; 'creator_agent' e 'human_creator' -> 'creator'."""
+    return "company" if "company" in actor else "creator"
+
+
+def _counterpart_text(db: Session, negotiation: NegotiationDB, turns: List[NegotiationTurnDB], side: str) -> str:
+    """O que o lado oposto disse por último: o texto da última jogada dele (agente OU pessoa)
+    mais as mensagens que a pessoa dele mandou no chat depois dessa jogada. Chega ao prompt
+    dentro do bloco de "texto da contraparte" (dado, nunca instrução — ver prompts.py)."""
+    other_side = "creator" if side == "company" else "company"
+    other_turns = sorted((t for t in turns if _side_of(t.actor) == other_side), key=lambda t: t.created_at)
+    last_turn = other_turns[-1] if other_turns else None
+    parts = [last_turn.message_text] if last_turn and last_turn.message_text else []
+
+    if negotiation.conversation_id:
+        conversation = ConversationRepository.get_by_id(db, negotiation.conversation_id)
+        other_sender = negotiation.creator_id if other_side == "creator" else negotiation.company_id
+        if conversation is not None:
+            since = last_turn.created_at if last_turn else None
+            chat = [
+                m.text
+                for m in conversation.messages
+                if m.sender_id == other_sender and m.text and (since is None or _naive(m.timestamp) > _naive(since))
+            ]
+            # o texto da própria contraproposta já vem espelhado no chat: não repete
+            parts.extend(t for t in chat[-3:] if t not in parts)
+    return "\n".join(parts)
+
+
+def _naive(moment: datetime) -> datetime:
+    return moment.replace(tzinfo=None) if moment.tzinfo else moment
 
 
 def _transition(db: Session, negotiation: NegotiationDB, to_state: str, *, reason: str = "") -> NegotiationDB:
@@ -158,7 +193,7 @@ def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
     all_turns = NegotiationTurnRepository.get_all_for_negotiation(db, negotiation.id)
     turns_this_round: List[NegotiationTurnDB] = [t for t in all_turns if t.round_no == negotiation.round_no]
 
-    if not turns_this_round:
+    if not all_turns:
         actor = "company_agent"
         # Checagem de impasse óbvio ANTES de qualquer chamada de IA — custo
         # zero, evita gastar uma chamada de LLM (e a latência de até
@@ -171,20 +206,20 @@ def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
                 return _transition(
                     db, negotiation, "impasse", reason="Os entregáveis dos dois mandatos não se cruzam (tipo ou quantidade)"
                 )
-    elif len(turns_this_round) == 1:
-        actor = _OTHER_ACTOR[turns_this_round[0].actor]
     else:
-        if negotiation.round_no + 1 >= negotiation.max_rounds:
-            return _transition(db, negotiation, "impasse", reason=f"Limite de {negotiation.max_rounds} rodadas atingido sem acordo")
-        negotiation = NegotiationRepository.update(db, negotiation, {"round_no": negotiation.round_no + 1})
-        actor = "company_agent"
+        if len(turns_this_round) >= 2:  # rodada completa: abre a próxima (ou encerra por limite)
+            if negotiation.round_no + 1 >= negotiation.max_rounds:
+                return _transition(db, negotiation, "impasse", reason=f"Limite de {negotiation.max_rounds} rodadas atingido sem acordo")
+            negotiation = NegotiationRepository.update(db, negotiation, {"round_no": negotiation.round_no + 1})
+        # Fala o agente do lado oposto ao da última jogada. Isso vale também depois de uma
+        # contraproposta humana (human.py), que não segue o "empresa abre, creator responde".
+        actor = _RESPONDER[all_turns[-1].actor]
 
     side = _SIDE_OF_ACTOR[actor]
     mandate = company_mandate if side == "company" else creator_mandate
     mandate_dict = _mandate_to_dict(mandate)
-    other_actor = _OTHER_ACTOR[actor]
 
-    counterpart_text = _last_text_for(all_turns, other_actor)
+    counterpart_text = _counterpart_text(db, negotiation, all_turns, side)
     current_offer = negotiation.current_offer or {}
 
     raw_turn, ai_call_id = _generate_turn(
@@ -277,17 +312,24 @@ def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
                 db, negotiation, waiting_state, reason=f"Valor acordado (R$ {price}) acima do limite de aprovação automática"
             )
 
-        agreement = AgreementRepository.create(
-            db,
-            {
-                "negotiation_id": negotiation.id,
-                "company_id": negotiation.company_id,
-                "creator_id": negotiation.creator_id,
-                "campaign_id": negotiation.campaign_id,
-                "terms": terms,
-                "total_value": price or 0,
-                "status": "awaiting_approval",
-            },
+        agreement_data = {
+            "negotiation_id": negotiation.id,
+            "company_id": negotiation.company_id,
+            "creator_id": negotiation.creator_id,
+            "campaign_id": negotiation.campaign_id,
+            "terms": terms,
+            "total_value": price or 0,
+            "status": "awaiting_approval",
+            "company_approved_at": None,
+            "creator_approved_at": None,
+        }
+        # Há um acordo por negociação (unique). Se uma contraproposta humana substituiu o
+        # anterior, o mesmo registro volta a valer com os termos novos.
+        existing = AgreementRepository.get_by_negotiation_id(db, negotiation.id)
+        agreement = (
+            AgreementRepository.update(db, existing, {**agreement_data, "rejected_by": "", "reject_reason": ""})
+            if existing is not None
+            else AgreementRepository.create(db, agreement_data)
         )
         negotiation = _transition(db, negotiation, "waiting_approval", reason="Acordo estruturado, aguardando aprovação dos dois lados")
         negotiation.agreement = agreement

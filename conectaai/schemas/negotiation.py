@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StartNegotiationRequest(BaseModel):
@@ -23,15 +23,48 @@ class StartNegotiationAsCreatorRequest(BaseModel):
 class NegotiationTurnResponse(BaseModel):
     id: str
     round_no: int
-    actor: str
+    actor: str  # company_agent | creator_agent | human_company | human_creator
     intent: str
     terms_after_policy: Dict[str, Any]
     policy_violations: List[str]
     message_text: str
+    # Preenchido quando o turno foi espelhado na conversa entre os usuários (contraproposta
+    # humana) — o app usa para não mostrar a mesma fala duas vezes.
+    message_id: Optional[str] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class NegotiationMessageResponse(BaseModel):
+    """Mensagem de chat entre a empresa e o creator (a conversa de "Conversas"),
+    exibida junto dos turnos na tela da negociação."""
+
+    id: str
+    sender_role: str  # company | creator
+    text: str
+    created_at: datetime
+
+
+class HumanMessageRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class CounterDeliverable(BaseModel):
+    content_type: str = Field(min_length=1, max_length=50)
+    quantity: int
+
+
+class CounterProposalRequest(BaseModel):
+    """Contraproposta feita por uma PESSOA (empresa ou creator). Só os termos
+    preenchidos mudam a oferta; o resto continua como está na mesa."""
+
+    text: Optional[str] = Field(default=None, max_length=1000)
+    price: Optional[float] = None
+    deadline_days: Optional[int] = None
+    exclusivity: Optional[bool] = None
+    deliverables: Optional[List[CounterDeliverable]] = None
 
 
 class NegotiationResponse(BaseModel):
@@ -51,6 +84,8 @@ class NegotiationResponse(BaseModel):
     outcome_reason: str
     agreement_id: Optional[str] = None
     turns: List[NegotiationTurnResponse] = []
+    # Só no detalhe (GET /negotiations/{id} e nas ações humanas); a lista vem sem, para não pesar.
+    messages: List[NegotiationMessageResponse] = []
     created_at: datetime
     updated_at: datetime
 

@@ -18,12 +18,16 @@ from conectaai.repositories.notification_repo import NotificationRepository
 from conectaai.schemas.negotiation import (
     AiCallSummary,
     AuditTurnResponse,
+    CounterProposalRequest,
+    HumanMessageRequest,
     NegotiationAuditResponse,
+    NegotiationMessageResponse,
     NegotiationResponse,
     RaiseAutoLimitRequest,
     StartNegotiationAsCreatorRequest,
     StartNegotiationRequest,
 )
+from conectaai.services.negotiation import human
 from conectaai.services.negotiation.runner import run_negotiation
 from conectaai.services.negotiation.state_machine import is_terminal
 
@@ -36,7 +40,25 @@ def _require_participant(negotiation, current_user: CurrentUser, my_id: str) -> 
         raise HTTPException(status_code=403, detail="Você não faz parte dessa negociação")
 
 
-def _to_response(negotiation) -> NegotiationResponse:
+def _messages_of(db: Session, negotiation) -> List[NegotiationMessageResponse]:
+    """As mensagens de chat entre a empresa e o creator desta negociação."""
+    if not negotiation.conversation_id:
+        return []
+    conversation = ConversationRepository.get_by_id(db, negotiation.conversation_id)
+    if conversation is None:
+        return []
+    return [
+        NegotiationMessageResponse(
+            id=m.id,
+            sender_role="company" if m.sender_id == negotiation.company_id else "creator",
+            text=m.text,
+            created_at=m.timestamp,
+        )
+        for m in conversation.messages
+    ]
+
+
+def _to_response(negotiation, messages=None) -> NegotiationResponse:
     return NegotiationResponse(
         id=negotiation.id,
         company_id=negotiation.company_id,
@@ -54,6 +76,7 @@ def _to_response(negotiation) -> NegotiationResponse:
         outcome_reason=negotiation.outcome_reason or "",
         agreement_id=negotiation.agreement.id if negotiation.agreement else None,
         turns=list(negotiation.turns),
+        messages=messages or [],
         created_at=negotiation.created_at,
         updated_at=negotiation.updated_at,
     )
@@ -286,7 +309,57 @@ def get_negotiation(negotiation_id: str, current_user: CurrentUser = Depends(get
         raise HTTPException(status_code=404, detail="Negociação não encontrada")
     my_id = self_id(db, current_user)
     _require_participant(negotiation, current_user, my_id)
-    return _to_response(negotiation)
+    return _to_response(negotiation, _messages_of(db, negotiation))
+
+
+@router.post("/{negotiation_id}/messages", response_model=NegotiationResponse)
+def send_negotiation_message(
+    negotiation_id: str,
+    data: HumanMessageRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A pessoa escreve para o outro usuário: a mensagem vai para a conversa entre os dois
+    (a de "Conversas"), avisa o outro lado e o agente dele a lê no próximo turno. Vale em
+    qualquer estado — é só conversa, não altera a negociação."""
+    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
+    if not negotiation:
+        raise HTTPException(status_code=404, detail="Negociação não encontrada")
+    _require_participant(negotiation, current_user, self_id(db, current_user))
+    try:
+        human.post_message(db, negotiation, sender_side=current_user.role, text=data.text)
+    except human.HumanActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    db.expire_all()
+    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
+    return _to_response(negotiation, _messages_of(db, negotiation))
+
+
+@router.post("/{negotiation_id}/counter", response_model=NegotiationResponse)
+def send_counter_proposal(
+    negotiation_id: str,
+    data: CounterProposalRequest,
+    background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Contraproposta da pessoa: vira um turno humano e reabre a conversa dos agentes — o
+    agente do OUTRO lado responde, dentro do mandato dele. Recusada (409) enquanto os
+    agentes estão falando."""
+    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
+    if not negotiation:
+        raise HTTPException(status_code=404, detail="Negociação não encontrada")
+    _require_participant(negotiation, current_user, self_id(db, current_user))
+    terms = data.model_dump(exclude={"text"}, exclude_none=True)
+    try:
+        negotiation = human.post_counter(db, negotiation, sender_side=current_user.role, text=data.text, terms=terms)
+    except human.HumanActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    if negotiation.state == "queued":
+        background_tasks.add_task(run_negotiation, negotiation.id)
+    db.expire_all()
+    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
+    return _to_response(negotiation, _messages_of(db, negotiation))
 
 
 @router.get("/{negotiation_id}/audit", response_model=NegotiationAuditResponse)

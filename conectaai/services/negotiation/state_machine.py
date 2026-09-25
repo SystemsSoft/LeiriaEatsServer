@@ -23,7 +23,7 @@ VALID_TRANSITIONS = {
     },
     "waiting_human_company": {"queued", "running", "rejected", "expired"},
     "waiting_human_creator": {"queued", "running", "rejected", "expired"},
-    "waiting_approval": {"agreed", "rejected", "expired"},
+    "waiting_approval": {"agreed", "rejected", "expired", "queued"},  # queued: contraproposta humana reabre a mesa
 }
 
 
