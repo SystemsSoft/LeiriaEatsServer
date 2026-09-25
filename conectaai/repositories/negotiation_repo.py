@@ -60,7 +60,13 @@ class NegotiationRepository:
             return None
 
         now = _now()
-        lease_free = negotiation.lease_expires_at is None or negotiation.lease_expires_at <= now
+        # A coluna é DateTime sem fuso (MySQL e SQLite devolvem datetime "naive"),
+        # mas o valor foi gravado a partir de _now() — sempre UTC. Comparar o
+        # naive direto com o aware levanta TypeError.
+        lease_at = negotiation.lease_expires_at
+        if lease_at is not None and lease_at.tzinfo is None:
+            lease_at = lease_at.replace(tzinfo=timezone.utc)
+        lease_free = lease_at is None or lease_at <= now
         if negotiation.state not in ("queued", "running") or not lease_free:
             db.rollback()
             return None

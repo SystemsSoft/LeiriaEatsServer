@@ -16,6 +16,7 @@ VALID_TRANSITIONS = {
         "waiting_human_company",
         "waiting_human_creator",
         "impasse",
+        "rejected",  # um dos agentes respondeu intent="reject" (engine.run_turn)
         "expired",
         "failed",
         "queued",  # lease perdida no meio, volta pra fila (ver runner.py)

@@ -59,6 +59,7 @@ def _drive_to_completion(negotiation_id: str) -> None:
             try:
                 negotiation = engine.run_turn(db, negotiation)
             except Exception as exc:  # noqa: BLE001 — nunca deixar uma exceção matar o loop sem registrar
+                db.rollback()  # a exceção pode ter deixado a sessão inválida (ex.: IntegrityError)
                 negotiation.error_count = (negotiation.error_count or 0) + 1
                 if negotiation.error_count >= max_errors:
                     negotiation.state = "failed"
@@ -67,6 +68,10 @@ def _drive_to_completion(negotiation_id: str) -> None:
                 db.commit()
                 if negotiation.state == "failed":
                     return
+                # Devolve o lease antes de tentar de novo — sem isto a próxima volta
+                # (e qualquer /resume) encontra a negociação "ocupada" por um turno
+                # que já morreu, e ela fica presa em `running` até o lease vencer.
+                NegotiationRepository.release_lease(db, negotiation)
                 continue
 
             if is_terminal(negotiation.state):

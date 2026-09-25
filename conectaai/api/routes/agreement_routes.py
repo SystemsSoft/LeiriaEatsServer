@@ -10,6 +10,7 @@ from conectaai.core.database import get_db
 from conectaai.core.security import CurrentUser, get_current_user
 from conectaai.models.sql_models import CampaignCreatorDB
 from conectaai.repositories.agreement_repo import AgreementRepository
+from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.repositories.notification_repo import NotificationRepository
@@ -60,6 +61,7 @@ def _finalize_if_both_approved(db: Session, agreement):
         if not exists:
             db.add(CampaignCreatorDB(campaign_id=agreement.campaign_id, creator_id=agreement.creator_id))
             db.commit()
+        CampaignRepository.mark_agreement_approved(db, agreement.campaign_id)
 
     agreement = AgreementRepository.update(db, agreement, {"status": "approved", "proposal_id": proposal.id})
 

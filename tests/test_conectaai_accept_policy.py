@@ -9,6 +9,11 @@ contraparte nunca ofereceu (ex.: catálogos disjuntos fechavam "1x Story" com um
 Cobre (1) as funções puras de policy.py e (2) engine.run_turn contra um SQLite em memória, com o
 Gemini substituído por turnos roteirizados — sem rede e sem gastar cota.
 
+Também cobre dois defeitos achados rodando o fluxo com o Gemini real: um agente que responde
+`reject` deixava a negociação presa em `running` (running -> rejected não existia na máquina de
+estados), e o caminho de erro do runner não devolvia o lease, então a volta seguinte estourava com
+"can't compare offset-naive and offset-aware datetimes" em acquire_lease.
+
 Execução (na raiz do repo do servidor):
     python3 tests/test_conectaai_accept_policy.py
 """
@@ -34,7 +39,7 @@ from conectaai.models import sql_models  # noqa: E402,F401
 from conectaai.repositories.mandate_repo import MandateRepository  # noqa: E402
 from conectaai.repositories.negotiation_repo import NegotiationRepository  # noqa: E402
 from conectaai.repositories.negotiation_turn_repo import NegotiationTurnRepository  # noqa: E402
-from conectaai.services.negotiation import engine, policy  # noqa: E402
+from conectaai.services.negotiation import engine, policy, runner  # noqa: E402
 from conectaai.services.negotiation.state_machine import is_terminal  # noqa: E402
 
 settings.GEMINI_API_KEYS = []  # sem chave: o agente determinístico é o padrão; os testes de LLM roteirizam _generate_turn
@@ -268,6 +273,48 @@ def teste_engine_agente_deterministico_fecha_acordo_valido_nos_dois_mandatos():
     tipos = {d["content_type"] for d in termos["deliverables"]}
     assert tipos == {"Reel"}, f"só Reel existe nos dois catálogos, veio {tipos}"
     print(f"OK  - engine: agentes determinísticos fecham R$ {termos['price']} só com o entregável comum (Reel)")
+
+
+def teste_engine_reject_encerra_a_negociacao_como_rejeitada():
+    db = _db()
+    empresa = _mandato(db, "company", "emp-f", ideal_price=1500, price_ceiling=3000)
+    creator = _mandato(db, "creator", "cre-f", ideal_price=2500, price_floor=1800)
+    n = _negociacao(db, empresa, creator)
+    rejeito = {"intent": "reject", "proposed_terms": {}, "message_template": "Não consigo fechar.", "rationale": "teste"}
+    _roteirizar(_oferta(1500, [{"content_type": "Reel", "quantity": 1}]), rejeito)
+    try:
+        n = _rodar(db, n)
+    finally:
+        engine._generate_turn = _original_generate_turn
+    assert n.state == "rejected", f"reject deveria encerrar como rejected, ficou {n.state}"
+    assert n.outcome == "rejected" and "creator" in n.outcome_reason
+    print("OK  - engine: reject de um agente encerra a negociação como rejected")
+
+
+def teste_runner_se_recupera_de_erro_e_libera_o_lease():
+    """O runner é o que roda em produção (BackgroundTasks): uma falha num turno não pode travar a negociação."""
+    db = _db()
+    empresa = _mandato(db, "company", "emp-g", ideal_price=1500, price_ceiling=3000)
+    creator = _mandato(db, "creator", "cre-g", ideal_price=2500, price_floor=1800)
+    n = _negociacao(db, empresa, creator)
+    chamadas = {"n": 0}
+
+    def falha_uma_vez(**kw):
+        chamadas["n"] += 1
+        if chamadas["n"] == 1:
+            raise RuntimeError("falha transitória do provedor")
+        return _original_generate_turn(**kw)
+
+    engine._generate_turn = falha_uma_vez
+    try:
+        runner._drive_to_completion(n.id)
+    finally:
+        engine._generate_turn = _original_generate_turn
+    db.expire_all()
+    n = NegotiationRepository.get_by_id(db, n.id)
+    assert n.state == "waiting_approval", f"deveria ter se recuperado e fechado, ficou {n.state} ({n.outcome_reason})"
+    assert n.error_count == 1 and n.lease_expires_at is None
+    print("OK  - runner: falha num turno é registrada, o lease é devolvido e a negociação continua até o fim")
 
 
 if __name__ == "__main__":

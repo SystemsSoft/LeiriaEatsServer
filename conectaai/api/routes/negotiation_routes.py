@@ -8,6 +8,7 @@ from conectaai.api.deps import self_id
 from conectaai.core.database import get_db
 from conectaai.core.security import CurrentUser, get_current_user, require_role
 from conectaai.repositories.ai_call_log_repo import AiCallLogRepository
+from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.conversation_repo import ConversationRepository
 from conectaai.repositories.creator_repo import CreatorRepository
@@ -200,6 +201,7 @@ def start_negotiation(
         raise HTTPException(status_code=400, detail="Essa negociação não pode ser iniciada agora")
 
     negotiation = NegotiationRepository.update(db, negotiation, {"state": "queued"})
+    CampaignRepository.mark_negotiation_started(db, negotiation.campaign_id)
     background_tasks.add_task(run_negotiation, negotiation.id)
     return _to_response(negotiation)
 
