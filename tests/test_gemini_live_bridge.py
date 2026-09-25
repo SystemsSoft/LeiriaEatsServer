@@ -141,6 +141,9 @@ class _WSFake:
     def mandar_audio(self):
         self._entrada.put_nowait({"type": "audio", "data": "AAAA"})
 
+    def mandar_texto(self, texto):
+        self._entrada.put_nowait({"type": "text", "text": texto})
+
     def desconectar(self):
         self._entrada.put_nowait(None)
 
@@ -585,6 +588,63 @@ async def teste_cards_do_turno_anterior_nao_vazam_para_o_turno_seguinte():
     print("OK  - cada turno mostra só os produtos citados nele")
 
 
+async def teste_pedido_escrito_na_ligacao_chega_a_ia_e_entra_no_historico():
+    """Tocar no "+" de um card na ligação manda "Adicionar N produto ao meu carrinho." como texto: a IA
+    recebe como fala do usuário (e responde na hora) e o pedido fica no histórico como as falas por áudio."""
+    s1 = _SessaoLiveFake(_fala_ia("Olá, Bruno!"))
+    ws = _WSFake()
+    bridge = _nova_ponte()
+    with _ponte_com([s1]):
+        tarefa = await _iniciar(bridge, ws)
+        await _esperar(lambda: ws.tipos().count("turn_complete") == 1)
+        ws.mandar_texto("Adicionar 2 Pizza de Calabresa ao meu carrinho.")
+        await _esperar(lambda: len(s1.client_contents) == 2, msg="o pedido escrito não chegou à Gemini")
+        texto, turn_complete = s1.client_contents[1]
+        assert texto == "Adicionar 2 Pizza de Calabresa ao meu carrinho." and turn_complete is True
+        assert {"role": "user", "content": "Adicionar 2 Pizza de Calabresa ao meu carrinho."} in bridge.session.history
+        ws.mandar_texto("   ")            # texto vazio é ignorado
+        await asyncio.sleep(0.2)
+        assert len(s1.client_contents) == 2
+        await _encerrar(ws, tarefa)
+    print("OK  - pedido escrito na ligação vai à IA como fala do usuário e fica no histórico")
+
+
+async def teste_cards_ficam_estaveis_ate_pedir_algo_fora_das_sugestoes():
+    """Mostrou 3 burritos, o usuário escolheu 1: os 3 continuam na tela. Só trocam quando a IA cita um
+    produto que NÃO está nos cards atuais (o usuário pediu outra coisa)."""
+    anterior = _catalogo_de_teste()
+    try:
+        s1 = _SessaoLiveFake(_fala_ia("Olá!"))
+        ws = _WSFake()
+        with _ponte_com([s1]):
+            tarefa = await _iniciar(_nova_ponte(), ws)
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 1)
+
+            s1.injetar(_fala_ia("Temos a Pizza de Calabresa,", " a Pizza Napolitana", " e o Burrito Vegetariano."))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 2)
+            assert set(_nomes_sugeridos(ws)[-1]) == {"Pizza de Calabresa", "Pizza Napolitana", "Burrito Vegetariano"}
+            enviados = len(_nomes_sugeridos(ws))
+
+            # o usuário escolhe um: a IA só cita ESSE — os 3 cards continuam (nenhum evento novo)
+            s1.injetar(_fala_ia("Adicionei o Burrito Vegetariano ao seu carrinho."))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 3)
+            assert len(_nomes_sugeridos(ws)) == enviados, "citar só um produto já sugerido não pode trocar os cards"
+
+            # cita dois já sugeridos: continua igual
+            s1.injetar(_fala_ia("Quer também a Pizza Napolitana ou a Pizza de Calabresa?"))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 4)
+            assert len(_nomes_sugeridos(ws)) == enviados
+
+            # agora pede algo FORA das sugestões (Shake): os cards são trocados
+            s1.injetar(_fala_ia("Temos o Shake Crocante."))
+            await _esperar(lambda: ws.tipos().count("turn_complete") == 5)
+            assert _nomes_sugeridos(ws)[-1] == ["Shake Crocante"], _nomes_sugeridos(ws)[-1]
+            await _encerrar(ws, tarefa)
+    finally:
+        _restaurar_catalogo(anterior)
+    print("OK  - cards ficam estáveis após escolher um; só trocam ao pedir algo fora das sugestões")
+
+
 if __name__ == "__main__":
     async def _todos():
         await teste_uma_unica_sessao_live_atravessa_varios_turnos()
@@ -602,6 +662,8 @@ if __name__ == "__main__":
         await teste_cards_aparecem_quando_a_ia_cita_e_nao_repetem()
         await teste_ferramenta_sugerir_produtos_nao_gera_cards()
         await teste_cards_do_turno_anterior_nao_vazam_para_o_turno_seguinte()
+        await teste_pedido_escrito_na_ligacao_chega_a_ia_e_entra_no_historico()
+        await teste_cards_ficam_estaveis_ate_pedir_algo_fora_das_sugestoes()
 
     asyncio.run(_todos())
     print("\nTodos os testes da ponte de voz passaram (sessão Live simulada — sem rede).")

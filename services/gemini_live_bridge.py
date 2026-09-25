@@ -131,10 +131,10 @@ class GeminiLiveBridge:
         # A IA já falou nesta ligação? Distingue INÍCIO de chamada (cumprimenta) de
         # RECONEXÃO no meio dela (retoma em silêncio) — ver _attempt_session.
         self._ia_ja_falou = False
-        # Texto que a IA já falou NO TURNO ATUAL e os produtos que ele já citou (ids, na ordem) — base
-        # dos cards da tela de ligação; ver _enviar_sugestoes_citadas.
+        # Texto que a IA já falou NO TURNO ATUAL — base dos cards da tela de ligação (ver
+        # _enviar_sugestoes_citadas) — e os produtos que estão nos cards AGORA (ids, na ordem).
         self._texto_ia_turno = ""
-        self._ids_citados_enviados: List[int] = []
+        self._ids_sugestoes_no_app: List[int] = []
 
     def _acumular_fala(self, papel: str, texto: str):
         """A Gemini entrega a transcrição em FRAGMENTOS (palavra a palavra na fala da IA).
@@ -156,25 +156,29 @@ class GeminiLiveBridge:
             self._fala_em_curso[p] = ""
 
     async def _enviar_sugestoes_citadas(self):
-        """Cards da tela de ligação = produtos cujo NOME aparece no que a IA falou no turno — a MESMA
-        regra do chat por texto (HybridAIService._filter_mentioned_products sobre a resposta), aplicada
-        à transcrição da fala. Antes os cards vinham da ferramenta `sugerir_produtos`, em que o modelo
-        escolhia livremente os GIDs (sem limite e sem relação com o que dizia). Roda a cada fragmento
-        de fala, então o card aparece assim que a IA cita o produto; só reenvia quando o conjunto muda,
-        e nunca envia lista vazia (os cards anteriores ficam até a IA citar outros)."""
+        """Cards da tela de ligação = produtos cujo NOME aparece no que a IA falou — a MESMA regra do chat
+        por texto (HybridAIService._filter_mentioned_products), aplicada à transcrição da fala. Roda a cada
+        fragmento, então o card surge assim que a IA cita o produto.
+
+        Os cards ficam ESTÁVEIS: só são trocados quando a IA cita algum produto que NÃO está nos cards
+        atuais (o cliente pediu outra coisa). Citar só produtos que já estão na tela — ex.: "Adicionei o
+        Burrito Vegetariano" depois de mostrar os 3 burritos — mantém os 3 (antes a lista era trocada
+        por só aquele um). Sem citação nenhuma também não mexe."""
         citados = HybridAIService._filter_mentioned_products(self._texto_ia_turno, self.found_products)
         ids = [p["id"] for p in citados]
-        if not ids or ids == self._ids_citados_enviados:
+        if not ids or ids == self._ids_sugestoes_no_app:
             return
-        self._ids_citados_enviados = ids
+        if self._ids_sugestoes_no_app and set(ids) <= set(self._ids_sugestoes_no_app):
+            return  # só repetiu produtos que já estão nos cards
+        self._ids_sugestoes_no_app = ids
         await self._enviar_ao_app({
             "type": "products_suggested",
             "products": self._produtos_sugeridos_para_app([p["gid"] for p in citados]),
         })
 
     def _reiniciar_turno_da_ia(self):
+        # Só o texto do turno recomeça; os cards atuais persistem entre turnos (ver acima).
         self._texto_ia_turno = ""
-        self._ids_citados_enviados = []
 
     def _montar_pool_produtos(self) -> List[Dict]:
         """Todo o catálogo (AIService._product_obj_cache) no mesmo formato de dict
@@ -474,13 +478,22 @@ class GeminiLiveBridge:
                             audio=gtypes.Blob(data=pcm, mime_type="audio/pcm;rate=16000")
                         )
                     elif tipo == "text":
-                        # Fallback de depuração/teste — o app de produção manda áudio,
-                        # mas um cliente de texto (nosso script de validação da Fase 1,
-                        # por exemplo) pode mandar isto diretamente.
-                        await live_session.send_client_content(
-                            turns=gtypes.Content(role="user", parts=[gtypes.Part(text=frame["text"])]),
-                            turn_complete=True,
-                        )
+                        # Pedido ESCRITO dentro da ligação: o app manda isto quando o usuário toca no "+" de
+                        # um card e escolhe a quantidade ("Adicionar 2 Pizza X ao meu carrinho.") — por baixo
+                        # dos panos é pedir o produto à IA. Entra como fala do usuário (turn_complete=True
+                        # faz a IA responder na hora, interrompendo o que estiver falando) e é gravado no
+                        # histórico como as falas por áudio — texto não passa pela transcrição de entrada,
+                        # então sem isto a IA perderia o pedido numa reconexão. (Também serve de fallback
+                        # de depuração para clientes de texto.)
+                        texto = (frame.get("text") or "").strip()
+                        if texto:
+                            self._acumular_fala("user", texto)
+                            self._fechar_fala()
+                            self._reiniciar_turno_da_ia()
+                            await live_session.send_client_content(
+                                turns=gtypes.Content(role="user", parts=[gtypes.Part(text=texto)]),
+                                turn_complete=True,
+                            )
 
             async def watchdog():
                 # Só verifica abandono de verdade (nem áudio do usuário chegando,
