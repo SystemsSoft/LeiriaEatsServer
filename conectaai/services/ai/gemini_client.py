@@ -8,7 +8,7 @@
 # por turno. A diferença deliberada: aqui sempre usamos response_schema, o
 # Koma usa tags de texto.
 #
-# Se não houver nenhuma GEMINI_API_KEY configurada, generate_json devolve
+# Se não houver nenhuma CONECTAAI_GEMINI_API_KEY configurada, generate_json devolve
 # None imediatamente (sem tentar rede) — o motor de negociação
 # (services/negotiation/engine.py) trata isso como "usar o agente
 # determinístico", nunca como erro fatal.

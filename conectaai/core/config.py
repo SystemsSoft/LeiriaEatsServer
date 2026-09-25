@@ -22,12 +22,15 @@ class ConectaAISettings:
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRES_MINUTES: int = int(os.getenv("CONECTAAI_JWT_EXPIRES_MINUTES", 60 * 24 * 7))  # 7 dias
 
-    # --- IA generativa (negociação entre agentes) — reaproveita a mesma variável
-    # de ambiente do Koma (GEMINI_API_KEY), mas aqui guardamos a lista inteira
-    # (não só a 1ª) para ter failover próprio entre chaves, isolado do processo
-    # do Koma. Sem nenhuma chave configurada, o módulo usa o agente
-    # determinístico (services/negotiation/policy.py) em vez do Gemini. ---
-    GEMINI_API_KEYS: list = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip()]
+    # --- IA generativa (negociação entre agentes, draft de campanha, embeddings) ---
+    # Chave PRÓPRIA do ConectaAI, criada à parte no Google AI Studio — separada da
+    # GEMINI_API_KEY do Koma, para que cota e faturamento de cada produto fiquem
+    # isolados. Aceita várias chaves separadas por vírgula (failover em
+    # services/ai/gemini_client.py). De propósito NÃO cai de volta na
+    # GEMINI_API_KEY do Koma: sem esta variável, o módulo usa o agente
+    # determinístico (services/negotiation/policy.py) em vez de gastar a cota do
+    # Koma sem ninguém perceber.
+    GEMINI_API_KEYS: list = [k.strip() for k in os.getenv("CONECTAAI_GEMINI_API_KEY", "").split(",") if k.strip()]
     GEMINI_MODEL: str = os.getenv("CONECTAAI_GEMINI_MODEL", "gemini-flash-lite-latest")
     GEMINI_EMBEDDING_MODEL: str = os.getenv("CONECTAAI_GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 
@@ -59,6 +62,8 @@ class ConectaAISettings:
             print("⚠️ AVISO: CONECTAAI_DB_USER/CONECTAAI_DB_PASS não configurados no .env")
         if not self.JWT_SECRET:
             print("⚠️ AVISO: CONECTAAI_JWT_SECRET não configurado no .env — usando valor inseguro de desenvolvimento")
+        if not self.GEMINI_API_KEYS:
+            print("⚠️ AVISO: CONECTAAI_GEMINI_API_KEY não configurado no .env — IA desativada (agente determinístico e busca por palavra-chave)")
 
 
 settings = ConectaAISettings()
