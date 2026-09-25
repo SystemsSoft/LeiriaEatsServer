@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Request, Header
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,7 @@ from core.database import get_db, SessionLocal
 from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB, SubOrderDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import OrderRequest, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest, SubOrderResponse, OrderItemResponse
+from services.ai_service import AIService
 from services.courier_notification_service import clear_dispatch_state
 
 router = APIRouter()
@@ -1482,8 +1483,21 @@ def _repassar_para_restaurantes(master: OrderDB, db: Session, pi: dict) -> None:
               f"€{sub.stripe_transfer_amount:.2f} (transfer {transfer.id})")
 
 
+def _recarregar_indice_da_ia():
+    """Recarrega o índice da IA com uma sessão PRÓPRIA (a da requisição já estará fechada quando a
+    tarefa em segundo plano rodar). reload_data leva ~30s — por isso roda fora da requisição."""
+    db = SessionLocal()
+    try:
+        AIService.reload_data(db)
+        print("🔄 [Webhook] Índice da IA recarregado após mudança no estado de pagamento de um restaurante")
+    except Exception as e:  # noqa: BLE001
+        print(f"❌ [Webhook] Falha ao recarregar o índice da IA: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/stripe-webhook")
-async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
+async def stripe_webhook(request: Request, background_tasks: BackgroundTasks, stripe_signature: str = Header(None)):
     payload = await request.body()
 
     print(f"🔔 Webhook recebido. Signature: {stripe_signature[:20] if stripe_signature else 'None'}...")
@@ -1773,12 +1787,21 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
             ).first()
 
             if restaurant:
+                estava_completo = bool(restaurant.stripe_onboarding_completed)
                 restaurant.stripe_onboarding_completed = is_complete
                 if is_complete and restaurant.status != "ACTIVE":
                     restaurant.status = "ACTIVE"
                     restaurant.license = "ATIVO"  # Sincroniza o campo license
                     print(f"✅ Restaurante {restaurant.id} ({restaurant.name}) → status=ACTIVE, license=ATIVO")
                 db.commit()
+
+                # A IA só oferece produtos de restaurantes com pagamento apto (AIService.
+                # _restaurantes_aptos_pagamento, montado NA INDEXAÇÃO). Sem recarregar o índice aqui o
+                # restaurante que acabou de concluir o cadastro continuava invisível no chat até o
+                # próximo reload (o dominos ficou horas sem aparecer nas sugestões). O check-status
+                # manual já recarregava; o webhook, que é o caminho normal, não.
+                if estava_completo != is_complete:
+                    background_tasks.add_task(_recarregar_indice_da_ia)
 
             # Verifica se é uma conta de driver
             driver = db.query(DriverDB).filter(
