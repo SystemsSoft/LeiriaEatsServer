@@ -116,6 +116,19 @@ def _generate_turn(*, mandate_dict: Dict[str, Any], side: str, round_no: int, co
     return fallback, None
 
 
+def _accept_as_counter_offer(mandate_dict: Dict[str, Any], current_offer: Dict[str, Any], problems: List[str]) -> Dict[str, Any]:
+    """Turno (no formato de NegotiationTurnOutput) que substitui um accept
+    inválido: a mesma oferta, reduzida ao que o mandato de quem responde permite."""
+    proposed = policy.conform_offer(mandate_dict, current_offer)
+    template = "Não consigo fechar exatamente assim. Posso fazer {price}" + (" com {deliverables}" if proposed.get("deliverables") else "") + "."
+    return {
+        "intent": "counter_offer" if current_offer.get("price") is not None else "offer",
+        "proposed_terms": proposed,
+        "message_template": template,
+        "rationale": f"Accept convertido em contraproposta: a oferta atual não cabe no mandato ({', '.join(problems)}).",
+    }
+
+
 def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
     if negotiation.state not in ("queued", "running"):
         return negotiation
@@ -150,10 +163,14 @@ def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
         # Checagem de impasse óbvio ANTES de qualquer chamada de IA — custo
         # zero, evita gastar uma chamada de LLM (e a latência de até
         # dezenas de segundos) para descobrir que os mandatos não se cruzam.
-        if negotiation.round_no == 0 and policy.counterparty_gap_is_unbridgeable(
-            _mandate_to_dict(company_mandate), _mandate_to_dict(creator_mandate)
-        ):
-            return _transition(db, negotiation, "impasse", reason="Teto da empresa é menor que o piso do creator")
+        if negotiation.round_no == 0:
+            company_dict, creator_dict = _mandate_to_dict(company_mandate), _mandate_to_dict(creator_mandate)
+            if policy.counterparty_gap_is_unbridgeable(company_dict, creator_dict):
+                return _transition(db, negotiation, "impasse", reason="Teto da empresa é menor que o piso do creator")
+            if policy.deliverable_catalogs_are_disjoint(company_dict, creator_dict):
+                return _transition(
+                    db, negotiation, "impasse", reason="Os entregáveis dos dois mandatos não se cruzam (tipo ou quantidade)"
+                )
     elif len(turns_this_round) == 1:
         actor = _OTHER_ACTOR[turns_this_round[0].actor]
     else:
@@ -180,19 +197,50 @@ def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
     )
 
     proposed_terms = {k: v for k, v in (raw_turn.get("proposed_terms") or {}).items() if v is not None}
-    policy_result = policy.apply(mandate_dict, previous_terms=current_offer, proposed_terms=proposed_terms)
-
-    if policy_result.is_degenerate:
-        waiting_state = "waiting_human_company" if side == "company" else "waiting_human_creator"
-        return _transition(
-            db,
-            negotiation,
-            waiting_state,
-            reason=f"Proposta do agente {side} ficou fora do mandato: {', '.join(policy_result.violations) or 'sem termos válidos'}",
-        )
-
     intent = raw_turn.get("intent", "counter_offer")
-    terms = policy_result.terms
+    waiting_state = "waiting_human_company" if side == "company" else "waiting_human_creator"
+
+    # Aceitar = fechar EXATAMENTE a oferta corrente da contraparte. Se ela não
+    # cabe no mandato de quem aceita, o accept é inválido e vira contraproposta
+    # (policy.apply só valida o que o agente propõe — um accept propõe quase
+    # nada, então sem isto passavam entregáveis/exclusividade/prazo fora do
+    # mandato e o preço era reescrito em silêncio, fechando um acordo que a
+    # contraparte nunca ofereceu).
+    conversion_notes: List[str] = []
+    if intent == "accept":
+        conversion_notes = policy.acceptance_violations(mandate_dict, current_offer)
+        if conversion_notes:
+            raw_turn = _accept_as_counter_offer(mandate_dict, current_offer, conversion_notes)
+            proposed_terms = raw_turn["proposed_terms"]
+            intent = raw_turn["intent"]
+
+    if intent == "accept":
+        terms = dict(current_offer)
+        turn_violations: List[str] = []
+    else:
+        policy_result = policy.apply(mandate_dict, previous_terms=current_offer, proposed_terms=proposed_terms)
+
+        if policy_result.is_degenerate:
+            return _transition(
+                db,
+                negotiation,
+                waiting_state,
+                reason=f"Proposta do agente {side} ficou fora do mandato: {', '.join(policy_result.violations) or 'sem termos válidos'}",
+            )
+
+        terms = policy_result.terms
+        turn_violations = conversion_notes + policy_result.violations
+        if conversion_notes and policy.acceptance_violations(mandate_dict, terms):
+            # Nem a contraproposta ajustada cabe no mandato (ex.: campo não
+            # negociável) — não publica uma oferta que o próprio lado não pode
+            # cumprir; devolve a decisão ao humano.
+            return _transition(
+                db,
+                negotiation,
+                waiting_state,
+                reason=f"O agente {side} não conseguiu montar uma contraproposta dentro do mandato: {', '.join(conversion_notes)}",
+            )
+
     price = terms.get("price")
     auto_limit = mandate_dict.get("auto_approve_limit") or 0
     needs_human_review = intent == "accept" and auto_limit > 0 and price is not None and price > auto_limit
@@ -208,7 +256,7 @@ def run_turn(db: Session, negotiation: NegotiationDB) -> NegotiationDB:
             "intent": intent,
             "proposed_terms": proposed_terms,
             "terms_after_policy": terms,
-            "policy_violations": policy_result.violations,
+            "policy_violations": turn_violations,
             "rationale": raw_turn.get("rationale", ""),
             "message_text": message_text,
             "ai_call_id": ai_call_id,
