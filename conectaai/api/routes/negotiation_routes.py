@@ -1,7 +1,13 @@
 # Arquivo: conectaai/api/routes/negotiation_routes.py
+#
+# Negociação 100% entre pessoas — a empresa e o creator escrevem um para o
+# outro (mensagens e contrapropostas, services/negotiation/human.py) até
+# alguém aceitar a oferta na mesa. Não existe agente de IA aqui: a IA do
+# ConectaAI faz só a busca semântica que trouxe os dois um ao outro (ver
+# services/matching_service.py).
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from conectaai.api.deps import self_id
@@ -23,12 +29,10 @@ from conectaai.schemas.negotiation import (
     NegotiationAuditResponse,
     NegotiationMessageResponse,
     NegotiationResponse,
-    RaiseAutoLimitRequest,
     StartNegotiationAsCreatorRequest,
     StartNegotiationRequest,
 )
 from conectaai.services.negotiation import human
-from conectaai.services.negotiation.runner import run_negotiation
 from conectaai.services.negotiation.state_machine import is_terminal
 
 router = APIRouter(prefix="/negotiations", tags=["Negociações"])
@@ -82,6 +86,24 @@ def _to_response(negotiation, messages=None) -> NegotiationResponse:
     )
 
 
+def _open_conversation(db: Session, *, company, creator, campaign_id, objective: str, opener_id: str, invitee) -> str:
+    """Abre (ou reaproveita) a conversa entre os dois e manda a mensagem que
+    inicia a negociação — sempre manual, sempre via chat."""
+    conversation = ConversationRepository.get_or_create(
+        db, creator_id=creator.id, company_id=company.id, campaign_id=campaign_id, campaign_name=objective or ""
+    )
+    ConversationRepository.add_message(db, conversation, opener_id, f"Olá! Temos uma oportunidade: {objective or 'uma parceria'}.")
+    if invitee is not None:
+        NotificationRepository.create(
+            db,
+            user_id=invitee.user_id,
+            type_="proposal",
+            title="Nova oportunidade",
+            message=f"Quer falar sobre {objective or 'uma parceria'}.",
+        )
+    return conversation.id
+
+
 @router.post("", response_model=NegotiationResponse, status_code=201)
 def create_negotiation(
     data: StartNegotiationRequest,
@@ -94,50 +116,21 @@ def create_negotiation(
 
     company_mandate = MandateRepository.get_by_id(db, data.company_mandate_id)
     if not company_mandate or company_mandate.owner_id != company.id or not company_mandate.active:
-        raise HTTPException(status_code=400, detail="Mandato da empresa inválido ou inativo")
+        raise HTTPException(status_code=400, detail="Detalhes da campanha/proposta inválidos")
 
     creator = CreatorRepository.get_by_id(db, data.creator_id)
     if not creator:
         raise HTTPException(status_code=404, detail="Creator não encontrado")
 
-    conversation = ConversationRepository.get_or_create(
+    conversation_id = _open_conversation(
         db,
-        creator_id=creator.id,
-        company_id=company.id,
+        company=company,
+        creator=creator,
         campaign_id=data.campaign_id,
-        campaign_name=company_mandate.objective or "",
+        objective=company_mandate.objective,
+        opener_id=company.id,
+        invitee=creator,
     )
-
-    creator_mandate = MandateRepository.get_active_for_owner(db, owner_type="creator", owner_id=creator.id, campaign_id=None)
-
-    if creator_mandate is None:
-        # Creator sem opt-in: cai no fluxo manual de hoje — mensagem +
-        # notificação, sem negociação automática nenhuma.
-        ConversationRepository.add_message(
-            db, conversation, company.id, f"Olá! Temos uma oportunidade: {company_mandate.objective or 'uma campanha'}."
-        )
-        NotificationRepository.create(
-            db,
-            user_id=creator.user_id,
-            type_="proposal",
-            title="Nova oportunidade",
-            message=f"{company.name} quer falar sobre {company_mandate.objective or 'uma campanha'}.",
-        )
-        negotiation = NegotiationRepository.create(
-            db,
-            {
-                "company_id": company.id,
-                "creator_id": creator.id,
-                "campaign_id": data.campaign_id,
-                "conversation_id": conversation.id,
-                "company_mandate_id": company_mandate.id,
-                "creator_mandate_id": None,
-                "state": "waiting_human_creator",
-                "max_rounds": company_mandate.max_rounds or 4,
-                "outcome_reason": "Creator não tem um agente ativo — negociação segue manual pela conversa.",
-            },
-        )
-        return _to_response(negotiation)
 
     negotiation = NegotiationRepository.create(
         db,
@@ -145,13 +138,14 @@ def create_negotiation(
             "company_id": company.id,
             "creator_id": creator.id,
             "campaign_id": data.campaign_id,
-            "conversation_id": conversation.id,
+            "conversation_id": conversation_id,
             "company_mandate_id": company_mandate.id,
-            "creator_mandate_id": creator_mandate.id,
-            "state": "draft",
-            "max_rounds": min(company_mandate.max_rounds or 4, creator_mandate.max_rounds or 4),
+            "creator_mandate_id": None,
+            "state": "waiting_human_creator",
+            "max_rounds": company_mandate.max_rounds or 4,
         },
     )
+    CampaignRepository.mark_negotiation_started(db, negotiation.campaign_id)
     return _to_response(negotiation)
 
 
@@ -162,34 +156,29 @@ def create_negotiation_as_creator(
     db: Session = Depends(get_db),
 ):
     """Caminho inverso de `create_negotiation`: o creator encontrou uma
-    oportunidade pela busca semântica (`/ai/match/opportunities`, que
-    devolve `mandate_id`) e quer negociar a partir dela. Diferente do lado
-    da empresa, aqui o mandato do creator é obrigatório — é ele quem está
-    tomando a iniciativa, então precisa ter um agente ativo representando-o
-    (sem fallback manual: se não tem mandato, a orientação é ativar o
-    agente primeiro em /creator/agent, não abrir uma negociação capenga)."""
+    oportunidade pela busca semântica (`/ai/match/opportunities`) e quer
+    puxar conversa a partir dela — mensagem direta para a empresa, sem
+    mandato nenhum envolvido."""
     creator = CreatorRepository.get_by_user_id(db, current_user.user_id)
     if not creator:
         raise HTTPException(status_code=404, detail="Creator não encontrado")
 
-    creator_mandate = MandateRepository.get_active_for_owner(db, owner_type="creator", owner_id=creator.id, campaign_id=None)
-    if not creator_mandate:
-        raise HTTPException(status_code=400, detail="Ative seu agente (com um mandato) antes de negociar — veja /creator/agent")
-
     company_mandate = MandateRepository.get_by_id(db, data.company_mandate_id)
     if not company_mandate or not company_mandate.active or company_mandate.owner_type != "company":
-        raise HTTPException(status_code=400, detail="Mandato da empresa inválido ou inativo")
+        raise HTTPException(status_code=400, detail="Detalhes da campanha inválidos")
 
     company = CompanyRepository.get_by_id(db, company_mandate.owner_id)
     if not company:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
-    conversation = ConversationRepository.get_or_create(
+    conversation_id = _open_conversation(
         db,
-        creator_id=creator.id,
-        company_id=company.id,
+        company=company,
+        creator=creator,
         campaign_id=company_mandate.campaign_id,
-        campaign_name=company_mandate.objective or "",
+        objective=company_mandate.objective,
+        opener_id=creator.id,
+        invitee=company,
     )
 
     negotiation = NegotiationRepository.create(
@@ -198,83 +187,14 @@ def create_negotiation_as_creator(
             "company_id": company.id,
             "creator_id": creator.id,
             "campaign_id": company_mandate.campaign_id,
-            "conversation_id": conversation.id,
+            "conversation_id": conversation_id,
             "company_mandate_id": company_mandate.id,
-            "creator_mandate_id": creator_mandate.id,
-            "state": "draft",
-            "max_rounds": min(company_mandate.max_rounds or 4, creator_mandate.max_rounds or 4),
+            "creator_mandate_id": None,
+            "state": "waiting_human_creator",
+            "max_rounds": company_mandate.max_rounds or 4,
         },
     )
-    return _to_response(negotiation)
-
-
-@router.post("/{negotiation_id}/start", response_model=NegotiationResponse, status_code=202)
-def start_negotiation(
-    negotiation_id: str,
-    background_tasks: BackgroundTasks,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
-    if not negotiation:
-        raise HTTPException(status_code=404, detail="Negociação não encontrada")
-    my_id = self_id(db, current_user)
-    _require_participant(negotiation, current_user, my_id)
-    if negotiation.state != "draft" or not negotiation.creator_mandate_id:
-        raise HTTPException(status_code=400, detail="Essa negociação não pode ser iniciada agora")
-
-    negotiation = NegotiationRepository.update(db, negotiation, {"state": "queued"})
     CampaignRepository.mark_negotiation_started(db, negotiation.campaign_id)
-    background_tasks.add_task(run_negotiation, negotiation.id)
-    return _to_response(negotiation)
-
-
-@router.post("/{negotiation_id}/resume", response_model=NegotiationResponse, status_code=202)
-def resume_negotiation(
-    negotiation_id: str,
-    background_tasks: BackgroundTasks,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
-    if not negotiation:
-        raise HTTPException(status_code=404, detail="Negociação não encontrada")
-    my_id = self_id(db, current_user)
-    _require_participant(negotiation, current_user, my_id)
-    if is_terminal(negotiation.state):
-        return _to_response(negotiation)
-
-    if negotiation.state in ("waiting_human_company", "waiting_human_creator"):
-        negotiation = NegotiationRepository.update(db, negotiation, {"state": "queued", "error_count": 0})
-    background_tasks.add_task(run_negotiation, negotiation.id)
-    return _to_response(negotiation)
-
-
-@router.post("/{negotiation_id}/raise-limit", response_model=NegotiationResponse)
-def raise_auto_limit(
-    negotiation_id: str,
-    data: RaiseAutoLimitRequest,
-    background_tasks: BackgroundTasks,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Endpoint da tela 'Fora do mandato — precisa de você': o humano
-    autoriza um limite novo e a negociação é retomada."""
-    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
-    if not negotiation:
-        raise HTTPException(status_code=404, detail="Negociação não encontrada")
-    my_id = self_id(db, current_user)
-    _require_participant(negotiation, current_user, my_id)
-
-    mandate_id = negotiation.company_mandate_id if current_user.role == "company" else negotiation.creator_mandate_id
-    mandate = MandateRepository.get_by_id(db, mandate_id) if mandate_id else None
-    if not mandate:
-        raise HTTPException(status_code=400, detail="Mandato não encontrado para esse lado")
-    mandate.auto_approve_limit = data.new_auto_limit
-    db.commit()
-
-    negotiation = NegotiationRepository.update(db, negotiation, {"state": "queued", "error_count": 0})
-    background_tasks.add_task(run_negotiation, negotiation.id)
     return _to_response(negotiation)
 
 
@@ -319,9 +239,9 @@ def send_negotiation_message(
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """A pessoa escreve para o outro usuário: a mensagem vai para a conversa entre os dois
-    (a de "Conversas"), avisa o outro lado e o agente dele a lê no próximo turno. Vale em
-    qualquer estado — é só conversa, não altera a negociação."""
+    """A pessoa escreve para o outro usuário: a mensagem vai para a conversa
+    entre os dois (a de "Conversas") e avisa o outro lado. Vale em qualquer
+    estado — é só conversa, não altera a negociação."""
     negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
     if not negotiation:
         raise HTTPException(status_code=404, detail="Negociação não encontrada")
@@ -339,13 +259,11 @@ def send_negotiation_message(
 def send_counter_proposal(
     negotiation_id: str,
     data: CounterProposalRequest,
-    background_tasks: BackgroundTasks,
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Contraproposta da pessoa: vira um turno humano e reabre a conversa dos agentes — o
-    agente do OUTRO lado responde, dentro do mandato dele. Recusada (409) enquanto os
-    agentes estão falando."""
+    """Contraproposta da pessoa: preço/prazo/exclusividade/entregáveis que
+    ela mesma decide propor — sem mandato de agente para validar contra."""
     negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
     if not negotiation:
         raise HTTPException(status_code=404, detail="Negociação não encontrada")
@@ -355,8 +273,27 @@ def send_counter_proposal(
         negotiation = human.post_counter(db, negotiation, sender_side=current_user.role, text=data.text, terms=terms)
     except human.HumanActionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
-    if negotiation.state == "queued":
-        background_tasks.add_task(run_negotiation, negotiation.id)
+    db.expire_all()
+    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
+    return _to_response(negotiation, _messages_of(db, negotiation))
+
+
+@router.post("/{negotiation_id}/accept", response_model=NegotiationResponse)
+def accept_current_offer(
+    negotiation_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A pessoa aceita a oferta que está na mesa agora — fecha o acordo
+    (ainda pendente de aprovação formal dos dois lados)."""
+    negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
+    if not negotiation:
+        raise HTTPException(status_code=404, detail="Negociação não encontrada")
+    _require_participant(negotiation, current_user, self_id(db, current_user))
+    try:
+        negotiation = human.post_accept(db, negotiation, sender_side=current_user.role)
+    except human.HumanActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
     db.expire_all()
     negotiation = NegotiationRepository.get_by_id(db, negotiation_id)
     return _to_response(negotiation, _messages_of(db, negotiation))

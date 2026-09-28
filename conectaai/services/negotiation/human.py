@@ -1,24 +1,23 @@
 # Arquivo: conectaai/services/negotiation/human.py
 #
-# Intervenção HUMANA na negociação. Até aqui empresa e creator só podiam
-# autorizar um limite ou cancelar; agora podem escrever um para o outro:
+# Toda a negociação é feita pelas PESSOAS — não existe mais agente de IA
+# propondo, contrapropondo ou aceitando automaticamente (a IA do ConectaAI
+# só faz busca semântica: encontrar creators/oportunidades — ver
+# services/matching_service.py). Três ações:
 #
 # - MENSAGEM (texto livre) -> vai para a conversa entre os dois usuários (a de
-#   "Conversas"), avisa o outro lado, e o agente do outro lado a lê como
-#   contexto no próximo turno (engine._counterpart_text). Vale em qualquer
-#   estado — é só conversa, não muda a negociação.
+#   "Conversas") e avisa o outro lado. Vale em qualquer estado — é só
+#   conversa, não muda a negociação.
 #
 # - CONTRAPROPOSTA (preço/prazo/exclusividade/entregáveis + texto opcional) ->
-#   turno humano (`human_company` / `human_creator`) que reabre a conversa dos
-#   agentes: o agente do OUTRO lado responde, dentro do mandato dele. A pessoa
-#   tem autoridade sobre o próprio lado, então o mandato do agente dela NÃO
-#   limita a contraproposta (o mandato do outro lado continua limitando a
-#   resposta do agente adversário, e engine.py só aceita o que cabe no mandato
-#   de quem aceita). Não vale enquanto os agentes estão falando: o runner em
-#   background e uma escrita humana no mesmo instante disputariam a mesma linha.
+#   vira um turno (`human_company` / `human_creator`), substitui a oferta na
+#   mesa e avisa o outro lado. Sem mandato para checar — a pessoa decide por
+#   si mesma o que propor, e o outro lado decide se aceita.
 #
-# Este módulo só grava; quem enfileira o runner é a rota
-# (negotiation_routes.py), quando a negociação sai daqui em `queued`.
+# - ACEITAR a oferta corrente -> fecha o acordo (Agreement) com os termos que
+#   estão na mesa agora, indo para `waiting_approval` — os dois ainda
+#   precisam aprovar formalmente (agreement_routes.py), exatamente como
+#   qualquer acordo negociado nesta plataforma.
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -52,7 +51,9 @@ def _clean_text(text: Optional[str]) -> str:
 
 
 def _clean_terms(terms: Dict[str, Any]) -> Dict[str, Any]:
-    """Só os termos que a pessoa realmente preencheu, já validados."""
+    """Só os termos que a pessoa realmente preencheu, já validados (limites
+    de sanidade genéricos — não é mandato de ninguém, é só o que dá pra
+    aceitar como número/prazo/quantidade válidos)."""
     clean: Dict[str, Any] = {}
 
     price = terms.get("price")
@@ -144,8 +145,6 @@ def post_counter(
         raise HumanActionError(400, "Essa negociação já terminou — não dá mais para fazer contraproposta.")
     if negotiation.state == "draft":
         raise HumanActionError(400, "Essa negociação ainda não foi iniciada.")
-    if negotiation.state in ("running", "queued"):
-        raise HumanActionError(409, "Os agentes estão negociando agora — aguarde o turno terminar para fazer a sua contraproposta.")
 
     agreement = negotiation.agreement
     if agreement is not None and agreement.status == "approved":
@@ -180,25 +179,91 @@ def post_counter(
     )
 
     # Um acordo que aguardava aprovação deixa de valer: a mesa mudou.
-    if agreement is not None and agreement.status == "awaiting_approval":
-        AgreementRepository.update(
-            db, agreement, {"status": "superseded", "company_approved_at": None, "creator_approved_at": None}
-        )
-
-    # Só há quem responda se o outro lado tem agente. Sem agente do creator
-    # (fluxo manual), a contraproposta fica registrada e o creator responde
-    # pessoalmente — enfileirar aqui só faria o motor devolver "mandato ausente".
-    agents_on_both_sides = negotiation.creator_mandate_id is not None
     update: Dict[str, Any] = {
         "current_offer": offer,
         "last_actor": HUMAN_ACTOR[sender_side],
         "round_no": round_no,
-        "max_rounds": (negotiation.max_rounds or 4) + 1,  # a rodada humana não consome as dos agentes
         "error_count": 0,
     }
-    if agents_on_both_sides and can_transition(negotiation.state, "queued"):
-        update.update({"state": "queued", "lease_owner": None, "lease_expires_at": None})
+    if agreement is not None and agreement.status == "awaiting_approval":
+        AgreementRepository.update(
+            db, agreement, {"status": "superseded", "company_approved_at": None, "creator_approved_at": None}
+        )
+        if can_transition(negotiation.state, "waiting_human_creator"):
+            update["state"] = "waiting_human_creator"
+
     negotiation = NegotiationRepository.update(db, negotiation, update)
 
     _notify(db, other, title="Nova contraproposta", message=f"{sender_name}: {message_text[:140]}")
+    return negotiation
+
+
+def post_accept(db: Session, negotiation: NegotiationDB, *, sender_side: str) -> NegotiationDB:
+    """Fecha o acordo com a oferta que está na mesa agora — os termos que a
+    OUTRA pessoa propôs (ou os dois combinaram por mensagem). Quem aceita
+    formaliza o valor já visível para ela; não há mandato para validar contra,
+    a pessoa decide por si."""
+    if is_terminal(negotiation.state):
+        raise HumanActionError(400, "Essa negociação já terminou.")
+    if not can_transition(negotiation.state, "waiting_approval"):
+        raise HumanActionError(400, "Essa negociação ainda não pode ser fechada agora.")
+
+    offer = negotiation.current_offer or {}
+    price = offer.get("price")
+    if price is None:
+        raise HumanActionError(400, "Ainda não há nenhuma oferta na mesa para aceitar — envie uma contraproposta primeiro.")
+
+    sender_profile_id, other, sender_name = _sender_and_other(db, negotiation, sender_side)
+    message_text = f"{sender_name} aceitou a proposta de {prompts.render_message('{price}', offer)}."
+    mirrored = _mirror_to_conversation(db, negotiation, sender_profile_id, message_text)
+
+    has_turns = bool(NegotiationTurnRepository.get_all_for_negotiation(db, negotiation.id))
+    round_no = negotiation.round_no + 1 if has_turns else negotiation.round_no
+    NegotiationTurnRepository.create(
+        db,
+        {
+            "negotiation_id": negotiation.id,
+            "round_no": round_no,
+            "actor": HUMAN_ACTOR[sender_side],
+            "intent": "accept",
+            "proposed_terms": {},
+            "terms_after_policy": offer,
+            "policy_violations": [],
+            "rationale": "Oferta aceita pela própria pessoa.",
+            "message_text": message_text,
+            "message_id": mirrored.id,
+        },
+    )
+
+    agreement_data = {
+        "negotiation_id": negotiation.id,
+        "company_id": negotiation.company_id,
+        "creator_id": negotiation.creator_id,
+        "campaign_id": negotiation.campaign_id,
+        "terms": offer,
+        "total_value": price or 0,
+        "status": "awaiting_approval",
+        "company_approved_at": None,
+        "creator_approved_at": None,
+        "rejected_by": "",
+        "reject_reason": "",
+    }
+    existing = AgreementRepository.get_by_negotiation_id(db, negotiation.id)
+    agreement = (
+        AgreementRepository.update(db, existing, agreement_data) if existing is not None else AgreementRepository.create(db, agreement_data)
+    )
+
+    negotiation = NegotiationRepository.update(
+        db,
+        negotiation,
+        {
+            "state": "waiting_approval",
+            "last_actor": HUMAN_ACTOR[sender_side],
+            "round_no": round_no,
+            "outcome_reason": "Acordo fechado pelos dois usuários, aguardando aprovação formal.",
+        },
+    )
+    negotiation.agreement = agreement
+
+    _notify(db, other, title="Oferta aceita!", message=f"{sender_name} aceitou os termos — falta só aprovar o acordo.")
     return negotiation

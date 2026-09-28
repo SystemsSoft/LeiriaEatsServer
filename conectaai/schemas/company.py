@@ -3,6 +3,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel
 
+from conectaai.schemas.creator import PortfolioItem
+
 
 class CompanyUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -13,6 +15,9 @@ class CompanyUpdateRequest(BaseModel):
     size: Optional[str] = None
     avg_campaign_budget: Optional[float] = None
     desired_categories: Optional[List[str]] = None
+    bio: Optional[str] = None
+    avatar_url: Optional[str] = None
+    portfolio: Optional[List[PortfolioItem]] = None
 
 
 class CompanyResponse(BaseModel):
@@ -25,6 +30,9 @@ class CompanyResponse(BaseModel):
     size: str
     avg_campaign_budget: float
     desired_categories: List[str]
+    bio: str = ""
+    avatar_url: str = ""
+    portfolio: List[PortfolioItem] = []
 
     class Config:
         from_attributes = True

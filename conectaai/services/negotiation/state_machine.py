@@ -1,29 +1,22 @@
 # Arquivo: conectaai/services/negotiation/state_machine.py
 #
 # Estados possíveis de uma NegotiationDB.state e as transições válidas entre
-# eles. Não executa nada sozinho — é a tabela de referência que engine.py
-# consulta antes de gravar uma mudança de estado, pra impedir um bug de
-# pular etapa (ex.: ir direto de "running" para "agreed" sem passar por
-# "waiting_approval").
-TERMINAL_STATES = {"agreed", "rejected", "impasse", "expired", "failed"}
+# eles. Não executa nada sozinho — é a tabela de referência que human.py
+# consulta antes de gravar uma mudança de estado.
+#
+# Negociação é 100% humana (empresa e creator escrevem um para o outro —
+# ver services/negotiation/human.py); não há mais agente de IA propondo ou
+# aceitando automaticamente. Por isso o fluxo é simples: uma negociação
+# nasce em `waiting_human_creator` (aberta, os dois podem falar a qualquer
+# momento — o nome do estado é histórico, não significa "só o creator pode
+# agir"), alguém aceita a oferta corrente e ela vira `waiting_approval` até
+# os dois aprovarem o acordo formalmente.
+TERMINAL_STATES = {"agreed", "rejected", "expired", "failed"}
 
 VALID_TRANSITIONS = {
-    "draft": {"queued", "waiting_human_creator", "rejected"},
-    "queued": {"running", "rejected", "expired"},
-    "running": {
-        "running",  # próxima rodada
-        "waiting_approval",
-        "waiting_human_company",
-        "waiting_human_creator",
-        "impasse",
-        "rejected",  # um dos agentes respondeu intent="reject" (engine.run_turn)
-        "expired",
-        "failed",
-        "queued",  # lease perdida no meio, volta pra fila (ver runner.py)
-    },
-    "waiting_human_company": {"queued", "running", "rejected", "expired"},
-    "waiting_human_creator": {"queued", "running", "rejected", "expired"},
-    "waiting_approval": {"agreed", "rejected", "expired", "queued"},  # queued: contraproposta humana reabre a mesa
+    "draft": {"waiting_human_creator", "rejected"},
+    "waiting_human_creator": {"waiting_approval", "rejected", "expired"},
+    "waiting_approval": {"agreed", "rejected", "expired", "waiting_human_creator"},  # contraproposta reabre a mesa
 }
 
 

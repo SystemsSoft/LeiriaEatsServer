@@ -93,10 +93,6 @@ class NegotiationResponse(BaseModel):
         from_attributes = True
 
 
-class RaiseAutoLimitRequest(BaseModel):
-    new_auto_limit: float
-
-
 class AiCallSummary(BaseModel):
     model: str
     key_index: int

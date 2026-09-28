@@ -55,6 +55,9 @@ class CompanyDB(Base):
     size = Column(String(50), default="")
     avg_campaign_budget = Column(Float, default=0)
     desired_categories = Column(JSON, default=list)
+    bio = Column(Text, default="")
+    avatar_url = Column(String(500), default="")
+    portfolio = Column(JSON, default=list)
 
     user = relationship("UserDB", back_populates="company")
 
