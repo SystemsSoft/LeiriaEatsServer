@@ -36,3 +36,25 @@ class CompanyResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+def company_to_response(company) -> "CompanyResponse":
+    """Construído à mão (em vez de `model_validate`/`from_attributes` direto)
+    porque linhas de empresa criadas antes das colunas `bio`/`avatar_url`/
+    `portfolio` existirem podem trazer `NULL` do banco — os `or` abaixo
+    evitam que isso quebre a validação do Pydantic (que não aceita `None`
+    nesses campos, só `str`/`list`)."""
+    return CompanyResponse(
+        id=company.id,
+        name=company.name,
+        segment=company.segment or "",
+        city=company.city or "",
+        website=company.website or "",
+        instagram=company.instagram or "",
+        size=company.size or "",
+        avg_campaign_budget=company.avg_campaign_budget or 0,
+        desired_categories=company.desired_categories or [],
+        bio=company.bio or "",
+        avatar_url=company.avatar_url or "",
+        portfolio=company.portfolio or [],
+    )
