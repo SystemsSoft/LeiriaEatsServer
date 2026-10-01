@@ -31,6 +31,23 @@ class NegotiationRepository:
         return query.order_by(NegotiationDB.updated_at.desc()).all()
 
     @staticmethod
+    def get_open_between(
+        db: Session, *, company_id: str, creator_id: str, campaign_id: Optional[str]
+    ) -> Optional[NegotiationDB]:
+        """A negociação ainda em andamento entre os dois para esta campanha, se houver."""
+        return (
+            db.query(NegotiationDB)
+            .options(joinedload(NegotiationDB.turns), joinedload(NegotiationDB.agreement))
+            .filter(
+                NegotiationDB.company_id == company_id,
+                NegotiationDB.creator_id == creator_id,
+                NegotiationDB.campaign_id == campaign_id,
+                NegotiationDB.state.in_(["waiting_human_creator", "waiting_approval"]),
+            )
+            .first()
+        )
+
+    @staticmethod
     def create(db: Session, data: dict) -> NegotiationDB:
         negotiation = NegotiationDB(**data)
         db.add(negotiation)

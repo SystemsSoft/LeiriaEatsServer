@@ -80,3 +80,22 @@ def update_campaign(
     update_data = data.dict(exclude_unset=True, exclude={"creator_ids"})
     campaign = CampaignRepository.update(db, campaign, update_data, data.creator_ids)
     return _to_response(campaign)
+
+
+@router.post("/{campaign_id}/activate", response_model=CampaignResponse)
+def activate_campaign(
+    campaign_id: str,
+    current_user: CurrentUser = Depends(require_role("company")),
+    db: Session = Depends(get_db),
+):
+    """Ativação manual: a empresa decide que a campanha começou, sem esperar um acordo
+    formal. Exige ao menos um influenciador vinculado."""
+    company = _my_company(db, current_user)
+    campaign = CampaignRepository.get_by_id(db, campaign_id)
+    if not campaign or campaign.company_id != company.id:
+        raise HTTPException(status_code=404, detail="Campanha não encontrada")
+    try:
+        campaign = CampaignRepository.activate(db, campaign)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _to_response(campaign)

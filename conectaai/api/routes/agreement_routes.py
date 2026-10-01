@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from conectaai.api.deps import self_id
 from conectaai.core.database import get_db
 from conectaai.core.security import CurrentUser, get_current_user
-from conectaai.models.sql_models import CampaignCreatorDB
 from conectaai.repositories.agreement_repo import AgreementRepository
 from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.creator_repo import CreatorRepository
+from conectaai.repositories.negotiation_repo import NegotiationRepository
 from conectaai.repositories.notification_repo import NotificationRepository
 from conectaai.repositories.proposal_repo import ProposalRepository
 from conectaai.schemas.agreement import AgreementResponse, RejectAgreementRequest
@@ -53,17 +53,17 @@ def _finalize_if_both_approved(db: Session, agreement):
     proposal = ProposalRepository.update(db, proposal, {"status": "accepted"})
 
     if agreement.campaign_id:
-        exists = (
-            db.query(CampaignCreatorDB)
-            .filter(CampaignCreatorDB.campaign_id == agreement.campaign_id, CampaignCreatorDB.creator_id == agreement.creator_id)
-            .first()
-        )
-        if not exists:
-            db.add(CampaignCreatorDB(campaign_id=agreement.campaign_id, creator_id=agreement.creator_id))
-            db.commit()
+        CampaignRepository.link_creator(db, agreement.campaign_id, agreement.creator_id)
         CampaignRepository.mark_agreement_approved(db, agreement.campaign_id)
 
     agreement = AgreementRepository.update(db, agreement, {"status": "approved", "proposal_id": proposal.id})
+
+    # A mesa se encerra: sem isso a negociação ficaria "aguardando aprovação" para sempre.
+    negotiation = NegotiationRepository.get_by_id(db, agreement.negotiation_id)
+    if negotiation is not None:
+        NegotiationRepository.update(
+            db, negotiation, {"state": "agreed", "outcome": "agreed", "outcome_reason": "Acordo aprovado pelos dois lados."}
+        )
 
     company = CompanyRepository.get_by_id(db, agreement.company_id)
     creator = CreatorRepository.get_by_id(db, agreement.creator_id)
@@ -127,6 +127,12 @@ def reject_agreement(
     agreement = AgreementRepository.update(
         db, agreement, {"status": "rejected", "rejected_by": current_user.role, "reject_reason": data.reason}
     )
+
+    # Recusar o acordo não mata a negociação: a mesa reabre para uma nova contraproposta
+    # (a oferta anterior continua visível). Cancelar de vez é POST /negotiations/{id}/cancel.
+    negotiation = NegotiationRepository.get_by_id(db, agreement.negotiation_id)
+    if negotiation is not None and negotiation.state == "waiting_approval":
+        NegotiationRepository.update(db, negotiation, {"state": "waiting_human_creator"})
 
     other = CreatorRepository.get_by_id(db, agreement.creator_id) if current_user.role == "company" else CompanyRepository.get_by_id(db, agreement.company_id)
     if other:

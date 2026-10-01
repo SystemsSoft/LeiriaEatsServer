@@ -122,6 +122,20 @@ def create_negotiation(
     if not creator:
         raise HTTPException(status_code=404, detail="Creator não encontrado")
 
+    if data.campaign_id:
+        campaign = CampaignRepository.get_by_id(db, data.campaign_id)
+        if not campaign or campaign.company_id != company.id:
+            raise HTTPException(status_code=400, detail="Campanha inválida")
+        if company_mandate.campaign_id and company_mandate.campaign_id != data.campaign_id:
+            raise HTTPException(status_code=400, detail="Os detalhes informados são de outra campanha")
+
+    # Clicar duas vezes em "Negociar" não pode abrir duas mesas com o mesmo creator.
+    existing = NegotiationRepository.get_open_between(
+        db, company_id=company.id, creator_id=creator.id, campaign_id=data.campaign_id
+    )
+    if existing is not None:
+        return _to_response(existing)
+
     conversation_id = _open_conversation(
         db,
         company=company,

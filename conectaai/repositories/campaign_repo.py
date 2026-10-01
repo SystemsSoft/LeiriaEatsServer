@@ -81,5 +81,40 @@ class CampaignRepository:
         CampaignRepository._advance(db, campaign_id, from_statuses={"draft", "negotiating"}, to_status="active", to_stage="contract")
 
     @staticmethod
+    def link_creator(db: Session, campaign_id: str, creator_id: str) -> None:
+        """Vincula o creator à campanha (idempotente — a chave é campanha+creator)."""
+        exists = (
+            db.query(CampaignCreatorDB)
+            .filter(CampaignCreatorDB.campaign_id == campaign_id, CampaignCreatorDB.creator_id == creator_id)
+            .first()
+        )
+        if not exists:
+            db.add(CampaignCreatorDB(campaign_id=campaign_id, creator_id=creator_id))
+            db.commit()
+
+    @staticmethod
+    def mark_proposal_accepted(db: Session, campaign_id: Optional[str], creator_id: str) -> None:
+        """O creator aceitou uma proposta desta campanha: ele passa a fazer parte dela e a
+        campanha vira "ativa" — empresa (que enviou) e creator (que aceitou) já concordaram."""
+        if not campaign_id:
+            return
+        CampaignRepository.link_creator(db, campaign_id, creator_id)
+        CampaignRepository._advance(db, campaign_id, from_statuses={"draft", "negotiating"}, to_status="active", to_stage="contract")
+
+    @staticmethod
+    def activate(db: Session, campaign: CampaignDB) -> CampaignDB:
+        """Ativação manual pela empresa. Exige ao menos um creator vinculado e nunca regride:
+        campanha já ativa fica como está; concluída não reativa."""
+        if campaign.status == "completed":
+            raise ValueError("Essa campanha já foi concluída.")
+        if campaign.status == "active":
+            return campaign
+        if not campaign.creator_links:
+            raise ValueError("Vincule pelo menos um influenciador antes de ativar a campanha.")
+        CampaignRepository._advance(db, campaign.id, from_statuses={"draft", "negotiating"}, to_status="active", to_stage="contract")
+        db.refresh(campaign)
+        return campaign
+
+    @staticmethod
     def creator_ids_of(campaign: CampaignDB) -> List[str]:
         return [link.creator_id for link in campaign.creator_links]

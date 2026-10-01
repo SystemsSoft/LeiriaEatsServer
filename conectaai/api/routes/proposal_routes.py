@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from conectaai.core.database import get_db
 from conectaai.core.security import CurrentUser, get_current_user, require_role
+from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.repositories.notification_repo import NotificationRepository
@@ -37,7 +38,13 @@ def create_proposal(
     company = CompanyRepository.get_by_user_id(db, current_user.user_id)
     if not company:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    if data.campaign_id:
+        campaign = CampaignRepository.get_by_id(db, data.campaign_id)
+        if not campaign or campaign.company_id != company.id:
+            raise HTTPException(status_code=400, detail="Campanha inválida")
     proposal = ProposalRepository.create(db, company.id, data.dict())
+    # Proposta enviada é o primeiro passo da conversa comercial: tira a campanha de "rascunho".
+    CampaignRepository.mark_negotiation_started(db, data.campaign_id)
 
     creator = CreatorRepository.get_by_id(db, data.creator_id)
     if creator:
@@ -75,6 +82,9 @@ def update_proposal(
             raise HTTPException(status_code=403, detail="Essa proposta não é sua")
 
     updated = ProposalRepository.update(db, proposal, data.dict(exclude_unset=True))
+
+    if data.status == "accepted":
+        CampaignRepository.mark_proposal_accepted(db, updated.campaign_id, updated.creator_id)
 
     if data.status in ("accepted", "rejected"):
         company = CompanyRepository.get_by_id(db, updated.company_id)
