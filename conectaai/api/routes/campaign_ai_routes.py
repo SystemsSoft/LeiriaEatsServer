@@ -133,7 +133,9 @@ def confirm_campaign_draft(
         {
             "name": data.campaign_name,
             "budget": data.budget_total,
-            "status": "draft",
+            # Criada pela empresa e já confirmada na prévia: nasce ativa (aba "Ativas"), na etapa de
+            # Briefing — a etapa acompanha a negociação e o contrato depois.
+            "status": "active",
             "description": data.objective,
             "content_types": [d["content_type"] for d in deliverables],
         },

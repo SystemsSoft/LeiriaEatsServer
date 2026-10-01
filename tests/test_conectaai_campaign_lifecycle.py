@@ -80,6 +80,16 @@ def teste_avancos_nao_regridem_campanha_adiantada():
     print("OK  - campanha concluída/em produção não regride quando outra negociação começa ou outro acordo fecha")
 
 
+def teste_campanha_ativa_desde_o_inicio_tem_a_etapa_avancada():
+    db = dbmod.SessionLocal()
+    ativa = _campanha(db, status="active")
+    CampaignRepository.mark_negotiation_started(db, ativa.id)
+    db.expire_all()
+    ativa = CampaignRepository.get_by_id(db, ativa.id)
+    assert (ativa.status, ativa.current_stage) == ("active", "negotiation")
+    print("OK  - campanha ativa desde a criação: a etapa avança sem mudar o status")
+
+
 def teste_sem_campanha_nao_faz_nada():
     db = dbmod.SessionLocal()
     CampaignRepository.mark_negotiation_started(db, None)

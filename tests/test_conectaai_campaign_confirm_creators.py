@@ -95,6 +95,22 @@ def teste_confirm_recusa_creator_inexistente():
     print("OK  - creator inexistente: 400 e nenhuma campanha criada")
 
 
+def teste_campanha_confirmada_nasce_ativa_no_briefing_e_a_etapa_acompanha():
+    from conectaai.repositories.campaign_repo import CampaignRepository
+
+    db = dbmod.SessionLocal()
+    usuario, _ = _cenario(db)
+    resposta = _confirmar(db, usuario)
+    assert resposta.campaign.status == "active" and resposta.campaign.current_stage == "briefing"
+    # Mesmo ativa, a etapa avança com a negociação e o contrato (e o status não regride).
+    CampaignRepository.mark_negotiation_started(db, resposta.campaign.id)
+    assert CampaignRepository.get_by_id(db, resposta.campaign.id).current_stage == "negotiation"
+    CampaignRepository.mark_agreement_approved(db, resposta.campaign.id)
+    campanha = CampaignRepository.get_by_id(db, resposta.campaign.id)
+    assert (campanha.status, campanha.current_stage) == ("active", "contract")
+    print("OK  - confirm cria a campanha ativa (Briefing); etapa avança com negociação e acordo")
+
+
 def teste_confirm_sem_creators_continua_funcionando():
     db = dbmod.SessionLocal()
     usuario, _ = _cenario(db)

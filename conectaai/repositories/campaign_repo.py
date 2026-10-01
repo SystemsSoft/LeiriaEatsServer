@@ -55,17 +55,20 @@ class CampaignRepository:
 
     @staticmethod
     def _advance(db: Session, campaign_id: Optional[str], *, from_statuses: set, to_status: str, to_stage: str) -> None:
-        """Avança uma campanha de `from_statuses` para `to_status`/`to_stage` — e SÓ nesse caso.
-        Uma campanha que já está adiante (ativa, concluída, etapa mais à frente) nunca regride
-        porque outra negociação começou ou outro acordo fechou."""
+        """Avança uma campanha — e SÓ para frente. O status muda para `to_status` apenas se hoje está
+        em `from_statuses`; a etapa só anda se `to_stage` está adiante da atual. Uma campanha concluída
+        nunca é tocada, e nenhuma regride porque outra negociação começou ou outro acordo fechou.
+        A etapa avança mesmo com a campanha já ativa: ela nasce ativa (em "Briefing") e vai
+        acompanhando a negociação e o contrato."""
         if not campaign_id:
             return
         campaign = db.query(CampaignDB).filter(CampaignDB.id == campaign_id).first()
-        if campaign is None or campaign.status not in from_statuses:
+        if campaign is None or campaign.status == "completed":
             return
         stages = CampaignRepository._STAGES
         current = campaign.current_stage if campaign.current_stage in stages else "briefing"
-        campaign.status = to_status
+        if campaign.status in from_statuses:
+            campaign.status = to_status
         if stages.index(to_stage) > stages.index(current):
             campaign.current_stage = to_stage
         db.commit()
