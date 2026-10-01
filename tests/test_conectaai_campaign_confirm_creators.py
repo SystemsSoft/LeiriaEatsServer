@@ -73,11 +73,43 @@ def teste_confirm_salva_os_influenciadores_escolhidos():
     print("OK  - confirm grava os creators escolhidos em campaign_creators")
 
 
+def teste_confirm_envia_a_campanha_como_proposta_e_notifica_cada_creator():
+    from conectaai.repositories.proposal_repo import ProposalRepository
+
+    db = dbmod.SessionLocal()
+    usuario, ids = _cenario(db)
+    resposta = _confirmar(
+        db, usuario, creator_ids=ids, ideal_price=400, price_ceiling=500,
+        deliverables=[{"content_type": "Reel", "min_qty": 2, "max_qty": 3}],
+    )
+    for creator_id in ids:
+        propostas = ProposalRepository.get_all_for_user(db, company_id=None, creator_id=creator_id)
+        assert len(propostas) == 1, propostas
+        p = propostas[0]
+        assert p.campaign_id == resposta.campaign.id and p.status == "pending"
+        assert p.campaign_name == "Verão" and p.budget == 400 and p.quantity == 2 and p.content_type == "Reel"
+        assert p.deadline is not None
+        creator = db.query(sql_models.CreatorDB).filter_by(id=creator_id).one()
+        avisos = db.query(sql_models.NotificationDB).filter_by(user_id=creator.user_id).all()
+        assert len(avisos) == 1 and "Verão" in avisos[0].message
+    print("OK  - cada creator escolhido recebe a campanha como proposta pendente + notificação")
+
+
+def teste_confirm_sem_creators_nao_cria_proposta():
+    db = dbmod.SessionLocal()
+    usuario, _ = _cenario(db)
+    antes = db.query(sql_models.ProposalDB).count()
+    _confirmar(db, usuario)
+    assert db.query(sql_models.ProposalDB).count() == antes
+    print("OK  - sem creators escolhidos, nenhuma proposta é criada")
+
+
 def teste_confirm_ignora_duplicatas():
     db = dbmod.SessionLocal()
     usuario, ids = _cenario(db)
     resposta = _confirmar(db, usuario, creator_ids=[ids[0], ids[0], ids[1]])
     assert sorted(resposta.campaign.creator_ids) == sorted(ids)
+    assert db.query(sql_models.ProposalDB).filter_by(campaign_id=resposta.campaign.id).count() == 2
     print("OK  - creator repetido no pedido não quebra nem duplica o vínculo")
 
 

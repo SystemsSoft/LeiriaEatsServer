@@ -5,6 +5,8 @@
 # então confirma — momento em que CampaignDB e CommercialMandateDB são
 # criados de verdade. Mesmo princípio do resto do módulo: o LLM só propõe,
 # a confirmação humana é quem decide o que vira dado real.
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,8 @@ from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.repositories.mandate_repo import MandateRepository
+from conectaai.repositories.notification_repo import NotificationRepository
+from conectaai.repositories.proposal_repo import ProposalRepository
 from conectaai.schemas.ai import (
     CampaignDraftRequest,
     CampaignDraftResponse,
@@ -46,6 +50,39 @@ def _campaign_to_response(campaign: CampaignDB) -> CampaignResponse:
         current_stage=campaign.current_stage,
         content_types=campaign.content_types or [],
     )
+
+
+def _invite_creators(db: Session, company, campaign: CampaignDB, data: ConfirmCampaignDraftRequest, deliverables, creators) -> None:
+    if not creators:
+        return
+    content_type = ", ".join(d["content_type"] for d in deliverables)
+    quantity = sum(d.get("min_qty", 1) for d in deliverables) or 1
+    # Valor de referência que a empresa definiu (o ideal; na falta dele, o teto por creator).
+    budget = data.ideal_price if data.ideal_price > 0 else data.price_ceiling
+    deadline = (datetime.now(timezone.utc) + timedelta(days=30)).replace(tzinfo=None)
+    for creator in creators:
+        ProposalRepository.create(
+            db,
+            company.id,
+            {
+                "creator_id": creator.id,
+                "campaign_id": campaign.id,
+                "campaign_name": campaign.name,
+                "content_type": content_type,
+                "quantity": quantity,
+                "deadline": deadline,
+                "description": data.objective,
+                "budget": budget,
+                "message": f"{company.name} escolheu você para a campanha \"{campaign.name}\".",
+            },
+        )
+        NotificationRepository.create(
+            db,
+            user_id=creator.user_id,
+            type_="proposal",
+            title="Nova proposta de campanha",
+            message=f'{company.name} te convidou para a campanha "{campaign.name}".',
+        )
 
 
 @router.post("/draft", response_model=CampaignDraftResponse)
@@ -122,7 +159,7 @@ def confirm_campaign_draft(
     # creators que existem — id desconhecido é erro de quem chamou, não algo
     # a descartar em silêncio e deixar a empresa achando que o creator entrou.
     creator_ids = list(dict.fromkeys(data.creator_ids))
-    found = {c.id for c in CreatorRepository.get_many_by_ids(db, creator_ids)}
+    found = {c.id: c for c in CreatorRepository.get_many_by_ids(db, creator_ids)}
     unknown = [cid for cid in creator_ids if cid not in found]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Creator não encontrado: {', '.join(unknown)}")
@@ -167,6 +204,11 @@ def confirm_campaign_draft(
             "expires_at": None,
         },
     )
+
+    # Cada influenciador escolhido recebe a campanha como PROPOSTA (aparece em "Propostas de
+    # campanha" do lado dele, para aceitar ou recusar) e uma notificação. Sem isso o vínculo
+    # existia só no banco e o creator nunca ficava sabendo.
+    _invite_creators(db, company, campaign, data, deliverables, [found[cid] for cid in creator_ids])
 
     return ConfirmCampaignDraftResponse(
         campaign=_campaign_to_response(campaign),
