@@ -65,6 +65,9 @@ class ConfirmCampaignDraftRequest(BaseModel):
     ideal_price: float = 0
     price_ceiling: float = 0
     deliverables: List[DeliverableSpec] = []
+    # Influenciadores que a empresa já escolheu na prévia — viram o vínculo
+    # campanha↔creator (campaign_creators) desde a criação.
+    creator_ids: List[str] = []
     max_rounds: int = 4
     auto_approve_limit: float = 0
 

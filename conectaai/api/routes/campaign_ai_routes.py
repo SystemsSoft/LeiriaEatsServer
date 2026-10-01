@@ -15,6 +15,7 @@ from conectaai.models.sql_models import CampaignDB
 from conectaai.repositories.ai_call_log_repo import AiCallLogRepository
 from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
+from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.repositories.mandate_repo import MandateRepository
 from conectaai.schemas.ai import (
     CampaignDraftRequest,
@@ -117,6 +118,15 @@ def confirm_campaign_draft(
         DeliverableSpec(content_type="Reel", min_qty=1, max_qty=max(1, data.target_count)).dict()
     ]
 
+    # Sem duplicatas (a chave de campaign_creators é campanha+creator) e só
+    # creators que existem — id desconhecido é erro de quem chamou, não algo
+    # a descartar em silêncio e deixar a empresa achando que o creator entrou.
+    creator_ids = list(dict.fromkeys(data.creator_ids))
+    found = {c.id for c in CreatorRepository.get_many_by_ids(db, creator_ids)}
+    unknown = [cid for cid in creator_ids if cid not in found]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Creator não encontrado: {', '.join(unknown)}")
+
     campaign = CampaignRepository.create(
         db,
         company.id,
@@ -127,7 +137,7 @@ def confirm_campaign_draft(
             "description": data.objective,
             "content_types": [d["content_type"] for d in deliverables],
         },
-        [],
+        creator_ids,
     )
 
     mandate = MandateRepository.create(
