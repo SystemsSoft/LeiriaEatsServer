@@ -21,6 +21,20 @@ class ProposalRepository:
         return db.query(ProposalDB).filter(ProposalDB.id == proposal_id).first()
 
     @staticmethod
+    def get_pending_from_creator(db: Session, *, creator_id: str, campaign_id: str) -> Optional[ProposalDB]:
+        """A candidatura que este creator já mandou para a campanha e ainda não foi respondida."""
+        return (
+            db.query(ProposalDB)
+            .filter(
+                ProposalDB.creator_id == creator_id,
+                ProposalDB.campaign_id == campaign_id,
+                ProposalDB.sender_role == "creator",
+                ProposalDB.status == "pending",
+            )
+            .first()
+        )
+
+    @staticmethod
     def create(db: Session, company_id: str, data: dict) -> ProposalDB:
         proposal = ProposalDB(company_id=company_id, status="pending", **data)
         db.add(proposal)

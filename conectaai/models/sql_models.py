@@ -131,6 +131,9 @@ class ProposalDB(Base):
     budget = Column(Float, default=0)
     status = Column(String(30), default="pending")
     message = Column(Text, default="")
+    # Quem enviou: "company" (convite da empresa ao creator) ou "creator" (o creator se
+    # candidatando a uma campanha). Define quem pode aceitar/recusar: sempre o OUTRO lado.
+    sender_role = Column(String(20), nullable=False, default="company", server_default="company")
 
 
 class ConversationDB(Base):
