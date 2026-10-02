@@ -33,6 +33,11 @@ class ConectaAISettings:
     GEMINI_API_KEYS: list = [k.strip() for k in os.getenv("CONECTAAI_GEMINI_API_KEY", "").split(",") if k.strip()]
     GEMINI_MODEL: str = os.getenv("CONECTAAI_GEMINI_MODEL", "gemini-flash-lite-latest")
     GEMINI_EMBEDDING_MODEL: str = os.getenv("CONECTAAI_GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+    # Quantos creators (pré-filtrados pela busca semântica) vão para o Gemini
+    # avaliar com os dados do perfil e escrever o motivo do match — ver
+    # services/ai/creator_rerank.py. Mais candidatos = melhor cobertura para
+    # pedidos numéricos ("mais seguidores"), mas prompt e latência maiores.
+    MATCH_RERANK_CANDIDATES: int = int(os.getenv("CONECTAAI_MATCH_RERANK_CANDIDATES", 30))
 
     # --- Negociação entre agentes ---
     NEGOTIATION_MAX_ROUNDS_DEFAULT: int = int(os.getenv("CONECTAAI_NEGOTIATION_MAX_ROUNDS", 4))

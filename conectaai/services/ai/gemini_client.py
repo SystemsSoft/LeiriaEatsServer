@@ -56,6 +56,7 @@ def generate_json(
     deadline_s: Optional[float] = None,
     max_retries: int = 2,
     temperature: float = 0.3,
+    max_output_tokens: int = 600,
 ) -> Optional[GeminiCallResult]:
     """Chama o Gemini pedindo JSON que já bate com `response_model` (JSON
     mode do SDK — response_schema). Devolve None só quando não há chave
@@ -85,7 +86,7 @@ def generate_json(
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         temperature=temperature,
-                        max_output_tokens=600,
+                        max_output_tokens=max_output_tokens,
                         response_mime_type="application/json",
                         response_schema=response_model,
                     ),

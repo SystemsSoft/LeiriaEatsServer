@@ -80,6 +80,9 @@ class ConfirmCampaignDraftResponse(BaseModel):
 class MatchCreatorsRequest(BaseModel):
     text: str
     limit: int = 10
+    # Pedidos anteriores da mesma conversa no chat — permitem refinamentos
+    # como "agora só os mais baratos" sem repetir o pedido inteiro.
+    previous_queries: List[str] = []
 
 
 class MatchedCreator(BaseModel):
@@ -92,7 +95,12 @@ class MatchCreatorsResponse(BaseModel):
     text: str
     results: List[MatchedCreator]
     total_found: int
-    source: str  # "semantic" | "heuristic"
+    # "ai": o Gemini avaliou os candidatos com os dados do perfil e escreveu
+    # o motivo de cada um; "semantic": só similaridade de embeddings;
+    # "heuristic": palavra-chave (IA indisponível).
+    source: str
+    # Como a IA interpretou o pedido (só quando source == "ai").
+    summary: str = ""
 
 
 class MatchOpportunitiesRequest(BaseModel):

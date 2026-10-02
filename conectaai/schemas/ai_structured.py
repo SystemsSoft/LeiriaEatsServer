@@ -1,10 +1,9 @@
 # Arquivo: conectaai/schemas/ai_structured.py
 #
-# Contrato de saída do Gemini (JSON mode, via response_schema em
-# gemini_client.generate_json) usado no rascunho de campanha por IA — a
-# única chamada de GERAÇÃO que sobra no módulo (a negociação em si é 100%
-# humana, ver services/negotiation/human.py; a IA aqui só faz busca
-# semântica e este rascunho).
+# Contratos de saída do Gemini (JSON mode, via response_schema em
+# gemini_client.generate_json): o rascunho de campanha por IA e o
+# re-ranqueamento de creators da busca (services/ai/creator_rerank.py). A
+# negociação em si é 100% humana (services/negotiation/human.py).
 #
 # NÃO usar `model_config = ConfigDict(extra="forbid")`: isso faz o
 # `model_json_schema()` do Pydantic emitir `"additionalProperties": false`,
@@ -39,3 +38,20 @@ class CampaignMandateDraft(BaseModel):
     price_ceiling: float = Field(ge=0, le=1_000_000)
     deliverables: List[ProposedDeliverable] = Field(default_factory=list)
     clarifying_question: str = Field(default="", max_length=300)
+
+
+class CreatorRerankItem(BaseModel):
+    """Um candidato avaliado pela IA. `ref` é o apelido curto (c1, c2…) que
+    o prompt deu ao creator — nunca o id real, para o modelo não ter como
+    inventar um id que exista no banco. Sem ge/le/max_length de propósito:
+    um único item fora do limite invalidaria a resposta inteira; quem chama
+    corrige (clampa a nota, corta o texto)."""
+
+    ref: str
+    score: int
+    reason: str
+
+
+class CreatorRerankResult(BaseModel):
+    summary: str = ""
+    results: List[CreatorRerankItem] = Field(default_factory=list)

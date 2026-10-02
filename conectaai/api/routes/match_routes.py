@@ -1,7 +1,8 @@
 # Arquivo: conectaai/api/routes/match_routes.py
 #
 # Busca bilateral: a empresa descreve o que procura e recebe creators
-# rankeados por semelhança semântica com o próprio perfil do creator; o
+# pré-selecionados por semelhança semântica e avaliados pela IA com os dados
+# do perfil (services/match_search.py); o
 # creator descreve o que procura e recebe mandatos de campanha (empresas
 # com campanha ativa) rankeados do mesmo jeito. Quando a API de embeddings
 # não está disponível (sem chave, ou a chamada falha), cai automaticamente
@@ -16,18 +17,15 @@ from conectaai.core.database import get_db
 from conectaai.core.security import CurrentUser, require_role
 from conectaai.models.sql_models import CommercialMandateDB
 from conectaai.repositories.company_repo import CompanyRepository
-from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.schemas.ai import (
     MatchCreatorsRequest,
     MatchCreatorsResponse,
-    MatchedCreator,
     MatchedOpportunity,
     MatchOpportunitiesRequest,
     MatchOpportunitiesResponse,
 )
-from conectaai.schemas.creator import creator_to_response
 from conectaai.schemas.mandate import DeliverableSpec
-from conectaai.services import matching_service
+from conectaai.services import match_search, matching_service
 
 router = APIRouter(prefix="/ai/match", tags=["IA — Matching semântico"])
 
@@ -43,30 +41,8 @@ def match_creators(
     text = data.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Descreva o que você procura")
-    limit = max(1, min(data.limit, _MAX_LIMIT))
-
-    creators = [c for c in CreatorRepository.get_all(db) if c.available]
-
-    ranked = matching_service.rank_creators(db, text, creators, limit=limit)
-    source = "semantic"
-    if ranked is None:
-        source = "heuristic"
-        scored = [(c, matching_service.keyword_score_creator(text, c)) for c in creators]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        ranked = scored[:limit]
-
-    results: List[MatchedCreator] = []
-    for creator, score in ranked:
-        response = creator_to_response(creator)
-        response.match_score = _to_pct(score, source)
-        response.match_reason = (
-            "Compatibilidade calculada por similaridade semântica com a sua busca."
-            if source == "semantic"
-            else "Compatibilidade estimada por nicho, cidade e engajamento (semântica indisponível no momento)."
-        )
-        results.append(MatchedCreator(creator=response, match_score=response.match_score, match_reason=response.match_reason))
-
-    return MatchCreatorsResponse(text=text, results=results, total_found=len(creators), source=source)
+    # Pré-seleção semântica + avaliação pela IA com os dados do perfil — ver services/match_search.py.
+    return match_search.search_creators(db, text, data.limit, data.previous_queries)
 
 
 @router.post("/opportunities", response_model=MatchOpportunitiesResponse)

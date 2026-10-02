@@ -1,10 +1,11 @@
 # Arquivo: conectaai/services/ai/prompts.py
 #
-# Monta o prompt de geração que sobra no módulo depois que a negociação
-# virou 100% humana (services/negotiation/human.py): o rascunho de campanha
-# por IA. `render_message` continua em uso — é quem monta o texto de uma
+# Monta os prompts de geração do módulo (a negociação é 100% humana, ver
+# services/negotiation/human.py): o rascunho de campanha por IA e o
+# re-ranqueamento de creators da busca (services/ai/creator_rerank.py). `render_message` continua em uso — é quem monta o texto de uma
 # contraproposta humana a partir dos termos já validados (nunca de texto
 # livre digitado por alguém, ver human.py:_summarize).
+import json
 import re
 
 _CAMPAIGN_DRAFT_SYSTEM = """Você ajuda uma empresa a estruturar uma campanha publicitária com creators a partir
@@ -30,6 +31,52 @@ use clarifying_question para pedir o orçamento."""
 def build_campaign_draft_prompt(text: str) -> tuple[str, str]:
     truncated = (text or "")[:2000]
     return _CAMPAIGN_DRAFT_SYSTEM, f"Descrição da empresa:\n{truncated}"
+
+
+_CREATOR_RERANK_SYSTEM = """Você é o assistente de busca de influenciadores (creators) de uma plataforma que conecta
+empresas a creators, em português do Brasil. A empresa descreve quem procura; você recebe uma lista de
+creators candidatos com os dados reais do perfil de cada um (JSON) e decide quais atendem melhor ao pedido.
+
+Como avaliar:
+- Interprete critérios explícitos e implícitos do pedido: nicho/categoria, cidade/região, plataforma, formato de
+  conteúdo, número de seguidores, preço, engajamento, perfil do público (gênero, idade, localização, interesses)
+  e avaliação.
+- Termos comuns: "micro"/"microinfluenciador" = até 100 mil seguidores; "nano" = até 10 mil; "grande"/"mais
+  seguidores" = quanto mais seguidores, melhor; "mais barato"/"menor orçamento"/"menor preço" = quanto menor o
+  preco_min, melhor; "até R$ X"/"orçamento de R$ X" = preco_min precisa ser no máximo X; "público feminino" =
+  audiencia.feminino_pct alto; "mais engajamento" = engajamento_pct maior.
+- Quando o pedido pede uma ordenação (ex.: "com mais seguidores", "mais barato"), compare os números entre os
+  candidatos e faça a nota refletir essa ordem entre os que atendem aos demais critérios.
+- Um critério explícito NÃO atendido (preço acima do limite, cidade diferente da exigida, plataforma ausente)
+  deve derrubar a nota bastante.
+- Um dado zerado ou ausente no perfil significa "não informado" — não trate como valor real; trate como
+  incerteza.
+
+O que devolver:
+- results: um item por candidato que tenha alguma relação com o pedido (pode omitir os que não têm nenhuma),
+  com ref (exatamente como veio na lista), score de 0 a 100 (quão bem atende ao pedido) e reason.
+- reason: 1 ou 2 frases curtas, em português, explicando a nota com os NÚMEROS e dados reais do perfil
+  (ex.: "Tem 85 mil seguidores e cobra a partir de R$ 300, dentro do orçamento; nicho de beleza em São Paulo.").
+  Cite também o ponto fraco quando houver. Nunca invente dado que não esteja no perfil.
+- summary: 1 frase dizendo como você interpretou o pedido (ex.: "Priorizei creators de beleza em SP, com mais
+  seguidores e preço até R$ 500.").
+
+Se houver pedidos anteriores da conversa, o pedido atual pode ser um refinamento deles (ex.: "agora só os mais
+baratos") — nesse caso combine os critérios. Se o pedido atual for uma busca nova e independente, ignore os
+anteriores. Use somente refs que estão na lista de candidatos."""
+
+
+def build_creator_rerank_prompt(text: str, previous_queries: list[str], candidates: list[dict], max_results: int) -> tuple[str, str]:
+    """`candidates` já vem no formato enxuto de creator_rerank._profile
+    (com o `ref` curto no lugar do id)."""
+    parts = []
+    previous = [q.strip()[:300] for q in previous_queries if q and q.strip()]
+    if previous:
+        parts.append("Pedidos anteriores da conversa (do mais antigo ao mais recente):\n" + "\n".join(f"- {q}" for q in previous))
+    parts.append(f"Pedido atual da empresa:\n{(text or '')[:1000]}")
+    parts.append("Creators candidatos:\n" + json.dumps(candidates, ensure_ascii=False, separators=(",", ":")))
+    parts.append(f"Devolva no máximo {max_results} itens em results — os que melhor atendem ao pedido.")
+    return _CREATOR_RERANK_SYSTEM, "\n\n".join(parts)
 
 
 def render_message(template: str, terms: dict) -> str:
