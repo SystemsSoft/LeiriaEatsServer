@@ -1,9 +1,10 @@
 # Arquivo: conectaai/api/routes/campaign_ai_routes.py
 #
-# Criação de campanha por IA: a empresa descreve em texto livre, a IA propõe
-# campanha + mandato (preview, nada persiste), o humano revisa/edita e só
-# então confirma — momento em que CampaignDB e CommercialMandateDB são
-# criados de verdade. Mesmo princípio do resto do módulo: o LLM só propõe,
+# Criação de campanha por IA: o Assistente pergunta item por item (/intake)
+# — ou, no fluxo antigo, a empresa descreve tudo em texto livre (/draft) —,
+# a IA propõe campanha + mandato (preview, nada persiste), o humano
+# revisa/edita e só então confirma — momento em que CampaignDB e
+# CommercialMandateDB são criados de verdade. Mesmo princípio do resto do módulo: o LLM só propõe,
 # a confirmação humana é quem decide o que vira dado real.
 from datetime import datetime, timedelta, timezone
 
@@ -24,13 +25,15 @@ from conectaai.repositories.proposal_repo import ProposalRepository
 from conectaai.schemas.ai import (
     CampaignDraftRequest,
     CampaignDraftResponse,
+    CampaignIntakeRequest,
+    CampaignIntakeResponse,
     ConfirmCampaignDraftRequest,
     ConfirmCampaignDraftResponse,
 )
 from conectaai.schemas.ai_structured import CampaignMandateDraft
 from conectaai.schemas.campaign import CampaignResponse
 from conectaai.schemas.mandate import DeliverableSpec, MandateResponse
-from conectaai.services.ai import gemini_client, prompts
+from conectaai.services.ai import campaign_intake, gemini_client, prompts
 from conectaai.services.ai.campaign_draft_fallback import heuristic_draft
 
 router = APIRouter(prefix="/ai/campaigns", tags=["IA — Campanhas"])
@@ -83,6 +86,17 @@ def _invite_creators(db: Session, company, campaign: CampaignDB, data: ConfirmCa
             title="Nova proposta de campanha",
             message=f'{company.name} te convidou para a campanha "{campaign.name}".',
         )
+
+
+@router.post("/intake", response_model=CampaignIntakeResponse)
+def campaign_intake_step(
+    data: CampaignIntakeRequest,
+    current_user: CurrentUser = Depends(require_role("company")),
+    db: Session = Depends(get_db),
+):
+    """Próxima pergunta da criação de campanha item por item, ou o rascunho
+    quando todos os itens já foram respondidos (ver services/ai/campaign_intake.py)."""
+    return campaign_intake.next_step(db, data.answers)
 
 
 @router.post("/draft", response_model=CampaignDraftResponse)

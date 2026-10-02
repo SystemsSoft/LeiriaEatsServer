@@ -55,6 +55,33 @@ class CampaignDraftResponse(BaseModel):
     source: str = "gemini"  # "gemini" | "heuristic" — o front avisa o usuário quando foi o caminho sem IA
 
 
+class IntakeAnswer(BaseModel):
+    # Item que o assistente estava perguntando quando a empresa respondeu
+    # (ver services/ai/campaign_intake.py, FIELD_NAMES), ou "adjust" para
+    # uma correção livre depois do resumo.
+    field: str = ""
+    text: str
+
+
+class CampaignIntakeRequest(BaseModel):
+    answers: List[IntakeAnswer] = []
+
+
+class CampaignIntakeResponse(BaseModel):
+    """Próximo passo da criação de campanha item por item: ou a próxima
+    pergunta (`next_field` preenchido), ou — quando nada mais falta — o
+    rascunho para revisar, junto com público e preferências, que não fazem
+    parte da campanha salva mas orientam a busca de influenciadores."""
+
+    next_field: str = ""
+    question: str = ""
+    quick_replies: List[str] = []
+    draft: Optional[CampaignDraftResponse] = None
+    audience: str = ""
+    preferences: str = ""
+    source: str = "gemini"  # "gemini" | "heuristic"
+
+
 class ConfirmCampaignDraftRequest(BaseModel):
     campaign_name: str
     objective: str = ""

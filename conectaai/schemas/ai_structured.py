@@ -1,7 +1,8 @@
 # Arquivo: conectaai/schemas/ai_structured.py
 #
 # Contratos de saída do Gemini (JSON mode, via response_schema em
-# gemini_client.generate_json): o rascunho de campanha por IA e o
+# gemini_client.generate_json): o rascunho de campanha por IA, a coleta da
+# campanha item por item (services/ai/campaign_intake.py) e o
 # re-ranqueamento de creators da busca (services/ai/creator_rerank.py). A
 # negociação em si é 100% humana (services/negotiation/human.py).
 #
@@ -38,6 +39,23 @@ class CampaignMandateDraft(BaseModel):
     price_ceiling: float = Field(ge=0, le=1_000_000)
     deliverables: List[ProposedDeliverable] = Field(default_factory=list)
     clarifying_question: str = Field(default="", max_length=300)
+
+
+class CampaignIntakeExtraction(BaseModel):
+    """Dados da campanha extraídos da conversa item por item. Vazio/0 =
+    "não informado" — é o que decide qual pergunta vem a seguir. Sem
+    ge/le de propósito (mesmo motivo de CreatorRerankItem): quem usa limita."""
+
+    campaign_name: str = ""
+    product: str = ""
+    categories: List[str] = Field(default_factory=list)
+    city: str = ""
+    any_location: bool = False
+    audience: str = ""
+    target_count: int = 0
+    budget_total: float = 0
+    deliverables: List[ProposedDeliverable] = Field(default_factory=list)
+    preferences: str = ""
 
 
 class CreatorRerankItem(BaseModel):
