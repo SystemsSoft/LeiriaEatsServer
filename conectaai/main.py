@@ -24,6 +24,7 @@ from conectaai.api.routes import (
     auth_routes,
     campaign_ai_routes,
     campaign_routes,
+    collaboration_routes,
     company_routes,
     contract_routes,
     conversation_routes,
@@ -86,6 +87,8 @@ app.include_router(agreement_routes.router)
 app.include_router(campaign_ai_routes.router)
 app.include_router(match_routes.router)
 app.include_router(contract_routes.router)
+app.include_router(collaboration_routes.router)
+app.include_router(collaboration_routes.deliverables_router)
 
 os.makedirs(os.path.join(settings.UPLOAD_DIR, "avatars"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")

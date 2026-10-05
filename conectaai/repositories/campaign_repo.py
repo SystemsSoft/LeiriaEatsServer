@@ -96,6 +96,21 @@ class CampaignRepository:
             db.commit()
 
     @staticmethod
+    def mark_production_started(db: Session, campaign_id: Optional[str]) -> None:
+        """Os conteúdos do acordo foram listados: a campanha entra em "Produção" (só avança etapa)."""
+        CampaignRepository._advance(db, campaign_id, from_statuses=set(), to_status="active", to_stage="production")
+
+    @staticmethod
+    def mark_content_submitted(db: Session, campaign_id: Optional[str]) -> None:
+        """O creator enviou um conteúdo para aprovação: a campanha chega em "Aprovação"."""
+        CampaignRepository._advance(db, campaign_id, from_statuses=set(), to_status="active", to_stage="approval")
+
+    @staticmethod
+    def mark_content_approved(db: Session, campaign_id: Optional[str]) -> None:
+        """Todos os conteúdos de um acordo foram aprovados: a campanha chega em "Publicação"."""
+        CampaignRepository._advance(db, campaign_id, from_statuses=set(), to_status="active", to_stage="publication")
+
+    @staticmethod
     def mark_proposal_accepted(db: Session, campaign_id: Optional[str], creator_id: str) -> None:
         """O creator aceitou uma proposta desta campanha: ele passa a fazer parte dela e a
         campanha vira "ativa" — empresa (que enviou) e creator (que aceitou) já concordaram."""

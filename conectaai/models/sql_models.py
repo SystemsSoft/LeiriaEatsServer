@@ -414,6 +414,55 @@ class ContractSignatureDB(Base):
     contract = relationship("ContractDB", back_populates="signatures")
 
 
+class DeliverableDB(Base):
+    """Um conteúdo a ser produzido num acordo (proposta aceita): o creator envia o
+    link, a empresa aprova ou pede ajustes. Os conteúdos de um acordo são criados
+    na primeira vez que ele é aberto (services/collaboration_service.py), a partir
+    das entregas combinadas. `url`, `note` e `feedback` guardam o ÚLTIMO envio e a
+    última resposta; o histórico completo está em `DeliverableEventDB`."""
+
+    __tablename__ = "deliverables"
+    __table_args__ = (UniqueConstraint("proposal_id", "position", name="uq_deliverable_proposal_position"),)
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    proposal_id = Column(String(32), ForeignKey("proposals.id"), nullable=False, index=True)
+    company_id = Column(String(32), ForeignKey("companies.id"), nullable=False, index=True)
+    creator_id = Column(String(32), ForeignKey("creators.id"), nullable=False, index=True)
+    campaign_id = Column(String(32), ForeignKey("campaigns.id"), nullable=True)
+
+    position = Column(Integer, nullable=False)
+    label = Column(String(120), default="")
+    content_type = Column(String(120), default="")
+    status = Column(String(30), default="pending")  # pending | submitted | changes_requested | approved
+
+    url = Column(String(1000), default="")
+    note = Column(Text, default="")  # observação do creator no último envio
+    feedback = Column(Text, default="")  # resposta da empresa quando pediu ajustes (ou observação ao aprovar)
+    submitted_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=_now)
+    updated_at = Column(DateTime, default=_now, onupdate=_now)
+
+    events = relationship("DeliverableEventDB", back_populates="deliverable", cascade="all, delete-orphan", order_by="DeliverableEventDB.created_at")
+
+
+class DeliverableEventDB(Base):
+    """Linha do tempo de um conteúdo: cada envio, aprovação ou pedido de ajuste."""
+
+    __tablename__ = "deliverable_events"
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    deliverable_id = Column(String(32), ForeignKey("deliverables.id"), nullable=False, index=True)
+    actor_role = Column(String(20), nullable=False)  # "creator" | "company"
+    kind = Column(String(30), nullable=False)  # submitted | approved | changes_requested
+    url = Column(String(1000), default="")
+    message = Column(Text, default="")
+    created_at = Column(DateTime, default=_now)
+
+    deliverable = relationship("DeliverableDB", back_populates="events")
+
+
 class EntityEmbeddingDB(Base):
     """Vetor de embedding (Gemini, via API — nenhum modelo local nesse
     processo) de um creator ou campanha, para matching semântico. Sem
