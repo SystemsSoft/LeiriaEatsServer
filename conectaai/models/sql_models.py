@@ -363,6 +363,57 @@ class AgreementDB(Base):
     negotiation = relationship("NegotiationDB", back_populates="agreement")
 
 
+class ContractDB(Base):
+    """Contrato gerado (com ajuda da IA) a partir de uma proposta aceita. O
+    conteúdo é um instantâneo: depois de gerado não muda. `content_hash`
+    (SHA-256 do conteúdo) é o que cada assinatura atesta."""
+
+    __tablename__ = "contracts"
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    proposal_id = Column(String(32), ForeignKey("proposals.id"), nullable=False, unique=True)
+    agreement_id = Column(String(32), nullable=True)  # acordo de negociação que originou a proposta, se houve
+    company_id = Column(String(32), ForeignKey("companies.id"), nullable=False)
+    creator_id = Column(String(32), ForeignKey("creators.id"), nullable=False)
+    campaign_id = Column(String(32), ForeignKey("campaigns.id"), nullable=True)
+
+    title = Column(String(255), default="")
+    terms = Column(JSON, default=dict)  # termos acordados (instantâneo da proposta/acordo no momento da geração)
+    content = Column(JSON, default=dict)  # {"title": ..., "sections": [{"heading": ..., "text": ...}]}
+    content_hash = Column(String(64), default="")
+    source = Column(String(20), default="template")  # "gemini" | "template"
+    status = Column(String(30), default="awaiting_signatures")  # awaiting_signatures | signed
+
+    created_at = Column(DateTime, default=_now)
+    updated_at = Column(DateTime, default=_now, onupdate=_now)
+
+    signatures = relationship("ContractSignatureDB", back_populates="contract", cascade="all, delete-orphan", order_by="ContractSignatureDB.signed_at")
+
+
+class ContractSignatureDB(Base):
+    """Assinatura eletrônica simples de uma das partes: quem era (conta
+    autenticada), quando, de onde e qual versão do contrato (hash) foi
+    aceita. `signature_code` é um HMAC desses dados com o segredo do
+    servidor — serve para conferir depois que o registro não foi alterado."""
+
+    __tablename__ = "contract_signatures"
+    __table_args__ = (UniqueConstraint("contract_id", "role", name="uq_contract_signature_role"),)
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    contract_id = Column(String(32), ForeignKey("contracts.id"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # "company" | "creator"
+    user_id = Column(String(32), ForeignKey("users.id"), nullable=False)
+    signer_name = Column(String(255), default="")
+    signer_email = Column(String(255), default="")
+    signed_at = Column(DateTime, default=_now)
+    ip_address = Column(String(64), default="")
+    user_agent = Column(String(255), default="")
+    content_hash = Column(String(64), default="")
+    signature_code = Column(String(64), default="")
+
+    contract = relationship("ContractDB", back_populates="signatures")
+
+
 class EntityEmbeddingDB(Base):
     """Vetor de embedding (Gemini, via API — nenhum modelo local nesse
     processo) de um creator ou campanha, para matching semântico. Sem

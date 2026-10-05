@@ -2,8 +2,9 @@
 #
 # Contratos de saída do Gemini (JSON mode, via response_schema em
 # gemini_client.generate_json): o rascunho de campanha por IA, a coleta da
-# campanha item por item (services/ai/campaign_intake.py) e o
-# re-ranqueamento de creators da busca (services/ai/creator_rerank.py). A
+# campanha item por item (services/ai/campaign_intake.py), o
+# re-ranqueamento de creators da busca (services/ai/creator_rerank.py) e as
+# cláusulas do contrato (services/contract_service.py). A
 # negociação em si é 100% humana (services/negotiation/human.py).
 #
 # NÃO usar `model_config = ConfigDict(extra="forbid")`: isso faz o
@@ -73,3 +74,16 @@ class CreatorRerankItem(BaseModel):
 class CreatorRerankResult(BaseModel):
     summary: str = ""
     results: List[CreatorRerankItem] = Field(default_factory=list)
+
+
+class ContractClause(BaseModel):
+    heading: str
+    text: str
+
+
+class ContractClauses(BaseModel):
+    """Cláusulas gerais do contrato escritas pela IA. Os termos comerciais
+    (partes, valor, entregas, prazo) NÃO vêm daqui — são montados pelo
+    servidor a partir dos dados; ver services/contract_service.py."""
+
+    clauses: List[ContractClause] = Field(default_factory=list)
