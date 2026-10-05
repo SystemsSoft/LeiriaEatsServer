@@ -60,6 +60,11 @@ if [[ "$REQUIREMENTS_CHANGED" == true ]]; then
   .venv/bin/pip install -r requirements.txt
 fi
 
+# Migrações pendentes de conectaai/migrations (ver conectaai/scripts/migrate.py),
+# ANTES do restart: se uma falhar, o set -e para o deploy aqui e o serviço segue
+# rodando a versão anterior — melhor do que subir código que lê coluna inexistente.
+.venv/bin/python -m conectaai.scripts.migrate
+
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl is-active --quiet "$SERVICE_NAME"
 
