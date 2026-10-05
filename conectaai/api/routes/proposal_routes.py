@@ -43,6 +43,10 @@ def create_proposal(
     company = CompanyRepository.get_by_user_id(db, current_user.user_id)
     if not company:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    # Sem esta checagem, um creator_id desconhecido só estourava na FK do MySQL (erro 500).
+    creator = CreatorRepository.get_by_id(db, data.creator_id)
+    if not creator:
+        raise HTTPException(status_code=404, detail="Creator não encontrado")
     if data.campaign_id:
         campaign = CampaignRepository.get_by_id(db, data.campaign_id)
         if not campaign or campaign.company_id != company.id:
@@ -51,15 +55,13 @@ def create_proposal(
     # Proposta enviada é o primeiro passo da conversa comercial: tira a campanha de "rascunho".
     CampaignRepository.mark_negotiation_started(db, data.campaign_id)
 
-    creator = CreatorRepository.get_by_id(db, data.creator_id)
-    if creator:
-        NotificationRepository.create(
-            db,
-            user_id=creator.user_id,
-            type_="proposal",
-            title="Nova proposta recebida",
-            message=f'{company.name} te enviou uma proposta para "{data.campaign_name or "uma campanha"}".',
-        )
+    NotificationRepository.create(
+        db,
+        user_id=creator.user_id,
+        type_="proposal",
+        title="Nova proposta recebida",
+        message=f'{company.name} te enviou uma proposta para "{data.campaign_name or "uma campanha"}".',
+    )
     return proposal
 
 

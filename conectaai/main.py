@@ -5,10 +5,13 @@
 # importa nada de core/, api/, services/ do Koma: zero acoplamento em runtime.
 # Rodar com:
 #   uvicorn conectaai.main:app --host 0.0.0.0 --port 8081
+import logging
 import os
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from conectaai.core.config import settings
@@ -36,6 +39,27 @@ from conectaai.api.routes import (
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="ConectaAI Backend")
+
+logger = logging.getLogger("conectaai")
+
+
+# Precisa ser registrado ANTES do CORSMiddleware: o último middleware adicionado é o mais
+# externo, então este fica por dentro do CORS. Sem ele, uma exceção não tratada (ex.: erro de
+# banco) é respondida pelo ServerErrorMiddleware do Starlette, que fica FORA do CORS — a
+# resposta 500 sai sem Access-Control-Allow-Origin e o navegador mostra "blocked by CORS
+# policy" em vez do erro real. HTTPException continua sendo tratada normalmente (400, 404…).
+@app.middleware("http")
+async def unhandled_errors_as_json(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:  # noqa: BLE001 — qualquer falha inesperada vira 500 em JSON, com CORS
+        error_id = uuid.uuid4().hex[:8]
+        logger.exception("Erro não tratado em %s %s (id %s)", request.method, request.url.path, error_id)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Erro interno do servidor. Tente novamente em instantes.", "error_id": error_id},
+        )
+
 
 app.add_middleware(
     CORSMiddleware,
