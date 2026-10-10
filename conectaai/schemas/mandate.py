@@ -20,7 +20,7 @@ class MandateCreateRequest(BaseModel):
     price_floor: float = Field(default=0, ge=0)
     price_ceiling: float = Field(default=0, ge=0)
     auto_approve_limit: float = Field(default=0, ge=0)
-    currency: str = "BRL"
+    currency: str = "EUR"
     max_rounds: int = Field(default=4, ge=1, le=10)
     deliverables: List[DeliverableSpec] = Field(default_factory=list)
     negotiable_fields: List[str] = Field(default_factory=list)

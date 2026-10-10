@@ -62,6 +62,25 @@ class ConectaAISettings:
     )
     PUBLIC_BASE_URL: str = os.getenv("CONECTAAI_PUBLIC_BASE_URL", "https://api.leiriaeats.com/conectaai")
 
+    # --- Pagamentos (Stripe Connect) ---
+    # Chave SECRETA própria do ConectaAI (sk_live_.../sk_test_...), separada da STRIPE_SECRET_KEY do Koma: cada
+    # produto com a sua conta/plataforma. Sem ela, o Financeiro mostra "pagamentos ainda não disponíveis".
+    STRIPE_API_KEY: str = os.getenv("CONECTAAI_STRIPE_SECRET_KEY", "")
+    # Segredo(s) (whsec_...) dos webhooks que apontam para POST <PUBLIC_BASE_URL>/finance/stripe/webhook. São
+    # DOIS endpoints na Stripe, cada um com o seu segredo — coloque os dois aqui, separados por vírgula:
+    #   - "Connected accounts": account.updated (situação da conta de quem recebe);
+    #   - "Your account": checkout.session.completed, checkout.session.async_payment_succeeded,
+    #     checkout.session.async_payment_failed e checkout.session.expired (pagamentos dos acordos).
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("CONECTAAI_STRIPE_WEBHOOK_SECRET", "")
+    # País das contas conectadas (ISO de 2 letras) — Portugal, onde o produto é lançado. A Stripe não deixa mudar
+    # o país de uma conta depois de criada.
+    STRIPE_COUNTRY: str = os.getenv("CONECTAAI_STRIPE_COUNTRY", "PT").upper()
+    # Moeda das cobranças e taxa da plataforma (% do valor do acordo, descontada do que o creator recebe).
+    STRIPE_CURRENCY: str = os.getenv("CONECTAAI_STRIPE_CURRENCY", "eur").lower()
+    PLATFORM_FEE_PERCENT: float = float(os.getenv("CONECTAAI_PLATFORM_FEE_PERCENT", "0") or 0)
+    # Endereço do app (para onde a Stripe devolve o usuário) quando o app não informa o próprio.
+    APP_URL: str = os.getenv("CONECTAAI_APP_URL", "").rstrip("/")
+
     def __init__(self):
         if not self.DB_USER or not self.DB_PASS:
             print("⚠️ AVISO: CONECTAAI_DB_USER/CONECTAAI_DB_PASS não configurados no .env")

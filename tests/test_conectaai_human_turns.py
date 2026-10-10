@@ -139,7 +139,7 @@ def teste_contraproposta_substitui_o_acordo_e_o_agente_do_outro_lado_responde():
 
     turnos = NegotiationTurnRepository.get_all_for_negotiation(db, n.id)
     assert turnos[-1].actor == "human_company" and turnos[-1].intent == "counter_offer"
-    assert "R$ 1.700,00" in turnos[-1].message_text and "Consigo fechar hoje" in turnos[-1].message_text
+    assert "1.700,00 €" in turnos[-1].message_text and "Consigo fechar hoje" in turnos[-1].message_text
     assert turnos[-1].message_id, "espelhado na conversa entre os usuários"
 
     # o agente do creator responde dentro do mandato dele (piso R$ 1.800) e a empresa fecha

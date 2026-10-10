@@ -26,6 +26,7 @@ from conectaai.repositories.campaign_repo import CampaignRepository
 from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.repositories.notification_repo import NotificationRepository
+from conectaai.repositories.payment_repo import PaymentRepository
 from conectaai.schemas.collaboration import (
     CollaborationCounts,
     CollaborationDetail,
@@ -168,7 +169,15 @@ def summary_of(db: Session, proposal: ProposalDB, deliverables: List[Deliverable
         counts=counts,
         status="completed" if counts.total and counts.approved == counts.total else "in_progress",
         last_activity_at=max(activity) if activity else _now(),
+        payment_status=_payment_status(db, proposal.id),
     )
+
+
+def _payment_status(db: Session, proposal_id: str) -> str:
+    payment = PaymentRepository.get_by_proposal(db, proposal_id)
+    if payment is None:
+        return "unpaid"
+    return payment.status if payment.status in ("pending", "paid", "released") else "unpaid"  # falhou/cancelou: pode pagar de novo
 
 
 def detail_of(db: Session, proposal: ProposalDB, deliverables: List[DeliverableDB]) -> CollaborationDetail:

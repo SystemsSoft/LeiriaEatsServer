@@ -118,7 +118,7 @@ def collect_terms(db: Session, proposal: ProposalDB) -> Dict[str, Any]:
 
 def _money(value: float) -> str:
     text = f"{value:,.2f}"  # 1,500.00
-    return "R$ " + text.replace(",", "_").replace(".", ",").replace("_", ".")
+    return text.replace(",", "_").replace(".", ",").replace("_", ".") + " €"  # 1.500,00 €
 
 
 def _deliverables_text(terms: Dict[str, Any]) -> str:
@@ -257,7 +257,7 @@ Escreva exatamente estas cláusulas, nesta ordem. Cada uma tem "heading" (títul
 7. DA RESCISÃO
 
 Regras invioláveis:
-- NÃO escreva nenhum dígito: nada de números, valores em reais, percentuais, prazos em dias, multas, datas, quantidades nem
+- NÃO escreva nenhum dígito: nada de números, valores em euros, percentuais, prazos em dias, multas, datas, quantidades nem
   números de lei. Para se referir a valor, prazo ou entregas, escreva "conforme definido neste contrato" ou "nos termos acordados".
 - Não crie obrigações financeiras novas (multas, adiantamentos, bônus, reajustes) e não altere nem contradiga os termos acordados.
 - Não invente dados das partes. Chame-as sempre de CONTRATANTE e CONTRATADO(A).

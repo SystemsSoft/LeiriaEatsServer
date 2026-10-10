@@ -3,7 +3,7 @@
 # Segunda etapa da busca de creators pela empresa (ver services/match_search.py).
 # A busca semântica (embeddings) só pré-seleciona candidatos pelo TEXTO do
 # perfil — não enxerga números, então não sabe o que é "com mais seguidores"
-# ou "até R$ 500". Aqui o Gemini recebe esses candidatos com os dados do
+# ou "até 500 €". Aqui o Gemini recebe esses candidatos com os dados do
 # perfil (seguidores, preço, engajamento, público…) e o pedido da empresa, e
 # devolve uma nota e um motivo por creator, citando os dados reais de cada um.
 #

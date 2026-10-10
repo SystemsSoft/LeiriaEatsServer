@@ -206,7 +206,7 @@ def confirm_campaign_draft(
             "price_floor": 0,
             "price_ceiling": data.price_ceiling,
             "auto_approve_limit": data.auto_approve_limit,
-            "currency": "BRL",
+            "currency": "EUR",
             "max_rounds": data.max_rounds,
             "deliverables": deliverables,
             "negotiable_fields": ["price", "deliverables", "deadline"],

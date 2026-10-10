@@ -30,6 +30,7 @@ from conectaai.api.routes import (
     conversation_routes,
     creator_routes,
     favorite_routes,
+    finance_routes,
     mandate_routes,
     match_routes,
     negotiation_routes,
@@ -89,6 +90,7 @@ app.include_router(match_routes.router)
 app.include_router(contract_routes.router)
 app.include_router(collaboration_routes.router)
 app.include_router(collaboration_routes.deliverables_router)
+app.include_router(finance_routes.router)
 
 os.makedirs(os.path.join(settings.UPLOAD_DIR, "avatars"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")

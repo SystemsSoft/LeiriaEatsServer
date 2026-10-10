@@ -36,7 +36,7 @@ _FIELDS: List[Tuple[str, str, List[str]]] = [
     ("city", "Os influenciadores precisam ser de alguma cidade ou região específica?", ["Qualquer lugar"]),
     ("audience", "Qual público você quer atingir? (ex.: mulheres de 25 a 34 anos, pais, gamers)", ["Sem público específico"]),
     ("target_count", "Quantos influenciadores você quer na campanha?", ["1", "3", "5", "10"]),
-    ("budget_total", "Qual o orçamento total da campanha, em reais?", ["Ainda não sei"]),
+    ("budget_total", "Qual o orçamento total da campanha, em euros?", ["Ainda não sei"]),
     ("deliverables", "Quais formatos de conteúdo você precisa? Pode citar mais de um.", ["Reels", "Stories", "Posts no feed", "TikTok"]),
     ("preferences", "Por último: alguma preferência sobre o perfil dos influenciadores?", ["Mais seguidores", "Mais engajamento", "Menor preço", "Sem preferência"]),
 ]
@@ -72,7 +72,7 @@ Campos:
 - any_location: true se a empresa disse que qualquer lugar serve
 - audience: público que a campanha quer atingir
 - target_count: quantos influenciadores
-- budget_total: orçamento total em reais ("3 mil" = 3000, "R$ 2.500" = 2500)
+- budget_total: orçamento total em euros ("3 mil" = 3000, "2.500 €" = 2500)
 - deliverables: formatos pedidos — content_type em [Reel, Story, Post, TikTok, Vídeo] e quantity = quantos de cada
   formato por influenciador (1 se não disser)
 - preferences: preferências sobre o perfil dos influenciadores (ex.: mais seguidores, mais engajamento, menor preço)
@@ -115,7 +115,7 @@ def _parse_count(text: str) -> int:
 
 
 def _parse_money(text: str) -> float:
-    match = _MONEY.search(text.replace("R$", " "))
+    match = _MONEY.search(text.replace("R$", " ").replace("€", " "))
     if not match:
         return 0.0
     raw, suffix = match.group(1), match.group(2)
@@ -150,7 +150,7 @@ def _heuristic(answers: List[IntakeAnswer]) -> CampaignIntakeExtraction:
             count = _COUNT_IN_TEXT.search(text)
             if count:
                 data.target_count = int(count.group(1))
-            if "R$" in text or re.search(r"\bor[çc]amento\b", text, re.IGNORECASE):
+            if "€" in text or "R$" in text or re.search(r"\bor[çc]amento\b|\beuros?\b", text, re.IGNORECASE):
                 data.budget_total = _parse_money(text) or data.budget_total
             continue
         if _is_negative(text) and field != "city":

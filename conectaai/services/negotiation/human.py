@@ -59,7 +59,7 @@ def _clean_terms(terms: Dict[str, Any]) -> Dict[str, Any]:
     price = terms.get("price")
     if price is not None:
         if not (0 < float(price) <= 1_000_000):
-            raise HumanActionError(400, "O preço precisa ser maior que zero e até R$ 1.000.000.")
+            raise HumanActionError(400, "O preço precisa ser maior que zero e até 1.000.000 €.")
         clean["price"] = round(float(price), 2)
 
     days = terms.get("deadline_days")

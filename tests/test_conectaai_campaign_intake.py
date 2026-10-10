@@ -76,7 +76,7 @@ def teste_fluxo_completo_sem_ia_pergunta_item_por_item_e_monta_o_rascunho():
         ("city", "Qualquer lugar"),
         ("audience", "Mulheres de 25 a 40 anos"),
         ("target_count", "3"),
-        ("budget_total", "R$ 4.500"),
+        ("budget_total", "4.500 €"),
         ("deliverables", "Reels e stories"),
         ("preferences", "Mais engajamento"),
     ]
@@ -108,11 +108,12 @@ def teste_nao_sei_conta_como_respondido():
     print("OK  - 'qualquer nicho' / 'ainda não sei' avançam para o próximo item")
 
 
-def teste_leitura_de_valores_em_reais():
-    casos = {"R$ 2.500": 2500, "3 mil": 3000, "1500": 1500, "R$ 1.234,56": 1234.56, "5k": 5000, "uns 10 mil reais": 10000}
+def teste_leitura_de_valores_em_euros():
+    casos = {"2.500 €": 2500, "€ 2.500": 2500, "3 mil": 3000, "1500": 1500, "1.234,56 €": 1234.56, "5k": 5000, "uns 10 mil euros": 10000,
+             "R$ 2.500": 2500}  # o formato antigo (reais) continua sendo entendido
     for texto, esperado in casos.items():
         assert campaign_intake._parse_money(texto) == esperado, (texto, campaign_intake._parse_money(texto))
-    print("OK  - valores em reais ('3 mil', 'R$ 2.500', '5k'…) são lidos certo")
+    print("OK  - valores em euros ('3 mil', '2.500 €', '5k'…) são lidos certo")
 
 
 def teste_ia_pula_itens_ja_adiantados_numa_resposta():
@@ -149,7 +150,7 @@ if __name__ == "__main__":
     teste_sem_respostas_pergunta_o_primeiro_item()
     teste_fluxo_completo_sem_ia_pergunta_item_por_item_e_monta_o_rascunho()
     teste_nao_sei_conta_como_respondido()
-    teste_leitura_de_valores_em_reais()
+    teste_leitura_de_valores_em_euros()
     teste_ia_pula_itens_ja_adiantados_numa_resposta()
     teste_ajuste_depois_do_resumo_muda_o_rascunho()
     teste_campo_que_a_ia_deixou_vazio_usa_a_resposta_direta()

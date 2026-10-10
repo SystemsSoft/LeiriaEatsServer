@@ -247,7 +247,7 @@ class CommercialMandateDB(Base):
     price_floor = Column(Float, default=0)  # usado pelo creator: valor mínimo aceitável
     price_ceiling = Column(Float, default=0)  # usado pela empresa: teto do orçamento
     auto_approve_limit = Column(Float, default=0)  # acima disso, precisa de aprovação humana
-    currency = Column(String(3), default="BRL")
+    currency = Column(String(3), default="EUR")
     max_rounds = Column(Integer, default=4)
 
     deliverables = Column(JSON, default=list)  # [{"content_type": "Reel", "min_qty": 1, "max_qty": 3}, ...]
@@ -309,7 +309,7 @@ class NegotiationTurnDB(Base):
     para auditoria: o que o LLM propôs (`proposed_terms`), o que sobrou depois
     do mandato aplicado (`terms_after_policy`) e o que foi cortado
     (`policy_violations`) — assim dá pra responder "por que o agente aceitou
-    R$ X" sem adivinhar."""
+    X €" sem adivinhar."""
 
     __tablename__ = "negotiation_turns"
     __table_args__ = (UniqueConstraint("negotiation_id", "round_no", "actor", name="uq_turn_negotiation_round_actor"),)
@@ -506,3 +506,50 @@ class AiCallLogDB(Base):
     error = Column(Text, default="")
 
     created_at = Column(DateTime, default=_now, index=True)
+
+
+class PaymentAccountDB(Base):
+    """Conta Stripe Connect de um usuário (empresa ou creator): é por ela que ele recebe e paga na plataforma.
+
+    Os campos de situação são um espelho do que a Stripe informa (`account.updated` e consulta direta) — a fonte
+    da verdade é a Stripe; aqui fica só o último estado visto, para a tela abrir sem depender de rede.
+    """
+
+    __tablename__ = "payment_accounts"
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    user_id = Column(String(32), ForeignKey("users.id"), nullable=False, unique=True)
+    role = Column(String(20), nullable=False)  # "company" | "creator"
+    stripe_account_id = Column(String(64), nullable=False, unique=True)
+    country = Column(String(2), default="PT")
+    details_submitted = Column(Boolean, default=False)  # terminou o cadastro na Stripe
+    charges_enabled = Column(Boolean, default=False)  # pode receber pagamentos
+    payouts_enabled = Column(Boolean, default=False)  # pode sacar para a conta bancária
+    requirements_due = Column(JSON, default=list)  # pendências que a Stripe ainda pede
+    created_at = Column(DateTime, default=_now)
+    updated_at = Column(DateTime, default=_now, onupdate=_now)
+
+
+class PaymentDB(Base):
+    """Pagamento de um acordo (proposta aceita), com retenção: a empresa paga na página da Stripe e o valor fica
+    RESERVADO na conta da plataforma (status "paid"); só vai para a conta conectada do creator, menos a taxa da
+    plataforma, quando a empresa confirma que o acordo foi cumprido (status "released"). Um registro por acordo —
+    uma nova tentativa reaproveita o mesmo, e depois de pago não se paga de novo. Valores em centavos."""
+
+    __tablename__ = "payments"
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    proposal_id = Column(String(32), ForeignKey("proposals.id"), nullable=False, unique=True)
+    company_id = Column(String(32), ForeignKey("companies.id"), nullable=False, index=True)
+    creator_id = Column(String(32), ForeignKey("creators.id"), nullable=False, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    fee_cents = Column(Integer, default=0)  # taxa da plataforma, descontada do que o creator recebe
+    currency = Column(String(3), default="eur")
+    status = Column(String(20), default="pending")  # pending | paid (reservado) | released | failed | canceled
+    checkout_session_id = Column(String(255), default="", index=True)
+    payment_intent_id = Column(String(64), default="")
+    created_at = Column(DateTime, default=_now)
+    paid_at = Column(DateTime, nullable=True)
+    transfer_id = Column(String(64), default="")  # repasse ao creator (tr_...), feito na liberação
+    released_at = Column(DateTime, nullable=True)
+

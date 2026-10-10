@@ -107,7 +107,7 @@ class AiCallSummary(BaseModel):
 class AuditTurnResponse(BaseModel):
     """Turno completo, com o que o LLM pediu (`proposed_terms`) ao lado do
     que sobrou depois do mandato (`terms_after_policy`) — a resposta direta
-    para 'por que o agente aceitou R$ X'."""
+    para 'por que o agente aceitou X €'."""
 
     id: str
     round_no: int

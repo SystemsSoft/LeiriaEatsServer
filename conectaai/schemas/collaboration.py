@@ -60,6 +60,9 @@ class CollaborationSummary(BaseModel):
     counts: CollaborationCounts
     status: str  # in_progress | completed
     last_activity_at: datetime
+    # Pagamento do acordo: unpaid (ainda não pago) | pending (a empresa abriu o pagamento) |
+    # paid (pago e reservado na plataforma) | released (liberado ao creator: a empresa confirmou o acordo)
+    payment_status: str = "unpaid"
 
 
 class CollaborationDetail(CollaborationSummary):

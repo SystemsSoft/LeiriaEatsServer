@@ -149,7 +149,7 @@ def teste_gera_com_os_termos_da_proposta_e_notifica_o_creator():
     c = r.json()
     assert c["status"] == "awaiting_signatures" and c["source"] == "template" and c["integrity_ok"] is True
     texto = "\n".join(s["heading"] + "\n" + s["text"] for s in c["content"]["sections"])
-    assert "R$ 1.500,00" in texto, "valor formatado em reais"
+    assert "1.500,00 €" in texto and "R$" not in texto, "valor formatado em euros"
     assert "Verão 2026" in texto and "Bela Cosméticos" in texto and "@beto" in texto
     assert "3 conteúdo(s) no(s) formato(s): Reels + Stories" in texto
     assert "até 15/12/2026" in texto
@@ -174,7 +174,7 @@ def teste_proposta_vinda_de_negociacao_usa_os_termos_do_acordo():
     empresa, _, proposta, _ = _cenario(with_agreement=True)
     c = _gerar(empresa, proposta).json()
     texto = "\n".join(s["text"] for s in c["content"]["sections"])
-    assert "R$ 2.400,00" in texto and "R$ 1.500,00" not in texto
+    assert "2.400,00 €" in texto and "1.500,00 €" not in texto
     assert "2x Reel, 4x Story" in texto
     assert "em até 10 dias corridos, contados da assinatura" in texto
     assert "Exclusividade: acordada" in texto
@@ -189,8 +189,9 @@ def teste_ia_escreve_so_as_clausulas_gerais():
     assert c["source"] == "gemini"
     textos = [s["text"] for s in c["content"]["sections"]]
     assert any("produzirá os Reels e Stories" in t for t in textos)
-    assert any("R$ 1.500,00" in t for t in textos), "o valor continua vindo do servidor"
-    assert "R$" not in chamadas[0]["system_instruction"].split("Regras invioláveis")[0]
+    assert any("1.500,00 €" in t for t in textos), "o valor continua vindo do servidor"
+    geral = chamadas[0]["system_instruction"].split("Regras invioláveis")[0]
+    assert "R$" not in geral and "€" not in geral
     print("OK  - IA escreve as cláusulas gerais; valor, partes e prazo continuam vindo do servidor")
 
 
