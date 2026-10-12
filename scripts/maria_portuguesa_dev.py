@@ -9,6 +9,9 @@ Execução (a partir da raiz do servidor):
     python scripts/maria_portuguesa_dev.py --landing D:/MobileDevops/maria_portugessa
 
     --landing PASTA   serve também a landing page em http://localhost:8090/
+    --banco-real      usa o banco configurado em modules/maria_portuguesa/database.py
+                      (MySQL, ou o que estiver em MP_DATABASE_URL) em vez do SQLite em
+                      memória: cria banco e tabelas se faltarem e não semeia perfis
     --sem-e5          arranque instantâneo com um codificador simplificado
                       (a busca deixa de ser semântica; só compara palavras)
     --porta N         porta (por omissão 8090)
@@ -36,10 +39,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from core.database import Base, get_db
 from modules import maria_portuguesa
 from modules.maria_portuguesa import catalogo
-from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
+from modules.maria_portuguesa.database import Base, get_db
+from modules.maria_portuguesa.models import MpDomesticaDB
 from modules.maria_portuguesa import routes as rotas_mp
 from modules.maria_portuguesa.routes import get_fabrica_db
 from modules.maria_portuguesa.search_service import BuscaService
@@ -113,17 +116,11 @@ def codificador_simplificado(textos: list[str]) -> np.ndarray:
     return vetores
 
 
-def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090) -> FastAPI:
+def _usar_sqlite_em_memoria(app: FastAPI) -> None:
+    """Base descartável com perfis de demonstração; substitui a do módulo."""
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(bind=engine, tables=[MpDomesticaDB.__table__, MpSessaoDB.__table__])
+    Base.metadata.create_all(bind=engine)
     Sessao = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-    if sem_e5:
-        BuscaService.definir_codificador(codificador_simplificado)
-    else:
-        print("🤖 A carregar o modelo E5 (o mesmo do servidor real)...")
-        from services.ai_service import AIService
-        AIService.get_model()
 
     db = Sessao()
     for i, dados in enumerate(PERFIS_DEMO):
@@ -146,11 +143,27 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090) -> Fas
         finally:
             sessao.close()
 
+    app.dependency_overrides[get_db] = _get_db
+    app.dependency_overrides[get_fabrica_db] = lambda: Sessao
+
+
+def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_real: bool = False) -> FastAPI:
+    if sem_e5:
+        BuscaService.definir_codificador(codificador_simplificado)
+    else:
+        print("🤖 A carregar o modelo E5 (o mesmo do servidor real)...")
+        from services.ai_service import AIService
+        AIService.get_model()
+
     app = FastAPI(title="Maria Portuguesa - desenvolvimento")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.include_router(maria_portuguesa.router)
-    app.dependency_overrides[get_db] = _get_db
-    app.dependency_overrides[get_fabrica_db] = lambda: Sessao
+
+    if banco_real:
+        tabelas = maria_portuguesa.criar_banco_e_tabelas()
+        print(f"🗄️ Banco real pronto. Tabelas: {', '.join(tabelas)}")
+    else:
+        _usar_sqlite_em_memoria(app)
     # Fotografias: em desenvolvimento ficam numa pasta temporária local em vez do S3.
     pasta_fotos = tempfile.mkdtemp(prefix="maria_portuguesa_fotos_")
 
@@ -170,7 +183,8 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090) -> Fas
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Servidor de desenvolvimento da Maria Portuguesa")
     parser.add_argument("--landing", help="pasta da landing page a servir em /")
+    parser.add_argument("--banco-real", action="store_true", help="usar o banco configurado no módulo")
     parser.add_argument("--sem-e5", action="store_true", help="não carregar o modelo E5")
     parser.add_argument("--porta", type=int, default=8090)
     args = parser.parse_args()
-    uvicorn.run(criar_app(args.landing, args.sem_e5, args.porta), host="127.0.0.1", port=args.porta)
+    uvicorn.run(criar_app(args.landing, args.sem_e5, args.porta, args.banco_real), host="127.0.0.1", port=args.porta)

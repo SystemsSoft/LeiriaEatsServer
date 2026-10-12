@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from core.database import SessionLocal, get_db
 from modules.maria_portuguesa import catalogo
+from modules.maria_portuguesa.database import SessionLocal, get_db
 from modules.maria_portuguesa.live_service import AssistenteVoz
 from modules.maria_portuguesa.models import MpDomesticaDB
 from modules.maria_portuguesa.schemas import (

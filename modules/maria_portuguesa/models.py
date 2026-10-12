@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text
 from sqlalchemy.orm import relationship
 
-from core.database import Base
+from modules.maria_portuguesa.database import Base
 
 
 def _agora() -> datetime:
@@ -18,7 +18,7 @@ def _novo_gid() -> str:
 
 class MpDomesticaDB(Base):
     """Conta + perfil público de uma empregada doméstica."""
-    __tablename__ = "mp_domesticas"
+    __tablename__ = "domesticas"
 
     id = Column(Integer, primary_key=True, index=True)
     # Identificador público. O id numérico nunca sai do servidor, para não permitir
@@ -73,11 +73,11 @@ class MpDomesticaDB(Base):
 class MpSessaoDB(Base):
     """Sessão de login. Guarda apenas o SHA-256 do token — quem ler a tabela não
     consegue autenticar-se como ninguém."""
-    __tablename__ = "mp_sessoes"
+    __tablename__ = "sessoes"
 
     id = Column(Integer, primary_key=True)
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
-    domestica_id = Column(Integer, ForeignKey("mp_domesticas.id", ondelete="CASCADE"), nullable=False, index=True)
+    domestica_id = Column(Integer, ForeignKey("domesticas.id", ondelete="CASCADE"), nullable=False, index=True)
     expira_em = Column(DateTime, nullable=False)
     criado_em = Column(DateTime, nullable=False, default=_agora)
 

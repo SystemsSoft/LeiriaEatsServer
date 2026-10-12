@@ -88,6 +88,14 @@ app.include_router(maria_portuguesa.router)  # /maria-portuguesa/*
 async def startup_event():
     print("🚀 Iniciando Koma AI Server...")
 
+    # Maria Portuguesa: banco e tabelas próprios, criados se ainda não existirem.
+    # Uma falha aqui não pode impedir o Leiria Eats de arrancar.
+    try:
+        tabelas_mp = maria_portuguesa.criar_banco_e_tabelas()
+        print(f"✅ [MariaPortuguesa] Banco pronto. Tabelas: {', '.join(tabelas_mp)}")
+    except Exception as e:
+        print(f"⚠️ [MariaPortuguesa] Não foi possível preparar o banco: {e}")
+
     # Inicializar modelos de IA (E5 + Gemini)
     print("\n" + "="*50)
     print("🤖 CARREGANDO MODELOS DE INTELIGÊNCIA ARTIFICIAL")

@@ -1,7 +1,7 @@
 # Arquivo: modules/maria_portuguesa/security.py
 #
 # Autenticação das domésticas. Só biblioteca padrão: scrypt para a palavra-passe e
-# tokens opacos guardados em mp_sessoes (por hash).
+# tokens opacos guardados na tabela sessoes (por hash).
 import base64
 import hashlib
 import hmac
@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
-from core.database import get_db
+from modules.maria_portuguesa.database import get_db
 from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
 
 VALIDADE_SESSAO = timedelta(days=30)

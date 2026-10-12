@@ -11,10 +11,14 @@ import asyncio
 import hashlib
 import os
 import sys
+import tempfile
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test-key-nao-usada")
+# O banco do módulo aponta para um ficheiro SQLite temporário: nenhum teste chega ao MySQL.
+_FICHEIRO_BD = os.path.join(tempfile.mkdtemp(prefix="mp_testes_"), "maria_portuguesa.db")
+os.environ["MP_DATABASE_URL"] = "sqlite:///" + _FICHEIRO_BD.replace("\\", "/")
 
 import numpy as np
 from fastapi import FastAPI
@@ -23,9 +27,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from core.database import Base, get_db
 from modules import maria_portuguesa
 from modules.maria_portuguesa import catalogo
+from modules.maria_portuguesa import database as banco_mp
+from modules.maria_portuguesa.database import Base, get_db
 from modules.maria_portuguesa.live_service import AssistenteVoz, configuracao_live
 from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
 from modules.maria_portuguesa.routes import get_fabrica_db
@@ -50,8 +55,7 @@ def _codificador_falso(textos: list[str]) -> np.ndarray:
 
 def _novo_cliente() -> tuple[TestClient, sessionmaker]:
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    tabelas = [MpDomesticaDB.__table__, MpSessaoDB.__table__]
-    Base.metadata.create_all(bind=engine, tables=tabelas)
+    Base.metadata.create_all(bind=engine)
     Sessao = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     def _get_db():
@@ -87,6 +91,37 @@ def _publicar(cliente: TestClient, email: str, nome: str, **perfil) -> str:
     r = cliente.put("/maria-portuguesa/domesticas/eu", json=dados, headers=cabecalhos)
     assert r.status_code == 200, r.text
     return r.json()["gid"]
+
+
+# ── Banco de dados ───────────────────────────────────────────────────────────
+
+def teste_banco_cria_tabelas_e_e_idempotente():
+    from sqlalchemy import inspect
+    assert banco_mp.criar_banco_e_tabelas() == ["domesticas", "sessoes"]
+    assert banco_mp.criar_banco_e_tabelas() == ["domesticas", "sessoes"]   # segunda vez não falha
+
+    colunas = {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
+    assert {"gid", "email", "senha_hash", "servicos", "embedding", "publicado"} <= colunas
+    print("OK  - banco: cria as tabelas domesticas e sessoes, e pode correr várias vezes")
+
+
+def teste_banco_e_separado_do_leiria_eats():
+    from core.database import Base as BaseLeiriaEats
+    assert set(Base.metadata.tables) == {"domesticas", "sessoes"}
+    assert not set(Base.metadata.tables) & set(BaseLeiriaEats.metadata.tables)
+    print("OK  - banco: as tabelas do módulo não se misturam com as do Leiria Eats")
+
+
+def teste_ddl_mysql_e_valido():
+    from sqlalchemy.dialects import mysql
+    from sqlalchemy.schema import CreateTable
+    ddl = {t.name: str(CreateTable(t).compile(dialect=mysql.dialect())) for t in Base.metadata.sorted_tables}
+    assert list(ddl) == ["domesticas", "sessoes"]          # a tabela referenciada vem primeiro
+    assert "email VARCHAR(255) NOT NULL" in ddl["domesticas"]
+    assert "servicos JSON NOT NULL" in ddl["domesticas"]
+    assert "embedding BLOB" in ddl["domesticas"]
+    assert "FOREIGN KEY(domestica_id) REFERENCES domesticas (id) ON DELETE CASCADE" in ddl["sessoes"]
+    print("OK  - banco: o SQL gerado para MySQL tem os tipos e a chave estrangeira esperados")
 
 
 # ── Conta e perfil ───────────────────────────────────────────────────────────
