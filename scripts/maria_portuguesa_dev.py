@@ -12,6 +12,9 @@ Execução (a partir da raiz do servidor):
     --banco-real      usa o banco configurado em modules/maria_portuguesa/database.py
                       (MySQL, ou o que estiver em MP_DATABASE_URL) em vez do SQLite em
                       memória: cria banco e tabelas se faltarem e não semeia perfis
+    --voz-simulada    conversa por voz sem GEMINI_API_KEY: uma Maria de ensaio que
+                      responde com um zumbido em vez de fala e faz a busca com o que
+                      lhe escreverem. Serve para trabalhar o ecrã, não a conversa
     --sem-e5          arranque instantâneo com um codificador simplificado
                       (a busca deixa de ser semântica; só compara palavras)
     --porta N         porta (por omissão 8090)
@@ -19,11 +22,15 @@ Execução (a partir da raiz do servidor):
 A voz precisa de GEMINI_API_KEY no .env; sem ela a pesquisa escrita funciona na mesma.
 """
 import argparse
+import asyncio
 import hashlib
+import math
 import os
 import shutil
+import struct
 import sys
 import tempfile
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # O servidor escreve emojis nos logs; a consola do Windows (cp1252) rebenta com eles.
@@ -42,6 +49,7 @@ from sqlalchemy.pool import StaticPool
 from modules import maria_portuguesa
 from modules.maria_portuguesa import catalogo
 from modules.maria_portuguesa.database import Base, get_db
+from modules.maria_portuguesa.live_service import AssistenteVoz
 from modules.maria_portuguesa.models import MpDomesticaDB
 from modules.maria_portuguesa import routes as rotas_mp
 from modules.maria_portuguesa.routes import get_fabrica_db
@@ -116,6 +124,76 @@ def codificador_simplificado(textos: list[str]) -> np.ndarray:
     return vetores
 
 
+class SessaoLiveSimulada:
+    """Faz de Gemini Live para o AssistenteVoz, sem rede: apresenta-se, e a cada
+    texto recebido pede uma busca e comenta o resultado. O "áudio" é um zumbido
+    modulado, só para o avatar mexer a boca e a reprodução ser exercitada."""
+
+    APRESENTACAO = (
+        "Olá! Sou a Maria Portuguesa. Estou aqui para lhe trazer as melhores empregadas domésticas "
+        "da sua região, de forma prática, rápida e de confiança. Diga-me, do que precisa?"
+    )
+
+    def __init__(self):
+        self._fila: asyncio.Queue = asyncio.Queue()
+        self._apresentada = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+    async def send_realtime_input(self, text=None, **_):
+        if text is None:
+            return  # áudio do microfone: a simulação não ouve
+        if not self._apresentada:
+            self._apresentada = True
+            await self._fila.put(("fala", self.APRESENTACAO))
+        else:
+            await self._fila.put(("procura", text))
+
+    async def send_tool_response(self, function_responses):
+        resultado = function_responses[0].response
+        perfis = resultado.get("perfis", [])
+        if not perfis:
+            fala = "Ainda não encontrei ninguém com esse perfil. Quer tentar noutra zona?"
+        else:
+            primeiro = perfis[0]
+            fala = (f"Encontrei {resultado['total_encontrado']} pessoas. Destaco a {primeiro['nome']}, "
+                    f"de {primeiro['zona']}. Quer que lhe mostre o perfil?")
+        await self._fila.put(("fala", fala))
+
+    @staticmethod
+    def _zumbido(segundos: float) -> bytes:
+        amostras = int(24000 * segundos)
+        return b"".join(
+            struct.pack("<h", int(9000 * math.sin(2 * math.pi * 210 * i / 24000)
+                                  * (0.55 + 0.45 * math.sin(2 * math.pi * 5 * i / 24000))))
+            for i in range(amostras)
+        )
+
+    async def receive(self):
+        tipo, valor = await self._fila.get()
+        if tipo == "procura":
+            chamada = SimpleNamespace(id="sim", name="procurar_domesticas", args={"consulta": valor})
+            yield SimpleNamespace(tool_call=SimpleNamespace(function_calls=[chamada]), server_content=None)
+            return
+
+        def conteudo(**campos):
+            base = dict(interrupted=False, model_turn=None, input_transcription=None,
+                        output_transcription=None, turn_complete=False)
+            base.update(campos)
+            return SimpleNamespace(tool_call=None, server_content=SimpleNamespace(**base))
+
+        for palavra in valor.split(" "):
+            audio = SimpleNamespace(inline_data=SimpleNamespace(data=self._zumbido(0.22)))
+            yield conteudo(model_turn=SimpleNamespace(parts=[audio]),
+                           output_transcription=SimpleNamespace(text=palavra + " "))
+            await asyncio.sleep(0.2)
+        yield conteudo(turn_complete=True)
+
+
 def _usar_sqlite_em_memoria(app: FastAPI) -> None:
     """Base descartável com perfis de demonstração; substitui a do módulo."""
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -147,7 +225,14 @@ def _usar_sqlite_em_memoria(app: FastAPI) -> None:
     app.dependency_overrides[get_fabrica_db] = lambda: Sessao
 
 
-def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_real: bool = False) -> FastAPI:
+def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_real: bool = False,
+              voz_simulada: bool = False) -> FastAPI:
+    if voz_simulada:
+        from core.config import settings
+        settings.GEMINI_API_KEYS = ["simulada"]
+        AssistenteVoz._abrir_sessao_live = staticmethod(lambda chave: SessaoLiveSimulada())
+        print("🎭 Voz simulada: a Maria de ensaio responde sem usar o Gemini.")
+
     if sem_e5:
         BuscaService.definir_codificador(codificador_simplificado)
     else:
@@ -184,7 +269,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Servidor de desenvolvimento da Maria Portuguesa")
     parser.add_argument("--landing", help="pasta da landing page a servir em /")
     parser.add_argument("--banco-real", action="store_true", help="usar o banco configurado no módulo")
+    parser.add_argument("--voz-simulada", action="store_true", help="conversa de ensaio sem Gemini")
     parser.add_argument("--sem-e5", action="store_true", help="não carregar o modelo E5")
     parser.add_argument("--porta", type=int, default=8090)
     args = parser.parse_args()
-    uvicorn.run(criar_app(args.landing, args.sem_e5, args.porta, args.banco_real), host="127.0.0.1", port=args.porta)
+    uvicorn.run(criar_app(args.landing, args.sem_e5, args.porta, args.banco_real, args.voz_simulada), host="127.0.0.1", port=args.porta)
