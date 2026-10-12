@@ -1,11 +1,12 @@
 """
-Teste do "Conectar Instagram" do creator (POST /creators/me/instagram).
+Teste do "Conectar Instagram" do creator (POST e DELETE /creators/me/instagram).
 
 Confere: sem a chave secreta do app o app é avisado (503); o código devolvido pelo login do Instagram vira @,
 seguidores e link confirmados no perfil; o link do Instagram digitado à mão é trocado pelo confirmado (sem mexer
 nas outras redes); uma conta do Instagram confirma um perfil só (409), mas o mesmo creator pode reconectar; recusa
-do Instagram vira 502 com mensagem para o usuário; só creator logado conecta; e o serviço fala com o Instagram do
-jeito certo (troca do código com a chave secreta, leitura do perfil com o token, nos dois formatos de resposta).
+do Instagram vira 502 com mensagem para o usuário; só creator logado conecta; desconectar apaga do perfil o que
+veio do Instagram e libera a conta; e o serviço fala com o Instagram do jeito certo (troca do código com a chave
+secreta, leitura do perfil com o token, nos dois formatos de resposta).
 
 Roda contra SQLite em memória, sem rede — o Instagram é substituído por um falso.
 
@@ -168,6 +169,34 @@ def teste_recusa_do_instagram_e_quem_pode_conectar():
     print("OK  - recusa do Instagram vira 502; sem login 401, empresa 403, sem endereço de retorno 422")
 
 
+def teste_desconectar_apaga_o_que_veio_do_instagram_e_libera_a_conta():
+    _instalar_instagram({"d": instagram_service.InstagramProfile("4001", "vai.sair", 900)})
+    creator = _usuario(platforms=[{"platform": "TikTok", "url": "https://www.tiktok.com/@beto"}, "Instagram"])
+    assert _conectar(creator, "d").json()["instagram_username"] == "vai.sair"
+
+    r = _client.delete("/creators/me/instagram", headers=creator)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["instagram_username"] == "" and body["instagram_followers"] == 0
+    # o Instagram continua na lista de redes, mas sem o link; as outras redes ficam como estavam
+    assert body["platforms"] == [
+        {"platform": "TikTok", "url": "https://www.tiktok.com/@beto"},
+        {"platform": "Instagram", "url": ""},
+    ]
+    db = dbmod.SessionLocal()
+    assert db.query(m.CreatorDB).filter(m.CreatorDB.instagram_user_id == "4001").count() == 0
+    db.close()
+
+    # a conta ficou livre para outro perfil; desconectar sem nada conectado não quebra nem cria o Instagram na lista
+    outro = _usuario(platforms=["TikTok"])
+    assert _client.delete("/creators/me/instagram", headers=outro).json()["platforms"] == [{"platform": "TikTok", "url": ""}]
+    assert _conectar(outro, "d").status_code == 200
+
+    assert _client.delete("/creators/me/instagram").status_code == 401
+    assert _client.delete("/creators/me/instagram", headers=_usuario("company")).status_code == 403
+    print("OK  - desconectar apaga id, @, seguidores e link do Instagram e libera a conta; só o próprio creator")
+
+
 class _Resposta:
     def __init__(self, status_code, body):
         self.status_code = status_code
@@ -247,4 +276,5 @@ if __name__ == "__main__":
     teste_creator_sem_instagram_na_lista_ganha_o_link()
     teste_uma_conta_do_instagram_confirma_um_perfil_so()
     teste_recusa_do_instagram_e_quem_pode_conectar()
+    teste_desconectar_apaga_o_que_veio_do_instagram_e_libera_a_conta()
     teste_o_servico_fala_com_o_instagram_do_jeito_certo()

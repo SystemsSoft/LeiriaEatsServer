@@ -70,7 +70,9 @@ def criar_banco_e_tabelas() -> list[str]:
         # parâmetros), por isso só se aceitam identificadores simples.
         if not nome or not re.fullmatch(r"[A-Za-z0-9_]+", nome):
             raise ValueError(f"Nome de banco inválido para a Maria Portuguesa: {nome!r}")
-        servidor = create_engine(_url.set(database=None), connect_args={"connect_timeout": 10})
+        # _replace e não set(): o set() ignora None e deixaria a ligação apontada
+        # para o banco que ainda não existe.
+        servidor = create_engine(_url._replace(database=None), connect_args={"connect_timeout": 10})
         try:
             with servidor.connect() as ligacao:
                 ligacao.execute(text(

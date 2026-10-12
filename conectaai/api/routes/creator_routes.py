@@ -72,8 +72,9 @@ async def upload_my_avatar(
 
 def _with_instagram_link(platforms, username: str) -> list:
     """`platforms` com o link do Instagram trocado pelo do perfil confirmado (mantendo a posição), ou
-    acrescentado se o creator ainda não tinha o Instagram na lista."""
-    link = {"platform": "Instagram", "url": f"https://www.instagram.com/{username}"}
+    acrescentado se o creator ainda não tinha o Instagram na lista. Sem `username` (desconectar), o Instagram
+    continua na lista mas sem link — e não é acrescentado se não estava lá."""
+    link = {"platform": "Instagram", "url": f"https://www.instagram.com/{username}" if username else ""}
     result, replaced = [], False
     for item in platforms or []:
         name = item if isinstance(item, str) else (item or {}).get("platform", "")
@@ -83,7 +84,7 @@ def _with_instagram_link(platforms, username: str) -> list:
                 replaced = True
         else:
             result.append(item)
-    return result if replaced else result + [link]
+    return result if replaced or not username else result + [link]
 
 
 @router.post("/me/instagram", response_model=CreatorResponse)
@@ -114,6 +115,26 @@ def connect_my_instagram(
         "instagram_username": profile.username,
         "instagram_followers": profile.followers,
         "platforms": _with_instagram_link(creator.platforms, profile.username),
+    })
+    return _to_response(creator)
+
+
+@router.delete("/me/instagram", response_model=CreatorResponse)
+def disconnect_my_instagram(
+    current_user: CurrentUser = Depends(require_role("creator")), db: Session = Depends(get_db)
+):
+    """"Desconectar Instagram": apaga do perfil tudo o que veio do Instagram (id da conta, @, seguidores e o link
+    confirmado). Nada fica guardado em outro lugar — o token nunca foi salvo —, e a conta fica livre para confirmar
+    outro perfil. Para o Instagram deixar de listar o app, o creator remove o acesso em "Apps e sites" de lá."""
+    creator = CreatorRepository.get_by_user_id(db, current_user.user_id)
+    if not creator:
+        raise HTTPException(status_code=404, detail="Perfil de creator não encontrado")
+
+    creator = CreatorRepository.update(db, creator, {
+        "instagram_user_id": "",
+        "instagram_username": "",
+        "instagram_followers": 0,
+        "platforms": _with_instagram_link(creator.platforms, ""),
     })
     return _to_response(creator)
 
