@@ -58,6 +58,12 @@ class CreatorUpdateRequest(BaseModel):
     engagement_history: Optional[List[TimeSeriesPoint]] = None
 
 
+class InstagramConnectRequest(BaseModel):
+    """Volta do login do Instagram: o `code` de uso único e o endereço de retorno usado para abrir o login."""
+    code: str
+    redirect_uri: str
+
+
 class CreatorResponse(BaseModel):
     id: str
     name: str
@@ -79,6 +85,9 @@ class CreatorResponse(BaseModel):
     followers_history: List[TimeSeriesPoint]
     engagement_history: List[TimeSeriesPoint]
     profile_views: int = 0
+    # Instagram confirmado pelo login oficial — vazio/0 enquanto o creator não conectou a conta.
+    instagram_username: str = ""
+    instagram_followers: int = 0
 
     # Calculados em tempo de request pelo ai_service quando há contexto de busca
     # (não são colunas persistidas) — ausentes fora do fluxo de chat/matching.
@@ -127,4 +136,6 @@ def creator_to_response(creator) -> "CreatorResponse":
         followers_history=creator.followers_history or [],
         engagement_history=creator.engagement_history or [],
         profile_views=creator.profile_views or 0,
+        instagram_username=creator.instagram_username or "",
+        instagram_followers=creator.instagram_followers or 0,
     )

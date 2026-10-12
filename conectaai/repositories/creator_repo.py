@@ -20,6 +20,10 @@ class CreatorRepository:
         return db.query(CreatorDB).filter(CreatorDB.user_id == user_id).first()
 
     @staticmethod
+    def get_by_instagram_user_id(db: Session, instagram_user_id: str) -> Optional[CreatorDB]:
+        return db.query(CreatorDB).filter(CreatorDB.instagram_user_id == instagram_user_id).first()
+
+    @staticmethod
     def get_many_by_ids(db: Session, creator_ids: List[str]) -> List[CreatorDB]:
         if not creator_ids:
             return []

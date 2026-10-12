@@ -51,6 +51,13 @@ class ConectaAISettings:
     # `aud` do ID token do Google, sem precisar de credencial de service account.
     FIREBASE_PROJECT_ID: str = os.getenv("CONECTAAI_FIREBASE_PROJECT_ID", "conectaai-cc9f4")
 
+    # --- "Conectar Instagram" (API do Instagram com login do Instagram) ---
+    # Id do app do Instagram no painel da Meta (não é segredo — já é público no client, em
+    # lib/app/utils/instagram_connect.dart) e a chave SECRETA do mesmo app, que só existe aqui. Sem a chave, o
+    # POST /creators/me/instagram responde 503 ("ainda não disponível").
+    INSTAGRAM_APP_ID: str = os.getenv("CONECTAAI_INSTAGRAM_APP_ID", "1615507726721938")
+    INSTAGRAM_APP_SECRET: str = os.getenv("CONECTAAI_INSTAGRAM_APP_SECRET", "")
+
     # --- Porta do processo (documentacional; quem define de fato é o comando uvicorn) ---
     PORT: int = int(os.getenv("CONECTAAI_PORT", 8081))
 

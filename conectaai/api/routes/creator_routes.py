@@ -11,8 +11,14 @@ from conectaai.repositories.company_repo import CompanyRepository
 from conectaai.repositories.creator_repo import CreatorRepository
 from conectaai.repositories.proposal_repo import ProposalRepository
 from conectaai.repositories.rating_repo import RatingRepository
-from conectaai.schemas.creator import CreatorResponse, CreatorUpdateRequest, creator_to_response as _to_response
+from conectaai.schemas.creator import (
+    CreatorResponse,
+    CreatorUpdateRequest,
+    InstagramConnectRequest,
+    creator_to_response as _to_response,
+)
 from conectaai.schemas.rating import RatingRequest, RatingResponse
+from conectaai.services import instagram_service
 
 router = APIRouter(prefix="/creators", tags=["Creators"])
 
@@ -61,6 +67,54 @@ async def upload_my_avatar(
 
     url = await save_avatar_image(file)
     creator = CreatorRepository.update(db, creator, {"avatar_url": url})
+    return _to_response(creator)
+
+
+def _with_instagram_link(platforms, username: str) -> list:
+    """`platforms` com o link do Instagram trocado pelo do perfil confirmado (mantendo a posição), ou
+    acrescentado se o creator ainda não tinha o Instagram na lista."""
+    link = {"platform": "Instagram", "url": f"https://www.instagram.com/{username}"}
+    result, replaced = [], False
+    for item in platforms or []:
+        name = item if isinstance(item, str) else (item or {}).get("platform", "")
+        if name == "Instagram":
+            if not replaced:
+                result.append(link)
+                replaced = True
+        else:
+            result.append(item)
+    return result if replaced else result + [link]
+
+
+@router.post("/me/instagram", response_model=CreatorResponse)
+def connect_my_instagram(
+    data: InstagramConnectRequest,
+    current_user: CurrentUser = Depends(require_role("creator")),
+    db: Session = Depends(get_db),
+):
+    """Conclui o "Conectar Instagram": troca o `code` do login do Instagram pelo perfil da conta que autorizou e
+    grava esse Instagram como confirmado no perfil do creator. Uma conta do Instagram confirma um perfil só."""
+    creator = CreatorRepository.get_by_user_id(db, current_user.user_id)
+    if not creator:
+        raise HTTPException(status_code=404, detail="Perfil de creator não encontrado")
+
+    try:
+        profile = instagram_service.fetch_profile(data.code, data.redirect_uri)
+    except instagram_service.InstagramUnavailable:
+        raise HTTPException(status_code=503, detail="A conexão com o Instagram ainda não está disponível.")
+    except instagram_service.InstagramError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    owner = CreatorRepository.get_by_instagram_user_id(db, profile.user_id)
+    if owner and owner.id != creator.id:
+        raise HTTPException(status_code=409, detail="Esse Instagram já está conectado a outro perfil do ConectaAI.")
+
+    creator = CreatorRepository.update(db, creator, {
+        "instagram_user_id": profile.user_id,
+        "instagram_username": profile.username,
+        "instagram_followers": profile.followers,
+        "platforms": _with_instagram_link(creator.platforms, profile.username),
+    })
     return _to_response(creator)
 
 

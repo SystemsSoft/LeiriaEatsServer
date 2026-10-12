@@ -86,6 +86,11 @@ class CreatorDB(Base):
     followers_history = Column(JSON, default=list)
     engagement_history = Column(JSON, default=list)
     profile_views = Column(Integer, default=0)
+    # Conta do Instagram confirmada pelo login oficial ("Conectar Instagram") — vazio enquanto o creator só
+    # digitou o @ em `platforms`. Ver services/instagram_service.py e migrations/005_creator_instagram.sql.
+    instagram_user_id = Column(String(40), default="")
+    instagram_username = Column(String(60), default="")
+    instagram_followers = Column(Integer, default=0)
 
     user = relationship("UserDB", back_populates="creator")
 
