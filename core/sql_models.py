@@ -33,6 +33,10 @@ class RestaurantDB(Base):
     # --- SURPRISE BOX ---
     has_surprise_box = Column(Boolean, default=False, nullable=False)
     surprise_box_qty = Column(Integer, default=0, nullable=False)
+    # Faixa de horário em que a caixa surpresa pode ser recolhida, formato "HH:mm"
+    # (mesmo padrão de RestaurantHourDB.open_time/close_time)
+    surprise_box_pickup_start = Column(String(5), nullable=True)
+    surprise_box_pickup_end = Column(String(5), nullable=True)
 
     products = relationship("ProductDB", back_populates="restaurant")
     hours = relationship("RestaurantHourDB", back_populates="restaurant")
@@ -81,10 +85,18 @@ class ProductDB(Base):
     # Status e popularidade
     is_popular = Column(Boolean, default=False)  # Se é item destaque/popular
     is_available = Column(Boolean, default=True)  # Se está disponível no momento
+    is_surprise_box = Column(Boolean, default=False)  # Se é um item de Caixa Surpresa
     
     # Tempo de preparo estruturado
     preparation_time_minutes = Column(Integer, nullable=True)  # Tempo em minutos (ex: 30)
-    
+
+    # Minutos que o prato aguenta em trânsito mantendo qualidade (gelado derrete, chocolate
+    # quente esfria) — usado pelo sequenciador de recolhas multi-restaurante para não recolher
+    # um perecível cedo demais. Obrigatório no formulário/API de criação (ver
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, 4.4/5.5); nullable aqui porque o histórico de
+    # produtos já cadastrados não tem esse valor — ver scripts/backfill_transit_tolerance.py.
+    transit_tolerance_minutes = Column(Integer, nullable=True)
+
     # Recomendação por horário (separado por vírgula)
     # Ex: "café da manhã, almoço", "jantar, lanche", "sobremesa"
     recommended_for = Column(String(200), nullable=True)
@@ -148,20 +160,27 @@ class SubOrderDB(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     gid = Column(String(255), nullable=True, unique=True)
-    master_order_gid = Column(String(255), ForeignKey("orders.gid"), nullable=False)
-    
+    master_order_gid = Column(String(255), ForeignKey("orders.gid"), nullable=False, index=True)
+
     restaurant_gid = Column(String(255), ForeignKey("restaurants.gid"))
     restaurant_name = Column(String(255))
     restaurant_category = Column(String(100))
     restaurant_image_url = Column(String(500))
-    
-    status = Column(String(50), default="Pendente")
+
+    status = Column(String(50), default="Pendente", index=True)
     total = Column(Float)
     delivery_fee = Column(Float, default=0.0)
     base_time = Column(Integer, default=0)
-    
+
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 2 — sinal real de prontidão, gravado pelo
+    # botão "Pedido pronto" do KomaRestaurant. Não substitui `status` (ver secção 6 do
+    # plano: trocar o vocabulário de status mexe na guarda de captura de pagamento, risco
+    # à parte); é um timestamp paralelo que o worker de despacho passa a preferir à
+    # estimativa por base_time quando presente.
+    ready_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
     # ── Estafeta atribuído (específico por sub-pedido/restaurante) ──────────
-    driver_id   = Column(Integer, ForeignKey("drivers.id"), nullable=True)
+    driver_gid  = Column(String(255), ForeignKey("drivers.gid"), nullable=True)
     driver_name = Column(String(255), nullable=True)
     driver_delivery_fee = Column(Float, nullable=True, default=None)
     driver_payment_transfer_id = Column(String(255), nullable=True, default=None)
@@ -200,6 +219,70 @@ class OrderItemDB(Base):
     sub_order = relationship("SubOrderDB", back_populates="items", foreign_keys=[sub_order_gid], primaryjoin="OrderItemDB.sub_order_gid == SubOrderDB.gid")
 
 
+class DeliveryRouteDB(Base):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, secção 5.1 e Fase 3 — a unidade que o estafeta
+    aceita passa a ser a rota (N paragens de recolha + 1 entrega), não o sub-pedido
+    isolado. Uma rota agrupa os sub-pedidos de um único master_order (Opção B, secção 3);
+    não ser filha do pedido no desenho (é uma entidade própria) deixa a Opção C
+    (agrupar entre pedidos distintos, hoje fora de escopo) possível sem nova migração.
+    """
+    __tablename__ = "delivery_routes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gid = Column(String(255), unique=True, nullable=False)
+    # Sem ForeignKey de verdade: orders.gid não tem chave única no banco de produção
+    # (mesma lacuna pré-existente de OrderItemDB.sub_order_gid — confirmado via
+    # information_schema, não é regressão desta migração). Índice normal basta para as
+    # queries que o worker de despacho faz.
+    master_order_gid = Column(String(255), nullable=False, index=True)
+    driver_gid = Column(String(255), ForeignKey("drivers.gid"), nullable=True, index=True)
+
+    # OFFERED | ACCEPTED | IN_PROGRESS | COMPLETED | EXPIRED | CANCELLED
+    status = Column(String(30), nullable=False, default="OFFERED", index=True)
+
+    offered_at   = Column(DateTime(timezone=True), nullable=True)
+    accepted_at  = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    estimated_delivery_at = Column(DateTime(timezone=True), nullable=True)
+    # Taxa estimada da rota inteira, calculada no momento da oferta (mesma fórmula
+    # _calculate_delivery_fee já usada no fluxo antigo de sub-pedido único) — sem isto o
+    # app do estafeta (Fase 4) não tem o que mostrar como ganho antes de aceitar.
+    estimated_fee = Column(Float, nullable=True)
+    sequence_version = Column(Integer, nullable=False, default=1)  # incrementa a cada recálculo
+
+    master_order = relationship("OrderDB", foreign_keys=[master_order_gid], primaryjoin="DeliveryRouteDB.master_order_gid == OrderDB.gid")
+    driver = relationship("DriverDB", foreign_keys=[driver_gid], primaryjoin="DeliveryRouteDB.driver_gid == DriverDB.gid")
+    stops = relationship("RouteStopDB", back_populates="route", cascade="all, delete-orphan", foreign_keys="RouteStopDB.route_gid", primaryjoin="DeliveryRouteDB.gid == RouteStopDB.route_gid", order_by="RouteStopDB.sequence")
+
+
+class RouteStopDB(Base):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, secção 5.2 — uma paragem por sub-pedido dentro de
+    uma rota. É aqui que vive a ordem de recolha (campo `sequence`), que antes desta fase
+    não existia em lugar nenhum do schema.
+    """
+    __tablename__ = "route_stops"
+
+    id = Column(Integer, primary_key=True, index=True)
+    route_gid = Column(String(255), ForeignKey("delivery_routes.gid"), nullable=False, index=True)
+    # Sem ForeignKey de verdade contra sub_orders.gid — mesma lacuna de master_order_gid
+    # acima (sub_orders.gid também não tem chave única em produção).
+    sub_order_gid = Column(String(255), nullable=False, index=True)
+
+    sequence = Column(Integer, nullable=False)  # 1, 2, 3 — ordem de recolha decidida pelo RouteSequencer
+    ready_at_estimated = Column(DateTime(timezone=True), nullable=True)
+    ready_at_confirmed = Column(DateTime(timezone=True), nullable=True)  # espelha SubOrderDB.ready_at no momento do cálculo
+    arrived_at   = Column(DateTime(timezone=True), nullable=True)
+    picked_up_at = Column(DateTime(timezone=True), nullable=True)
+
+    route = relationship("DeliveryRouteDB", back_populates="stops", foreign_keys=[route_gid], primaryjoin="RouteStopDB.route_gid == DeliveryRouteDB.gid")
+    sub_order = relationship("SubOrderDB", foreign_keys=[sub_order_gid], primaryjoin="RouteStopDB.sub_order_gid == SubOrderDB.gid")
+
+    __table_args__ = (UniqueConstraint("route_gid", "sub_order_gid", name="uq_route_sub_order"),)
+
+
 class SavedPaymentMethodDB(Base):
     __tablename__ = "saved_payment_methods"
 
@@ -235,6 +318,7 @@ class DriverDB(Base):
     __tablename__ = "drivers"
 
     id       = Column(Integer, primary_key=True, index=True)
+    gid      = Column(String(255), nullable=True, unique=True)
     login    = Column(String(100), unique=True, nullable=False, index=True)
     password = Column(String(255), nullable=False)
     status   = Column(String(50), default="PENDING")   # PENDING | ACTIVE | INACTIVE
@@ -268,6 +352,11 @@ class DriverDB(Base):
     latitude   = Column(Float,    nullable=True)   # última latitude conhecida
     longitude  = Column(Float,    nullable=True)   # última longitude conhecida
     last_seen  = Column(DateTime(timezone=True), nullable=True)  # timestamp do último update
+
+    # PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 5 — token FCM do dispositivo, para
+    # notificar o estafeta de uma nova rota sem esperar o próximo poll (até 10s + até 60s
+    # de janela de aceite). Nullable: sempre há fallback por polling se vazio ou expirado.
+    fcm_token  = Column(String(500), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))

@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Optional
+from datetime import datetime
 
 # --- MODELO DO PRODUTO ---
 class Product(BaseModel):
@@ -14,6 +15,9 @@ class Product(BaseModel):
     preparation_time: Optional[str] = "20-30 min"
     quantity: Optional[int] = 1  # Quantidade detectada pela IA (padrão: 1)
     rating: Optional[float] = None  # Rating médio do produto
+    is_surprise_box: bool = False
+    surprise_box_pickup_start: Optional[str] = None
+    surprise_box_pickup_end: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -32,6 +36,8 @@ class Restaurant(BaseModel):
     longitude: Optional[float] = None
     has_surprise_box: bool = False
     surprise_box_qty: int = 0
+    surprise_box_pickup_start: Optional[str] = None  # "HH:mm"
+    surprise_box_pickup_end: Optional[str] = None    # "HH:mm"
 
     # O nome aqui deve ser 'products' para bater com o banco de dados
     products: List[Product] = []
@@ -115,6 +121,7 @@ class SubOrderResponse(BaseModel):
     total: float
     delivery_fee: float
     base_time: int
+    ready_at: Optional[datetime] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     vehicle_type: Optional[str] = None

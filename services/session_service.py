@@ -9,7 +9,7 @@ from core.config import settings
 class CartItem:
     def __init__(self, product_id: int, name: str, price: float, restaurant_gid: str,
                  quantity: int = 1, serves_people: Optional[int] = 1, category: str = "",
-                 restaurant_name: str = ""):
+                 restaurant_name: str = "", is_surprise_box: bool = False):
         self.product_id = product_id
         self.name = name
         self.price = price
@@ -20,6 +20,8 @@ class CartItem:
         # Necessário para a IA explicar o limite de restaurantes por nome, não por GID
         # (ver PLANO_LIMITE_RESTAURANTES.md, Fase 2.3).
         self.restaurant_name = restaurant_name
+        # Regra de exclusividade da Caixa Surpresa — ver UserSession.tem_item_caixa_surpresa_no_carrinho.
+        self.is_surprise_box = is_surprise_box
 
     def to_dict(self) -> Dict:
         return {
@@ -31,6 +33,7 @@ class CartItem:
             "serves_people": self.serves_people,
             "category": self.category,
             "restaurant_name": self.restaurant_name,
+            "is_surprise_box": self.is_surprise_box,
             "subtotal": round(self.price * self.quantity, 2)
         }
 
@@ -44,9 +47,10 @@ class CartItem:
             quantity=data["quantity"],
             serves_people=data.get("serves_people") if data.get("serves_people") is not None else 1,
             category=data.get("category", ""),
-            # .get() com default "" garante que sessões antigas no Redis (sem este campo)
+            # .get() com default garante que sessões antigas no Redis (sem estes campos)
             # continuem carregando sem KeyError.
-            restaurant_name=data.get("restaurant_name", "")
+            restaurant_name=data.get("restaurant_name", ""),
+            is_surprise_box=data.get("is_surprise_box", False)
         )
 
 
@@ -123,7 +127,7 @@ class UserSession:
 
     def add_to_cart(self, product_id: int, name: str, price: float, restaurant_gid: str,
                     quantity: int = 1, serves_people: int = 1, category: str = "",
-                    restaurant_name: str = "") -> str:
+                    restaurant_name: str = "", is_surprise_box: bool = False) -> str:
         """Adiciona, incrementa ou subtrai item no carrinho"""
         for item in self.cart:
             if item.product_id == product_id:
@@ -137,7 +141,7 @@ class UserSession:
         # Apenas adiciona se a quantidade for positiva
         if quantity > 0:
             self.cart.append(CartItem(product_id, name, price, restaurant_gid, quantity,
-                                       serves_people, category, restaurant_name))
+                                       serves_people, category, restaurant_name, is_surprise_box))
             return f"{name} adicionado ao carrinho"
         return ""
 
@@ -170,6 +174,17 @@ class UserSession:
             if item.restaurant_gid and item.restaurant_gid not in nomes:
                 nomes[item.restaurant_gid] = item.restaurant_name or item.restaurant_gid
         return nomes
+
+    # ── Exclusividade da Caixa Surpresa ─────────────────────────────────────
+
+    def tem_item_caixa_surpresa_no_carrinho(self) -> bool:
+        """
+        Um pedido com item de Caixa Surpresa é exclusivo: nenhum outro produto pode
+        estar no mesmo carrinho, e a entrega fica restrita a recolha no restaurante.
+        Derivado do carrinho atual pelo mesmo motivo de restaurantes_no_carrinho() —
+        libera sozinho assim que o item de Caixa Surpresa é removido.
+        """
+        return any(item.is_surprise_box for item in self.cart)
 
     def clear_cart(self):
         """Limpa o carrinho"""

@@ -1,0 +1,138 @@
+# Arquivo: conectaai/repositories/campaign_repo.py
+from typing import List, Optional
+
+from sqlalchemy.orm import Session, joinedload
+
+from conectaai.models.sql_models import CampaignCreatorDB, CampaignDB
+
+
+class CampaignRepository:
+    @staticmethod
+    def get_all_by_company(db: Session, company_id: str) -> List[CampaignDB]:
+        return (
+            db.query(CampaignDB)
+            .options(joinedload(CampaignDB.creator_links))
+            .filter(CampaignDB.company_id == company_id)
+            .all()
+        )
+
+    @staticmethod
+    def get_by_id(db: Session, campaign_id: str) -> Optional[CampaignDB]:
+        return (
+            db.query(CampaignDB)
+            .options(joinedload(CampaignDB.creator_links))
+            .filter(CampaignDB.id == campaign_id)
+            .first()
+        )
+
+    @staticmethod
+    def create(db: Session, company_id: str, data: dict, creator_ids: List[str]) -> CampaignDB:
+        campaign = CampaignDB(company_id=company_id, **data)
+        db.add(campaign)
+        db.flush()
+        for creator_id in creator_ids:
+            db.add(CampaignCreatorDB(campaign_id=campaign.id, creator_id=creator_id))
+        db.commit()
+        db.refresh(campaign)
+        return campaign
+
+    @staticmethod
+    def update(db: Session, campaign: CampaignDB, data: dict, creator_ids: Optional[List[str]]) -> CampaignDB:
+        for key, value in data.items():
+            setattr(campaign, key, value)
+
+        if creator_ids is not None:
+            db.query(CampaignCreatorDB).filter(CampaignCreatorDB.campaign_id == campaign.id).delete()
+            for creator_id in creator_ids:
+                db.add(CampaignCreatorDB(campaign_id=campaign.id, creator_id=creator_id))
+
+        db.commit()
+        db.refresh(campaign)
+        return campaign
+
+    # Ordem das etapas do andamento da campanha (espelha CampaignStage no app).
+    _STAGES = ["briefing", "negotiation", "contract", "production", "approval", "publication", "payment"]
+
+    @staticmethod
+    def _advance(db: Session, campaign_id: Optional[str], *, from_statuses: set, to_status: str, to_stage: str) -> None:
+        """Avança uma campanha — e SÓ para frente. O status muda para `to_status` apenas se hoje está
+        em `from_statuses`; a etapa só anda se `to_stage` está adiante da atual. Uma campanha concluída
+        nunca é tocada, e nenhuma regride porque outra negociação começou ou outro acordo fechou.
+        A etapa avança mesmo com a campanha já ativa: ela nasce ativa (em "Briefing") e vai
+        acompanhando a negociação e o contrato."""
+        if not campaign_id:
+            return
+        campaign = db.query(CampaignDB).filter(CampaignDB.id == campaign_id).first()
+        if campaign is None or campaign.status == "completed":
+            return
+        stages = CampaignRepository._STAGES
+        current = campaign.current_stage if campaign.current_stage in stages else "briefing"
+        if campaign.status in from_statuses:
+            campaign.status = to_status
+        if stages.index(to_stage) > stages.index(current):
+            campaign.current_stage = to_stage
+        db.commit()
+
+    @staticmethod
+    def mark_negotiation_started(db: Session, campaign_id: Optional[str]) -> None:
+        """Um agente começou a negociar por esta campanha: sai de "rascunho"."""
+        CampaignRepository._advance(db, campaign_id, from_statuses={"draft"}, to_status="negotiating", to_stage="negotiation")
+
+    @staticmethod
+    def mark_agreement_approved(db: Session, campaign_id: Optional[str]) -> None:
+        """Os dois lados aprovaram um acordo: a campanha tem creator contratado e vira "ativa"."""
+        CampaignRepository._advance(db, campaign_id, from_statuses={"draft", "negotiating"}, to_status="active", to_stage="contract")
+
+    @staticmethod
+    def link_creator(db: Session, campaign_id: str, creator_id: str) -> None:
+        """Vincula o creator à campanha (idempotente — a chave é campanha+creator)."""
+        exists = (
+            db.query(CampaignCreatorDB)
+            .filter(CampaignCreatorDB.campaign_id == campaign_id, CampaignCreatorDB.creator_id == creator_id)
+            .first()
+        )
+        if not exists:
+            db.add(CampaignCreatorDB(campaign_id=campaign_id, creator_id=creator_id))
+            db.commit()
+
+    @staticmethod
+    def mark_production_started(db: Session, campaign_id: Optional[str]) -> None:
+        """Os conteúdos do acordo foram listados: a campanha entra em "Produção" (só avança etapa)."""
+        CampaignRepository._advance(db, campaign_id, from_statuses=set(), to_status="active", to_stage="production")
+
+    @staticmethod
+    def mark_content_submitted(db: Session, campaign_id: Optional[str]) -> None:
+        """O creator enviou um conteúdo para aprovação: a campanha chega em "Aprovação"."""
+        CampaignRepository._advance(db, campaign_id, from_statuses=set(), to_status="active", to_stage="approval")
+
+    @staticmethod
+    def mark_content_approved(db: Session, campaign_id: Optional[str]) -> None:
+        """Todos os conteúdos de um acordo foram aprovados: a campanha chega em "Publicação"."""
+        CampaignRepository._advance(db, campaign_id, from_statuses=set(), to_status="active", to_stage="publication")
+
+    @staticmethod
+    def mark_proposal_accepted(db: Session, campaign_id: Optional[str], creator_id: str) -> None:
+        """O creator aceitou uma proposta desta campanha: ele passa a fazer parte dela e a
+        campanha vira "ativa" — empresa (que enviou) e creator (que aceitou) já concordaram."""
+        if not campaign_id:
+            return
+        CampaignRepository.link_creator(db, campaign_id, creator_id)
+        CampaignRepository._advance(db, campaign_id, from_statuses={"draft", "negotiating"}, to_status="active", to_stage="contract")
+
+    @staticmethod
+    def activate(db: Session, campaign: CampaignDB) -> CampaignDB:
+        """Ativação manual pela empresa. Exige ao menos um creator vinculado e nunca regride:
+        campanha já ativa fica como está; concluída não reativa."""
+        if campaign.status == "completed":
+            raise ValueError("Essa campanha já foi concluída.")
+        if campaign.status == "active":
+            return campaign
+        if not campaign.creator_links:
+            raise ValueError("Vincule pelo menos um influenciador antes de ativar a campanha.")
+        CampaignRepository._advance(db, campaign.id, from_statuses={"draft", "negotiating"}, to_status="active", to_stage="contract")
+        db.refresh(campaign)
+        return campaign
+
+    @staticmethod
+    def creator_ids_of(campaign: CampaignDB) -> List[str]:
+        return [link.creator_id for link in campaign.creator_links]

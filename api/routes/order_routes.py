@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Request, Header
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,8 @@ from core.database import get_db, SessionLocal
 from core.sql_models import OrderDB, OrderItemDB, ProductDB, RestaurantDB, SavedPaymentMethodDB, ProductRatingDB, DeliveryZoneDB, DriverDB, SubOrderDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import OrderRequest, OrderResponse, OrderStatusUpdate, OrderStatusResponse, RatingRequest, DeliveryFeeRequest, SubOrderResponse, OrderItemResponse
+from services.ai_service import AIService
+from services.courier_notification_service import clear_dispatch_state
 
 router = APIRouter()
 
@@ -317,6 +319,41 @@ def _validar_restaurantes_aptos_pagamento(sub_orders: list, db: Session) -> Opti
     return None
 
 
+def _validar_caixa_surpresa_exclusiva(sub_orders: list, delivery_type: str, db: Session) -> Optional[str]:
+    """
+    Um pedido com item de Caixa Surpresa é exclusivo (mesma regra aplicada no chat de
+    IA — ver HybridAIService._bloqueado_por_caixa_surpresa_exclusiva): não pode conter
+    nenhum outro produto (nem outro item de Caixa Surpresa), e a entrega é sempre
+    recolha no restaurante.
+
+    Este é o gate que não pode ser contornado, pelo mesmo motivo dos outros dois acima:
+    o app monta `sub_orders`/`delivery_type` por conta própria, então a regra aplicada
+    só na conversa com a IA seria cosmética.
+    """
+    todos_gids = {item.product_gid for so in sub_orders for item in so.items if item.product_gid}
+    if not todos_gids:
+        return None
+
+    produtos = db.query(ProductDB).filter(ProductDB.gid.in_(todos_gids)).all()
+    gids_surpresa = {p.gid for p in produtos if p.is_surprise_box}
+    if not gids_surpresa:
+        return None
+
+    if len(todos_gids) > 1 or not todos_gids.issubset(gids_surpresa):
+        return (
+            "Um pedido com item de Caixa Surpresa é exclusivo — não pode conter nenhum "
+            "outro produto. Finalize este pedido separadamente ou remova os demais itens."
+        )
+
+    if delivery_type != "pickup":
+        return (
+            "Pedidos com Caixa Surpresa só podem ser recolhidos no restaurante — "
+            "selecione a opção de recolha para continuar."
+        )
+
+    return None
+
+
 @router.post("/orders/initiate-checkout")
 def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Session = Depends(get_db)):
     """
@@ -343,6 +380,11 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
     erro_aptidao = _validar_restaurantes_aptos_pagamento(order_data.sub_orders, db)
     if erro_aptidao:
         raise HTTPException(status_code=400, detail=erro_aptidao)
+
+    # Exclusividade da Caixa Surpresa — ver _validar_caixa_surpresa_exclusiva.
+    erro_caixa_surpresa = _validar_caixa_surpresa_exclusiva(order_data.sub_orders, order_data.delivery_type, db)
+    if erro_caixa_surpresa:
+        raise HTTPException(status_code=400, detail=erro_caixa_surpresa)
 
     from ulid import ULID
     master_order_gid = order_data.gid if order_data.gid else str(ULID())
@@ -580,6 +622,7 @@ def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
                     total=sub.total if sub.total else 0.0,
                     delivery_fee=sub.delivery_fee if sub.delivery_fee else 0.0,
                     base_time=sub.base_time if sub.base_time else 0,
+                    ready_at=sub.ready_at,
                     driver_name=sub.driver_name,
                     # Outros campos do driver podem ser buscados se necessário
                     items=items_resp
@@ -648,6 +691,7 @@ def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
                 total=sub.total if sub.total else 0.0,
                 delivery_fee=sub.delivery_fee if sub.delivery_fee else 0.0,
                 base_time=sub.base_time if sub.base_time else 0,
+                ready_at=sub.ready_at,
                 driver_name=sub.driver_name,
                 items=items_resp
             ))
@@ -989,46 +1033,94 @@ def cancel_sub_order_and_partial_refund(gid: str, db: Session = Depends(get_db))
 
 @router.patch("/orders/{order_id}/base_time")
 def update_base_time(order_id: int, payload: dict, db: Session = Depends(get_db)):
-    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    order.base_time = payload["base_time"]
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.1 — `order_id` aqui é o id NUMÉRICO do
+    SUB-PEDIDO, não do pedido master: é o valor que o app do restaurante recebe como
+    `id` em GET /orders/{restaurant_gid} (SubOrderResponse.id = sub.id, ver
+    get_restaurant_orders acima). O tempo de preparo é por restaurante — faz sentido
+    viver em SubOrderDB.base_time, não em OrderDB, que nem tem essa coluna.
+
+    Bug anterior: escrevia em `OrderDB.base_time`, um atributo que o modelo não mapeia
+    — o SQLAlchemy criava um atributo Python solto, o commit() não gerava UPDATE
+    nenhum, e a rota devolvia 200 sem persistir nada (confirmado: 17/17 pedidos e
+    23/25 sub-pedidos com base_time=0 em produção antes deste fix).
+    """
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == order_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+    sub.base_time = payload["base_time"]
     db.commit()
-    return {"order_id": order_id, "base_time": order.base_time}
+    return {"order_id": order_id, "base_time": sub.base_time}
+
+
+@router.post("/orders/{order_id}/ready")
+def mark_sub_order_ready(order_id: int, db: Session = Depends(get_db)):
+    """
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 2 — botão "Pedido pronto" do KomaRestaurant.
+    `order_id` é o id numérico do sub-pedido (mesma convenção de base_time/reset-delivery).
+
+    Grava o sinal REAL de prontidão em `SubOrderDB.ready_at`. Deliberadamente não mexe em
+    `status` — trocar o vocabulário de status é um risco à parte que toca a guarda de
+    captura de pagamento (ver secção 6 do plano); este endpoint fica isolado disso.
+
+    Idempotente: um segundo clique não sobrescreve o horário já gravado (o worker de
+    despacho, em courier_notification_service.py, passa a preferir este timestamp à
+    estimativa por base_time assim que ele existir).
+    """
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == order_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+    if sub.ready_at is None:
+        sub.ready_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"order_id": order_id, "ready_at": sub.ready_at}
 
 
 @router.post("/orders/{order_id}/reset-delivery")
 def reset_order_delivery(order_id: int, db: Session = Depends(get_db)):
     """
-    Remove o estafeta atual de um pedido e reinicia a busca.
-    Limpa os campos driver_id, driver_name e informações de pagamento ao estafeta.
+    Remove o estafeta atual de um sub-pedido e reinicia a busca.
+
+    PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.4 — `order_id` é o id numérico do
+    SUB-PEDIDO (mesmo motivo de update_base_time, acima). Bug anterior: acedia
+    `order.driver_name`/`order.driver_id`/`order.driver_delivery_fee`/
+    `order.driver_payment_transfer_id` num `OrderDB` que não tem nenhuma dessas
+    colunas (foram para SubOrderDB na migração de sub-pedidos) — todo acesso a
+    `order.driver_id` lançava AttributeError, e a rota devolvia 500.
     """
-    print(f"🔄 Reiniciando busca de estafeta para o pedido #{order_id}")
-    
-    order = db.query(OrderDB).filter(OrderDB.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    
-    # Armazena o nome do driver anterior para log
-    previous_driver = order.driver_name or f"ID {order.driver_id}"
-    
-    # Remove a atribuição do driver
-    order.driver_id = None
-    order.driver_name = None
-    
-    # Limpa os campos de pagamento ao estafeta (se houver)
-    order.driver_delivery_fee = None
-    order.driver_payment_transfer_id = None
-    
+    print(f"🔄 Reiniciando busca de estafeta para o sub-pedido #{order_id}")
+
+    sub = db.query(SubOrderDB).filter(SubOrderDB.id == order_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Sub-pedido não encontrado")
+
+    # Armazena o estafeta anterior para log
+    previous_driver = sub.driver_name or (f"GID {sub.driver_gid}" if sub.driver_gid else "nenhum")
+
+    # Remove a atribuição do estafeta e os dados de pagamento a ele
+    sub.driver_gid = None
+    sub.driver_name = None
+    sub.driver_delivery_fee = None
+    sub.driver_payment_transfer_id = None
+
+    # Devolve ao estado que o worker de despacho automático (courier_notification_service)
+    # considera elegível — sem isto, um sub-pedido que já tinha oferta enviada ficaria preso
+    # fora do pool e "reiniciar busca" não reiniciaria busca nenhuma.
+    sub.status = "Em Preparo"
+
     db.commit()
-    
-    print(f"✅ Estafeta {previous_driver} removido do pedido #{order_id}. Busca reiniciada.")
-    
+
+    # Sem isto, o worker de despacho (courier_notification_service) continuaria a ignorar
+    # este sub-pedido — ele já o tinha marcado como "notificado" na tentativa anterior.
+    clear_dispatch_state(order_id)
+
+    print(f"✅ Estafeta {previous_driver} removido do sub-pedido #{order_id}. Busca reiniciada.")
+
     return {
         "message": "Estafeta removido e busca reiniciada com sucesso",
         "order_id": order_id,
         "previous_driver": previous_driver,
-        "status": order.status
+        "status": sub.status
     }
 
 
@@ -1391,8 +1483,21 @@ def _repassar_para_restaurantes(master: OrderDB, db: Session, pi: dict) -> None:
               f"€{sub.stripe_transfer_amount:.2f} (transfer {transfer.id})")
 
 
+def _recarregar_indice_da_ia():
+    """Recarrega o índice da IA com uma sessão PRÓPRIA (a da requisição já estará fechada quando a
+    tarefa em segundo plano rodar). reload_data leva ~30s — por isso roda fora da requisição."""
+    db = SessionLocal()
+    try:
+        AIService.reload_data(db)
+        print("🔄 [Webhook] Índice da IA recarregado após mudança no estado de pagamento de um restaurante")
+    except Exception as e:  # noqa: BLE001
+        print(f"❌ [Webhook] Falha ao recarregar o índice da IA: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/stripe-webhook")
-async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
+async def stripe_webhook(request: Request, background_tasks: BackgroundTasks, stripe_signature: str = Header(None)):
     payload = await request.body()
 
     print(f"🔔 Webhook recebido. Signature: {stripe_signature[:20] if stripe_signature else 'None'}...")
@@ -1682,12 +1787,21 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
             ).first()
 
             if restaurant:
+                estava_completo = bool(restaurant.stripe_onboarding_completed)
                 restaurant.stripe_onboarding_completed = is_complete
                 if is_complete and restaurant.status != "ACTIVE":
                     restaurant.status = "ACTIVE"
                     restaurant.license = "ATIVO"  # Sincroniza o campo license
                     print(f"✅ Restaurante {restaurant.id} ({restaurant.name}) → status=ACTIVE, license=ATIVO")
                 db.commit()
+
+                # A IA só oferece produtos de restaurantes com pagamento apto (AIService.
+                # _restaurantes_aptos_pagamento, montado NA INDEXAÇÃO). Sem recarregar o índice aqui o
+                # restaurante que acabou de concluir o cadastro continuava invisível no chat até o
+                # próximo reload (o dominos ficou horas sem aparecer nas sugestões). O check-status
+                # manual já recarregava; o webhook, que é o caminho normal, não.
+                if estava_completo != is_complete:
+                    background_tasks.add_task(_recarregar_indice_da_ia)
 
             # Verifica se é uma conta de driver
             driver = db.query(DriverDB).filter(

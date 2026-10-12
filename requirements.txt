@@ -21,3 +21,7 @@ tzdata
 google-genai
 redis
 python-ulid
+firebase-admin
+pyjwt
+email-validator
+google-auth

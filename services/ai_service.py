@@ -27,7 +27,14 @@ class AIService:
     _product_owner_name = []  # Nome do restaurante dono para o 'reply'
     _product_by_id: dict = {}  # {id: Product} — evita O(n) por lookup (F2.2 do plano)
     _restaurant_name_by_product_id: dict = {}  # {id: restaurant_name} — ver Fase 2.3 do PLANO_LIMITE_RESTAURANTES.md
+    _restaurant_plan_by_product_id: dict = {}  # {id: restaurant_plan} — "ESSENCE"/"SMART", usado pra separar sugestões no chat
     _restaurantes_aptos_pagamento: set = set()  # GIDs com conta Stripe apta a receber (Fase 0, PLANO_PAGAMENTO_2_ETAPAS.md)
+    # {product_id: (pickup_start, pickup_end)} — janela de recolha da Caixa Surpresa do
+    # restaurante dono do produto ("HH:mm" ou None). Mesmo motivo de
+    # _restaurant_name_by_product_id: os objetos do pool ficam desanexados da sessão do
+    # SQLAlchemy depois da reindexação, então o relacionamento .restaurant não pode ser
+    # acessado depois — precisa ser pré-computado aqui, no momento da indexação.
+    _restaurant_surprise_box_window_by_product_id: dict = {}
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -420,6 +427,102 @@ class AIService:
         cls._data_cache = data
         cls._index_data(data)
 
+    @classmethod
+    def reindex_single_product(cls, product_id: int, db: Session):
+        """
+        Reindexação incremental (Plano de Performance, Fase 3.2) — atualiza o índice de
+        embeddings para UM produto sem re-encodar o catálogo inteiro.
+
+        Medido em produção: reload_data() completo leva 26-32s e roda de forma síncrona
+        dentro do request de criar/editar/deletar produto — além do cliente esperar esse
+        tempo todo, o encode consome os 2 vCPUs da instância e degrada qualquer chat
+        simultâneo (correlaciona com a cauda de latência do E5). Esta função faz o mesmo
+        trabalho só para o produto afetado: ordem de ~100ms em vez de ~30s.
+
+        Índice de embeddings de RESTAURANTE (nomes/categorias) não é tocado aqui — só é
+        usado por process_search em modo "restaurant"/"auto" e não muda quando um produto
+        individual é criado/editado/removido.
+
+        Se o índice ainda não foi construído (bootstrap), cai para reload_data() completo,
+        que já é a operação correta nesse caso.
+        """
+        if cls._embeddings_products is None or not cls._product_obj_cache:
+            cls.reload_data(db)
+            return
+
+        from core.sql_models import ProductDB
+
+        # update_product (product_routes.py) reusa esta MESMA sessão `db` e, depois do
+        # commit, sobrescreve db_product.rating em memória (sem persistir) com a média
+        # calculada de ProductRatingDB, só para moldar a resposta HTTP daquele request.
+        # Sem o expire_all() abaixo, o identity map do SQLAlchemy devolve esse mesmo
+        # objeto já mutado na query de baixo — e o cache global de busca/chat fica com
+        # um rating errado (geralmente None) até o próximo reload_data() completo.
+        db.expire_all()
+
+        product = db.query(ProductDB).filter(ProductDB.id == product_id).first()
+
+        # Cópias das estruturas atuais — o rebind atômico ao final (mesmo padrão de
+        # _index_data) só troca a referência quando TUDO já está pronto, para requests
+        # concorrentes nunca verem um estado parcial.
+        product_obj_cache = list(cls._product_obj_cache)
+        product_owner_name = list(cls._product_owner_name)
+        product_by_id = dict(cls._product_by_id)
+        restaurant_name_by_product_id = dict(cls._restaurant_name_by_product_id)
+        restaurant_plan_by_product_id = dict(cls._restaurant_plan_by_product_id)
+        restaurant_surprise_box_window_by_product_id = dict(cls._restaurant_surprise_box_window_by_product_id)
+        embeddings_products = cls._embeddings_products
+
+        idx_existente = next((i for i, p in enumerate(product_obj_cache) if p.id == product_id), None)
+
+        if product is None:
+            # Produto foi removido (ou não existe mais) — tira do índice se estava nele.
+            if idx_existente is None:
+                return
+            keep = [i for i in range(len(product_obj_cache)) if i != idx_existente]
+            product_obj_cache = [product_obj_cache[i] for i in keep]
+            product_owner_name = [product_owner_name[i] for i in keep]
+            embeddings_products = embeddings_products[keep] if keep else None
+            product_by_id.pop(product_id, None)
+            restaurant_name_by_product_id.pop(product_id, None)
+            restaurant_plan_by_product_id.pop(product_id, None)
+            restaurant_surprise_box_window_by_product_id.pop(product_id, None)
+        else:
+            restaurant = product.restaurant
+            texto = cls._texto_para_indice(product, restaurant.category if restaurant else "")
+            novo_embedding = cls.get_model().encode([texto], convert_to_tensor=True)
+
+            if idx_existente is not None:
+                product_obj_cache[idx_existente] = product
+                product_owner_name[idx_existente] = restaurant.name if restaurant else ""
+                embeddings_products = embeddings_products.clone()
+                embeddings_products[idx_existente] = novo_embedding[0]
+            else:
+                product_obj_cache = product_obj_cache + [product]
+                product_owner_name = product_owner_name + [restaurant.name if restaurant else ""]
+                embeddings_products = (
+                    torch.cat([embeddings_products, novo_embedding], dim=0)
+                    if embeddings_products is not None else novo_embedding
+                )
+
+            product_by_id[product.id] = product
+            if restaurant:
+                restaurant_name_by_product_id[product.id] = restaurant.name
+                restaurant_plan_by_product_id[product.id] = getattr(restaurant, "plan", None)
+                restaurant_surprise_box_window_by_product_id[product.id] = (
+                    getattr(restaurant, "surprise_box_pickup_start", None),
+                    getattr(restaurant, "surprise_box_pickup_end", None),
+                )
+
+        # Rebind atômico — mesmo padrão de _index_data.
+        cls._product_obj_cache = product_obj_cache
+        cls._product_owner_name = product_owner_name
+        cls._product_by_id = product_by_id
+        cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurant_plan_by_product_id = restaurant_plan_by_product_id
+        cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
+        cls._embeddings_products = embeddings_products
+
     @staticmethod
     def _texto_para_indice(p, categoria_restaurante: str) -> str:
         """
@@ -533,6 +636,8 @@ class AIService:
         product_owner_name = []
         product_by_id = {}
         restaurant_name_by_product_id = {}
+        restaurant_plan_by_product_id = {}
+        restaurant_surprise_box_window_by_product_id = {}
 
         # Fase 0 do PLANO_PAGAMENTO_2_ETAPAS.md: restaurante só entra aqui se tiver conta
         # Stripe capaz de RECEBER dinheiro. Usa stripe_onboarding_completed (não `status`)
@@ -558,6 +663,11 @@ class AIService:
                 # restaurante independente do tipo do objeto no pool (ver
                 # PLANO_LIMITE_RESTAURANTES.md, Fase 2.3).
                 restaurant_name_by_product_id[p.id] = r.name
+                restaurant_plan_by_product_id[p.id] = getattr(r, "plan", None)
+                restaurant_surprise_box_window_by_product_id[p.id] = (
+                    getattr(r, "surprise_box_pickup_start", None),
+                    getattr(r, "surprise_box_pickup_end", None),
+                )
 
         embeddings_products = model.encode(product_texts, convert_to_tensor=True) if product_texts else None
 
@@ -572,11 +682,28 @@ class AIService:
         cls._product_owner_name = product_owner_name
         cls._product_by_id = product_by_id
         cls._restaurant_name_by_product_id = restaurant_name_by_product_id
+        cls._restaurant_plan_by_product_id = restaurant_plan_by_product_id
+        cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
         cls._restaurantes_aptos_pagamento = restaurantes_aptos_pagamento
         cls._embeddings_products = embeddings_products
 
     @classmethod
-    def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto") -> SearchResponse:
+    def _limitar_por_plano(cls, resultados: list, limite: int) -> list:
+        """Mantém, em ordem de relevância, no máximo `limite` produtos de CADA plano de restaurante
+        (ESSENCE, SMART...). O corte global em 6 deixava só o plano que ranqueia melhor: numa pergunta
+        como "tem alguma pizza?" as 6 vagas iam todas para o ESSENCE e o SMART nunca chegava ao chat."""
+        contagem: dict = {}
+        saida = []
+        for item in resultados:
+            plano = (cls._restaurant_plan_by_product_id.get(item["obj"].id) or "").upper() or "SEM_PLANO"
+            if contagem.get(plano, 0) < limite:
+                contagem[plano] = contagem.get(plano, 0) + 1
+                saida.append(item)
+        return saida
+
+    @classmethod
+    def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto",
+                       limite_por_plano: Optional[int] = None) -> SearchResponse:
         if cls._data_cache is None:
             cls.reload_data(db)
 
@@ -705,7 +832,10 @@ class AIService:
         # Ordenar produtos pelo score fundido (RRF) — o corte por relevância (F5.1) já
         # foi aplicado acima, sobre o cosseno cru; aqui só falta truncar por quantidade.
         prod_results.sort(key=lambda x: x["score"], reverse=True)
-        prod_results = prod_results[:6]
+        # Padrão: os 6 mais relevantes no total. Com `limite_por_plano` (chat de IA): até esse número de
+        # cada plano, para "Melhores sugestões" (ESSENCE) e "Outras sugestões" (SMART) terem candidatos.
+        prod_results = (cls._limitar_por_plano(prod_results, limite_por_plano)
+                        if limite_por_plano else prod_results[:6])
 
         # Se detectou intenção de preço, ordenar produtos por preço
         if price_intent == "cheap":
@@ -757,7 +887,7 @@ class AIService:
 
             # Retornar sempre os top 6 produtos mais relevantes
             # O Gemini decide quais mencionar baseado no contexto
-            final_products = [item["obj"] for item in prod_results[:6]]
+            final_products = [item["obj"] for item in (prod_results if limite_por_plano else prod_results[:6])]
 
             # Adicionar quantidade ao primeiro produto
             if final_products:

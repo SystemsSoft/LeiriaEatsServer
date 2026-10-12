@@ -51,6 +51,16 @@ class DriverLocationUpdate(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────
+# Token de push (PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 5)
+# ──────────────────────────────────────────────────────────────
+
+class DriverFcmTokenUpdate(BaseModel):
+    token: str = Field(..., min_length=1, description="Token FCM do dispositivo")
+
+    model_config = {"populate_by_name": True}
+
+
+# ──────────────────────────────────────────────────────────────
 # Auth
 # ──────────────────────────────────────────────────────────────
 
@@ -71,10 +81,11 @@ class DriverLoginRequest(BaseModel):
 
 class DriverLoginResponse(BaseModel):
     authenticated: bool
-    driver_id: int
-    name: str
-    status: str
-    message: str
+    gid: Optional[str] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    profile_complete: bool = False
+    message: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -83,6 +94,7 @@ class DriverLoginResponse(BaseModel):
 
 class DriverProfileResponse(BaseModel):
     id: int
+    gid: Optional[str] = None
     login: str
     status: str
 

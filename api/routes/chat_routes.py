@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+import base64
+
+from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from pydantic import BaseModel
@@ -8,6 +10,8 @@ from schemas.models import UserRequest, SearchResponse, Restaurant
 from services.ai_service import AIService
 from services.hybrid_ai_service import HybridAIService
 from services.session_service import SessionManager
+from services.gemini_live_bridge import GeminiLiveBridge
+from services.gemini_sales_service import GeminiSalesAgent
 
 router = APIRouter()
 
@@ -30,6 +34,9 @@ class ProductItem(BaseModel):
     rating: Optional[float] = None
     is_popular: Optional[bool] = False
     is_available: Optional[bool] = True
+    is_surprise_box: Optional[bool] = False
+    surprise_box_pickup_start: Optional[str] = None
+    surprise_box_pickup_end: Optional[str] = None
     serves_people: Optional[int] = None
     portion_size: Optional[str] = None
     preparation_time_minutes: Optional[int] = None
@@ -42,6 +49,8 @@ class ProductItem(BaseModel):
     recommended_for: Optional[str] = None
     search_tags: Optional[str] = None
     restaurant_gid: Optional[str] = None
+    restaurant_name: Optional[str] = None
+    restaurant_plan: Optional[str] = None
     quantity: int = 0
 
 
@@ -85,6 +94,7 @@ def chat_sales(request: ChatRequest, db: Session = Depends(get_db)):
         intent=result["intent"],
         session_id=result["session_id"],
         cart=result["cart"],
+        show_cart=result.get("show_cart", False),
         order_confirmed=result.get("order_confirmed", False)
     )
 
@@ -209,3 +219,40 @@ def chat_status():
         response["cache_info"] = status["gemini_cache"]
 
     return response
+
+
+# Conversa de voz em tempo real (Gemini Live API) — mesma sessão/carrinho do chat
+# por texto, reaproveitando a validação de HybridAIService._executar_ferramenta.
+# Ver services/gemini_live_bridge.py para o motivo do modelo escolhido e das
+# limitações encontradas (native-audio não chama function-calling de verdade).
+@router.websocket("/chat/voice/{session_id}")
+async def chat_voice(
+    websocket: WebSocket,
+    session_id: str,
+    nome: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    bridge = GeminiLiveBridge(session_id=session_id, db=db, nome_usuario=nome)
+    await bridge.run(websocket)
+
+
+# Síntese de voz avulsa (texto → áudio) — usa a MESMA voz da ligação ao vivo
+# ("Aoede", GeminiSalesAgent.TTS_VOICE) em vez das vozes nativas do Android/iOS,
+# pra unificar a voz em todo o app (chat, sacola, onboarding, perfil). Devolve
+# PCM16 mono 24kHz em base64 — mesmo formato do áudio da Live API, o app
+# reaproveita o mesmo player (LiveAudioPlayer).
+class SpeakRequest(BaseModel):
+    text: str
+
+
+class SpeakResponse(BaseModel):
+    audio_base64: str
+    mime_type: str = "audio/l16;rate=24000;channels=1"
+
+
+@router.post("/chat/speak", response_model=SpeakResponse)
+def speak(request: SpeakRequest):
+    audio = GeminiSalesAgent.synthesize_speech(request.text)
+    if audio is None:
+        raise HTTPException(status_code=503, detail="Não foi possível sintetizar a fala no momento.")
+    return SpeakResponse(audio_base64=base64.b64encode(audio).decode("ascii"))

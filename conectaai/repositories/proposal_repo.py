@@ -1,0 +1,67 @@
+# Arquivo: conectaai/repositories/proposal_repo.py
+from typing import List, Optional
+
+from sqlalchemy.orm import Session
+
+from conectaai.models.sql_models import ProposalDB
+
+
+class ProposalRepository:
+    @staticmethod
+    def get_all_for_user(db: Session, *, company_id: Optional[str], creator_id: Optional[str]) -> List[ProposalDB]:
+        query = db.query(ProposalDB)
+        if company_id:
+            query = query.filter(ProposalDB.company_id == company_id)
+        if creator_id:
+            query = query.filter(ProposalDB.creator_id == creator_id)
+        return query.all()
+
+    @staticmethod
+    def get_by_id(db: Session, proposal_id: str) -> Optional[ProposalDB]:
+        return db.query(ProposalDB).filter(ProposalDB.id == proposal_id).first()
+
+    @staticmethod
+    def get_pending_from_creator(db: Session, *, creator_id: str, campaign_id: str) -> Optional[ProposalDB]:
+        """A candidatura que este creator já mandou para a campanha e ainda não foi respondida."""
+        return (
+            db.query(ProposalDB)
+            .filter(
+                ProposalDB.creator_id == creator_id,
+                ProposalDB.campaign_id == campaign_id,
+                ProposalDB.sender_role == "creator",
+                ProposalDB.status == "pending",
+            )
+            .first()
+        )
+
+    @staticmethod
+    def create(db: Session, company_id: str, data: dict) -> ProposalDB:
+        proposal = ProposalDB(company_id=company_id, status="pending", **data)
+        db.add(proposal)
+        db.commit()
+        db.refresh(proposal)
+        return proposal
+
+    @staticmethod
+    def update(db: Session, proposal: ProposalDB, data: dict) -> ProposalDB:
+        for key, value in data.items():
+            setattr(proposal, key, value)
+        db.commit()
+        db.refresh(proposal)
+        return proposal
+
+    @staticmethod
+    def has_accepted_between(db: Session, company_id: str, creator_id: str) -> bool:
+        """Confirma se já existe uma parceria fechada (proposta aceita) entre
+        essa empresa e esse creator — usado para só liberar avaliação depois
+        de uma ação real, não avulsa."""
+        return (
+            db.query(ProposalDB)
+            .filter(
+                ProposalDB.company_id == company_id,
+                ProposalDB.creator_id == creator_id,
+                ProposalDB.status == "accepted",
+            )
+            .first()
+            is not None
+        )

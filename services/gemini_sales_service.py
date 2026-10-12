@@ -6,6 +6,8 @@ com cache inteligente e monitoramento de uso (Otimizado para PT-PT)
 from google import genai
 from google.genai import types
 from typing import Dict, List, Optional
+import queue
+import threading
 import time
 from datetime import datetime
 from core.config import settings
@@ -87,6 +89,39 @@ class GeminiSalesAgent:
     _usage_monitor = GeminiUsageMonitor()
     _ultimo_tamanho_prompt = 0  # F0: exposto para a telemetria estimar tokens de entrada
 
+    # Orçamento de latência do turno de chat (Plano de Performance, Fase 2.1). Medido em
+    # produção: 26 turnos em 14 dias passaram de 10s, consumindo 62% de toda a espera
+    # acumulada — alguns chegando a 110s por varrerem todas as chaves em 3 rodadas de
+    # retry contra um 503 do tier gratuito que não é resolvido trocando de chave. Ao
+    # estourar este orçamento, o turno vai direto para a resposta de fallback em vez de
+    # continuar tentando — não muda o que é dito ao cliente no fallback (já existia),
+    # só corta quanto tempo ele espera até recebê-lo.
+    #
+    # Ajustado de 10.0 para 20.0 junto com _REQUEST_TIMEOUT_MS abaixo — ver nota lá:
+    # o timeout mínimo aceite pela API já consome os 10s inteiros sozinho, então o
+    # orçamento do turno precisa sobrar espaço para pelo menos mais uma tentativa.
+    _STREAM_DEADLINE_SECONDS = 20.0
+
+    # Timeout por requisição individual (ms), aplicado via http_options do SDK. Sem
+    # isto, uma chave "travada" (sem devolver erro, só sem responder) prendia o loop
+    # de failover indefinidamente — o _STREAM_DEADLINE_SECONDS só é checado ENTRE
+    # tentativas, não interrompe uma chamada já em andamento.
+    #
+    # DEPLOY ANTERIOR (6000ms) QUEBROU 100% DAS CHAMADAS: a API do Gemini rejeita
+    # deadlines abaixo de 10s com 400 INVALID_ARGUMENT ("Manually set deadline 6s is
+    # too short. Minimum allowed deadline is 10s.") — todo turno caía direto no
+    # fallback estático, sem nenhuma resposta real da IA. 10000 é o mínimo aceite.
+    _REQUEST_TIMEOUT_MS = 10000
+
+    # Plano de Performance, Fase 1.1 — só os N produtos mais relevantes (os primeiros do
+    # pool, que já vem ordenado pelo ranking do E5 — ver hybrid_ai_service.py) recebem o
+    # bloco de detalhe pesado (descrição/ingredientes/alérgenos/dieta/recomendado). Medido
+    # em produção: com 15 produtos, só esses 5 campos custam ~64% do tamanho do prompt.
+    # Os demais produtos continuam com nome, preço, GID e os extras curtos (categoria,
+    # porção, popular, caixa surpresa etc.) — a IA ainda vê e pode adicionar qualquer um
+    # ao carrinho; só não recebe o texto longo dos que não são o foco do turno.
+    _DETALHE_COMPLETO_TOP_N = 3
+
     # F2.3: roteamento de modelo por turno.
     # gemini-1.5-flash e gemini-2.5-flash(-lite) foram descontinuados por esta conta
     # (404 NOT_FOUND) — confirmado ao vivo em 2026-08-27. "gemini-flash-lite-latest" é
@@ -100,6 +135,129 @@ class GeminiSalesAgent:
     MODELO_CONVERSA = "gemini-flash-lite-latest"
     MODELO_ACAO = "gemini-flash-lite-latest"
     MODELO_ESTAVEL = "gemini-flash-lite-latest"
+
+    # Modelo de RESERVA, tentado quando o principal falha em TODAS as chaves. Antes o "estável" era o
+    # mesmo modelo do principal, então o failover de modelo era só nominal: numa sobrecarga do Google
+    # ("503 This model is currently experiencing high demand") toda mensagem caía na resposta estática
+    # "Temos disponível: … Qual prefere?", ignorando o pedido do cliente (bug: "adiciona o vegetariano"
+    # / "duas unidades" devolviam sempre a mesma lista). Validado em 24/09/2026: gemini-flash-lite-latest
+    # e gemini-3.x-lite davam 503 nas 4 chaves gratuitas enquanto este respondia em ~1,4s. É um
+    # "-preview": se sumir (404), o failover só o pula — revalidar o nome de tempos em tempos.
+    MODELO_RESERVA = "gemini-3-flash-preview"
+
+    # Modelos que falharam em todas as chaves há pouco (modelo → instante). Passam para o FIM da fila
+    # por _JANELA_MODELO_COM_FALHA_S, para o turno seguinte não gastar o orçamento de tempo
+    # (_STREAM_DEADLINE_SECONDS) tentando de novo, chave por chave, um modelo que acabou de cair.
+    _modelos_com_falha: Dict[str, float] = {}
+    _JANELA_MODELO_COM_FALHA_S = 60.0
+
+    @classmethod
+    def _ordenar_modelos(cls, candidatos: List[str]) -> List[str]:
+        sem_repetir = list(dict.fromkeys(candidatos))
+        agora = time.time()
+        recentes = [m for m in sem_repetir if agora - cls._modelos_com_falha.get(m, 0.0) < cls._JANELA_MODELO_COM_FALHA_S]
+        return [m for m in sem_repetir if m not in recentes] + recentes
+
+    # Chaves (índice, modelo) que falharam há pouco → instante. Ficam no FIM da fila por
+    # _JANELA_CHAVE_COM_FALHA_S: uma chave gratuita que deu timeout (10s cada!) não é tentada de
+    # novo no turno seguinte antes das que estão funcionando.
+    _chaves_com_falha: Dict = {}
+    _JANELA_CHAVE_COM_FALHA_S = 120.0
+
+    @staticmethod
+    def ordem_base_das_chaves(n: int) -> List[int]:
+        """Ordem de tentativa (índices de settings.GEMINI_API_KEYS, cuja ÚLTIMA é a paga): 1ª gratuita,
+        2ª gratuita, PAGA em terceiro, e as demais gratuitas só como reserva no fim. Usada pelo chat de
+        texto e pela ligação de voz (mesma ordem nos dois). Com ≤ 3 chaves fica a ordem natural."""
+        if n <= 3:
+            return list(range(n))
+        return [0, 1, n - 1] + list(range(2, n - 1))
+
+    @classmethod
+    def _ordenar_chaves(cls, modelo: str) -> List[int]:
+        """Ordem de tentativa das chaves (ver ordem_base_das_chaves: 1ª e 2ª gratuitas, PAGA em terceiro,
+        demais gratuitas no fim) — e as que falharam há pouco para este modelo vão para o fim.
+
+        Antes era a ordem do .env (4 gratuitas e a paga por último). Com o tier gratuito dando 503 e
+        timeouts de 10s, o orçamento do turno (_STREAM_DEADLINE_SECONDS) acabava antes de a chave paga
+        — a única saudável — ser tentada: em 24/09/2026 todo turno do chat caía no texto de emergência
+        (~21s) com a chave paga funcionando e nunca chamada. Agora a paga é a 3ª tentada
+        (depois de 2 gratuitas)."""
+        n = len(cls._clients)
+        base = cls.ordem_base_das_chaves(n)
+        agora = time.time()
+        ruins = [i for i in base
+                 if agora - cls._chaves_com_falha.get((i, modelo), 0.0) < cls._JANELA_CHAVE_COM_FALHA_S]
+        return [i for i in base if i not in ruins] + ruins
+
+    # Tempo máximo de espera pelo PRIMEIRO trecho de resposta de uma tentativa (chave+modelo). Medido em
+    # 24/09/2026: com o tier gratuito congestionado o 1º trecho levava ~6s (até 13s) e o timeout da
+    # requisição só dispara aos 10s (mínimo aceito pela API) — 25% dos turnos do chat em 24h bateram em
+    # ~20s e caíram no texto de emergência, com a chave paga (1º trecho em ~0,7s) esperando na fila. Sem
+    # 1º trecho neste prazo a tentativa é abandonada e passa-se à próxima chave. Numa chave saudável o
+    # 1º trecho mediano é ~0,6s (p90 ≈ 3s), então 3s só corta o rabo lento.
+    _TTFT_LIMITE_S = 3.0
+
+    @classmethod
+    def _stream_com_limite_ttft(cls, client, modelo: str, prompt: str, limite_s: float):
+        """generate_content_stream que desiste se o 1º trecho não chegar em `limite_s`.
+
+        O SDK só entrega um iterador bloqueante, então a chamada roda numa thread e os trechos vêm por
+        uma fila. Estourado o prazo levanta TimeoutError (o texto contém "timeout", que o tratamento de
+        erro do chamador já classifica como instabilidade transitória, igual ao timeout da requisição).
+        A requisição abandonada segue até o fim na thread, mas o resultado é descartado."""
+        fila: "queue.Queue" = queue.Queue()
+        parar = threading.Event()
+        FIM = object()
+
+        def trabalhador():
+            try:
+                stream = client.models.generate_content_stream(
+                    model=modelo,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=cls._system_instruction,
+                        temperature=0.7,
+                        top_p=0.9,
+                        top_k=40,
+                        max_output_tokens=250,
+                        response_modalities=['TEXT'],
+                        thinking_config=cls._thinking_config(modelo),
+                        http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
+                    )
+                )
+                for chunk in stream:
+                    if parar.is_set():
+                        return
+                    fila.put(("chunk", chunk.text))
+                fila.put(("fim", FIM))
+            except Exception as e:  # noqa: BLE001 — repassado ao chamador, que classifica o erro
+                fila.put(("erro", e))
+
+        threading.Thread(target=trabalhador, daemon=True, name="gemini-stream").start()
+        # Depois do 1º trecho vale só o timeout da própria requisição (a fila também é limitada a ele).
+        espera = limite_s
+        try:
+            while True:
+                try:
+                    tipo, valor = fila.get(timeout=espera)
+                except queue.Empty:
+                    raise TimeoutError(f"timeout: sem 1º trecho de resposta em {espera:.1f}s ({modelo})")
+                espera = cls._REQUEST_TIMEOUT_MS / 1000.0
+                if tipo == "erro":
+                    raise valor
+                if tipo == "fim":
+                    return
+                if valor:
+                    yield valor
+        finally:
+            parar.set()
+
+    @staticmethod
+    def _thinking_config(modelo: str):
+        """Os modelos gemini-3.x "pensam" por padrão e esse raciocínio consome os max_output_tokens (250):
+        a resposta sai cortada ou vazia. MINIMAL mantém a resposta completa e rápida (medido: ~1,4s)."""
+        return types.ThinkingConfig(thinking_level="MINIMAL") if modelo.startswith("gemini-3") else None
 
     @classmethod
     def _escolher_modelo(cls, context: Dict) -> str:
@@ -205,12 +363,23 @@ REGRAS OBRIGATÓRIAS:
    - Use infinitivo em vez de gerúndio (ex: "a preparar" em vez de "preparando").
    - Use vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
 2. Use APENAS produtos listados na seção "PRODUTOS DISPONÍVEIS". NUNCA invente itens.
+   - Se o produto que o cliente pediu não estiver nessa lista, NUNCA dê a entender que a pesquisa
+     falhou ou deu erro. Diga com naturalidade que não tem esse item específico e sugira logo a
+     seguir, na mesma resposta, 1 a 6 alternativas parecidas (mesmo restaurante, categoria ou
+     sabor semelhante) que estejam disponíveis — apresente-as como uma recomendação, nunca como
+     uma desculpa ou falha de busca.
+   - Ao apresentar opções ao cliente (ex.: "o que vocês têm?", "tem burrito?"), cite pelo NOME até 6
+     produtos relevantes — nunca mais que 6. Os produtos citados pelo nome aparecem como cartões na
+     tela do cliente, então cite só os que realmente recomenda, com o nome como está na lista.
 3. Validação de Quantidade Inteligente:
    - SÓ pergunte a quantidade OU para quantas pessoas após o utilizador ter escolhido um produto específico.
    - NÃO pergunte as duas coisas. Escolha a mais natural baseada no contexto:
      * Para pratos partilháveis (pizzas, sushi, combinados): pergunte "Para quantas pessoas?".
      * Para itens individuais (hambúrgueres, bebidas, sobremesas): pergunte a "Quantidade".
    - Se o utilizador já mencionou o número de pessoas no início da conversa, use essa informação para sugerir a quantidade e não pergunte novamente.
+   - Exceção: se a própria mensagem do utilizador já indicar a quantidade desejada de forma explícita
+     (ex.: "Adicionar 1 Pizza de Calabresa ao meu carrinho.", "quero 2 hambúrgueres"), NÃO pergunte
+     de novo — use OBRIGATORIAMENTE essa quantidade e adicione o produto na mesma resposta.
 4. Gestão do Carrinho:
    - Identifique produtos pelo GID.
    - Use OBRIGATORIAMENTE a tag [[ADD_TO_CART:GID:QUANTIDADE]] para adicionar, remover ou ajustar quantidades.
@@ -230,7 +399,18 @@ REGRAS OBRIGATÓRIAS:
    - Se o cliente pedir algo de um restaurante novo nessa situação, explique o limite com
      naturalidade e ofereça remover os itens de um dos restaurantes atuais para abrir espaço.
    - NUNCA use a tag [[ADD_TO_CART:...]] para um produto de um restaurante fora da lista quando
-     o limite estiver atingido — mesmo que o cliente insista."""
+     o limite estiver atingido — mesmo que o cliente insista.
+8. Caixa Surpresa: ao oferecer um produto marcado "🎁 caixa surpresa", informe SEMPRE o horário
+   de recolha indicado entre parênteses (ex.: "recolha das 18:00 às 20:00"). Se o produto não
+   tiver horário de recolha definido, avise o cliente que o restaurante ainda não configurou o
+   horário e sugira confirmar diretamente com o restaurante.
+9. Exclusividade da Caixa Surpresa: um pedido com item de Caixa Surpresa é EXCLUSIVO — não pode
+   ter nenhum outro produto junto, nem outro item de Caixa Surpresa.
+   - Se a secção "CAIXA SURPRESA NO CARRINHO" (quando presente) indicar que já há um item desses
+     no pedido, NÃO use [[ADD_TO_CART:...]] para nenhum outro produto — explique com naturalidade
+     que esse pedido é exclusivo e que o cliente precisa finalizar ou remover o item de Caixa
+     Surpresa antes de adicionar qualquer outra coisa.
+   - Avise também que a entrega deste pedido é sempre recolha no restaurante, nunca por estafeta."""
 
             # F3: variante da system instruction para o modo function calling — mesmas
             # regras de 1 a 3 e 6, mas a regra 4/5 usa as FERRAMENTAS em vez de tags de
@@ -243,12 +423,24 @@ REGRAS OBRIGATÓRIAS:
    - Use infinitivo em vez de gerúndio (ex: "a preparar" em vez de "preparando").
    - Use vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
 2. Use APENAS produtos listados na seção "PRODUTOS DISPONÍVEIS". NUNCA invente itens nem GIDs.
+   - Se o produto que o cliente pediu não estiver nessa lista, NUNCA dê a entender que a pesquisa
+     falhou ou deu erro. Diga com naturalidade que não tem esse item específico e chame
+     sugerir_produtos, na mesma resposta, com 1 a 6 alternativas parecidas (mesmo restaurante,
+     categoria ou sabor semelhante) que estejam disponíveis — apresente-as como uma recomendação,
+     nunca como uma desculpa ou falha de busca.
+   - Ao apresentar opções ao cliente (ex.: "o que vocês têm?", "tem burrito?"), cite pelo NOME até 6
+     produtos relevantes — nunca mais que 6. Os produtos citados pelo nome aparecem como cartões na
+     tela do cliente, então cite só os que realmente recomenda, com o nome como está na lista.
 3. Validação de Quantidade Inteligente:
    - SÓ pergunte a quantidade OU para quantas pessoas após o utilizador ter escolhido um produto específico.
    - NÃO pergunte as duas coisas. Escolha a mais natural baseada no contexto:
      * Para pratos partilháveis (pizzas, sushi, combinados): pergunte "Para quantas pessoas?".
      * Para itens individuais (hambúrgueres, bebidas, sobremesas): pergunte a "Quantidade".
    - Se o utilizador já mencionou o número de pessoas no início da conversa, use essa informação para sugerir a quantidade e não pergunte novamente.
+   - Exceção: se a própria mensagem do utilizador já indicar a quantidade desejada de forma explícita
+     (ex.: "Adicionar 1 Pizza de Calabresa ao meu carrinho.", "quero 2 hambúrgueres"), NÃO pergunte
+     de novo — chame OBRIGATORIAMENTE a ferramenta adicionar_ao_carrinho com essa quantidade já na
+     mesma resposta.
 4. Gestão do Carrinho — use SEMPRE a ferramenta adicionar_ao_carrinho, nunca escreva a ação como texto:
    - Identifique produtos pelo GID exato do catálogo.
    - O sistema é INCREMENTAL: delta_quantidade é SOMADO ao que já existe no carrinho.
@@ -272,7 +464,20 @@ REGRAS OBRIGATÓRIAS:
      naturalidade e ofereça remover os itens de um dos restaurantes atuais para abrir espaço.
    - Se você chamar adicionar_ao_carrinho para um restaurante fora da lista e o resultado vier
      com erro=LIMITE_DE_RESTAURANTES_ATINGIDO, NÃO afirme ao cliente que adicionou — explique o
-     limite usando os "restaurantes_atuais" do resultado."""
+     limite usando os "restaurantes_atuais" do resultado.
+9. Caixa Surpresa: ao oferecer um produto marcado "🎁 caixa surpresa", informe SEMPRE o horário
+   de recolha indicado entre parênteses (ex.: "recolha das 18:00 às 20:00"). Se o produto não
+   tiver horário de recolha definido, avise o cliente que o restaurante ainda não configurou o
+   horário e sugira confirmar diretamente com o restaurante.
+10. Exclusividade da Caixa Surpresa: um pedido com item de Caixa Surpresa é EXCLUSIVO — não pode
+    ter nenhum outro produto junto, nem outro item de Caixa Surpresa.
+    - Se a secção "CAIXA SURPRESA NO CARRINHO" (quando presente) indicar que já há um item
+      desses no pedido, NÃO chame adicionar_ao_carrinho para nenhum outro produto — explique com
+      naturalidade que esse pedido é exclusivo e que o cliente precisa finalizar ou remover o
+      item de Caixa Surpresa antes de adicionar qualquer outra coisa.
+    - Avise também que a entrega deste pedido é sempre recolha no restaurante, nunca por estafeta.
+    - Se você chamar adicionar_ao_carrinho e o resultado vier com erro=CAIXA_SURPRESA_EXCLUSIVA,
+      NÃO afirme ao cliente que adicionou — explique a exclusividade."""
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -294,12 +499,26 @@ REGRAS OBRIGATÓRIAS:
             yield cls._STATIC_RESPONSES[msg_lower]
             return
 
+        # 1.1 Verificar cache — mesma proteção de generate_response (linha ~472-476):
+        # NUNCA cachear/servir do cache uma resposta com ação de carrinho (tags [[...]]),
+        # porque uma tag [[ADD_TO_CART:...]] servida do cache mexeria no carrinho errado
+        # de outra sessão. A chave já considera carrinho e histórico (_generate_cache_key),
+        # então um cache hit só acontece quando o contexto é equivalente.
+        cache_key = cls._generate_cache_key(user_message, context)
+        cached_response = cls._cache.get(cache_key)
+        if cached_response:
+            print(f"💾 [Gemini Stream] Cache hit para: '{user_message}'")
+            yield cached_response
+            return
+
         # 2. Verificar limite de requisições
         if not cls._usage_monitor.can_make_request():
             yield cls._generate_fallback_response(user_message, context)
             return
 
-        # 3. Gerar stream com Gemini com Auto-Retry
+        # 3. Gerar stream com Gemini com Auto-Retry, sob orçamento de latência
+        # (_STREAM_DEADLINE_SECONDS) — ver nota junto da constante.
+        turn_start = time.time()
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
@@ -313,67 +532,110 @@ REGRAS OBRIGATÓRIAS:
                 cls._ultimo_tamanho_prompt = len(prompt)
 
                 # Tentar com os modelos disponíveis (Failover de Modelo + Chaves)
-                modelos_a_tentar = [modelo, cls.MODELO_ESTAVEL] if modelo != cls.MODELO_ESTAVEL else [modelo]
-                
+                modelos_a_tentar = cls._ordenar_modelos([modelo, cls.MODELO_ESTAVEL, cls.MODELO_RESERVA])
+
                 for mod in modelos_a_tentar:
-                    for key_index, client in enumerate(cls._clients):
+                    ordem_chaves = cls._ordenar_chaves(mod)
+                    for posicao, key_index in enumerate(ordem_chaves):
+                        client = cls._clients[key_index]
+                        if time.time() - turn_start > cls._STREAM_DEADLINE_SECONDS:
+                            print(f"⏱️ [Gemini Stream] Orçamento de {cls._STREAM_DEADLINE_SECONDS}s "
+                                  f"estourado antes da chave {key_index+1}/modelo {mod} — indo para fallback.")
+                            yield cls._generate_fallback_response(user_message, context)
+                            return
                         try:
-                            # Usar generate_content_stream
-                            stream = client.models.generate_content_stream(
-                                model=mod,
-                                contents=prompt,
-                                config=types.GenerateContentConfig(
-                                    system_instruction=cls._system_instruction,
-                                    temperature=0.7,
-                                    top_p=0.9,
-                                    top_k=40,
-                                    max_output_tokens=250,
-                                    response_modalities=['TEXT'],
-                                )
-                            )
+                            # Usar generate_content_stream (com limite de espera pelo 1º trecho)
+                            stream = cls._stream_com_limite_ttft(client, mod, prompt, cls._TTFT_LIMITE_S)
 
                             # Registrar uso (contamos como 1 req)
                             cls._usage_monitor.record_request()
 
-                            for chunk in stream:
-                                if chunk.text:
-                                    yield chunk.text
-                            
+                            # Acumula o texto completo para poder cachear ao final (mesma
+                            # proteção anti-tag do item 1.1) sem alterar o que é entregue
+                            # ao cliente turno a turno — o yield por chunk continua igual.
+                            full_response = ""
+                            for texto in stream:
+                                full_response += texto
+                                yield texto
+
+                            if full_response and "[[" not in full_response:
+                                cls._cache.set(cache_key, full_response)
+
+                            cls._modelos_com_falha.pop(mod, None)
+                            cls._chaves_com_falha.pop((key_index, mod), None)
                             return # Sucesso absoluto
 
                         except Exception as e_key:
                             erro_msg = str(e_key)
+                            erro_msg_lower = erro_msg.lower()
                             is_quota_error = "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg
                             is_server_error = "503" in erro_msg or "UNAVAILABLE" in erro_msg
-                            
-                            if is_quota_error and key_index < len(cls._clients) - 1:
-                                print(f"⚠️ [Gemini Stream] Chave {key_index+1} esgotou cota (429). Pulando para próxima...")
-                                continue 
-                            
-                            if is_server_error:
-                                if key_index < len(cls._clients) - 1:
-                                    print(f"⚠️ [Gemini Stream] Modelo {mod} instável (503) na chave {key_index+1}. Tentando próxima chave...")
+                            # Timeout do http_options (chave travada, sem erro explícito) —
+                            # tratado como instabilidade transitória, igual ao 503.
+                            is_timeout_error = "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
+
+                            # 403 (projeto/chave sem acesso) e 404 (modelo inexistente nesta chave) não
+                            # melhoram tentando de novo, mas NÃO devem derrubar o turno: pula a chave.
+                            # (A chave paga, sempre a última, devolve 403 — e por ser a última o `raise`
+                            # abaixo impedia de chegar ao modelo seguinte.)
+                            is_negado = ("403" in erro_msg or "PERMISSION_DENIED" in erro_msg
+                                         or "404" in erro_msg or "NOT_FOUND" in erro_msg)
+                            e_ultima_chave = posicao >= len(ordem_chaves) - 1
+                            if is_quota_error or is_negado or is_server_error or is_timeout_error:
+                                cls._chaves_com_falha[(key_index, mod)] = time.time()
+
+                            if (is_quota_error or is_negado) and not e_ultima_chave:
+                                motivo = "esgotou cota (429)" if is_quota_error else "sem acesso ao modelo (403/404)"
+                                print(f"⚠️ [Gemini Stream] Chave {key_index+1} {motivo}. Pulando para próxima...")
+                                continue
+
+                            if (is_server_error or is_timeout_error) and not e_ultima_chave:
+                                motivo = "instável (503)" if is_server_error else f"não respondeu em {cls._REQUEST_TIMEOUT_MS}ms (timeout)"
+                                # Sobrecarga ("503 high demand") atinge o MODELO inteiro. Só se considera o
+                                # modelo fora do ar quando a chave PAGA também falha: as gratuitas ficam
+                                # antes dela na fila (1ª, 2ª, paga) e falhar nelas só significa que o tier
+                                # gratuito está congestionado — a paga costuma responder em ~1s. Aí sim
+                                # passa para o próximo modelo, em vez de gastar o orçamento do turno chave
+                                # por chave.
+                                if key_index == len(cls._clients) - 1 and mod != modelos_a_tentar[-1]:
+                                    cls._modelos_com_falha[mod] = time.time()
+                                    print(f"🚨 [Gemini Stream] Modelo {mod} {motivo} também na chave paga. "
+                                          f"Tentando o próximo modelo ({modelos_a_tentar[modelos_a_tentar.index(mod)+1]})...")
+                                    break
+                                print(f"⚠️ [Gemini Stream] Modelo {mod} {motivo} na chave {key_index+1}. Tentando próxima chave...")
+                                if is_server_error:
                                     time.sleep(0.5)
-                                    continue
-                                elif mod != modelos_a_tentar[-1]:
-                                    print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves. Tentando modelo estável...")
-                                    break # Sai do loop de chaves para tentar o próximo modelo
-                            
+                                continue
+
+                            # Última chave também falhou: o modelo está fora em TODAS. Se ainda há outro
+                            # modelo na fila, passa para ele em vez de desistir do turno.
+                            if (is_quota_error or is_server_error or is_timeout_error or is_negado) \
+                                    and mod != modelos_a_tentar[-1]:
+                                cls._modelos_com_falha[mod] = time.time()
+                                print(f"🚨 [Gemini Stream] Modelo {mod} falhou em TODAS as chaves. "
+                                      f"Tentando o próximo modelo ({modelos_a_tentar[modelos_a_tentar.index(mod)+1]})...")
+                                break # Sai do loop de chaves para tentar o próximo modelo
+
                             raise e_key # Se nada resolveu, sobe para o retry temporal de 1.5s
 
             except Exception as e:
                 erro_str = str(e)
-                # 503 (UNAVAILABLE) e 429 (RESOURCE_EXHAUSTED / cota estourada) são
+                # 503 (UNAVAILABLE), 429 (RESOURCE_EXHAUSTED / cota estourada) e timeout
+                # (chave travada, sem erro explícito — ver _REQUEST_TIMEOUT_MS) são
                 # transitórios e valem retry. Sem tratar 429, cota estourada caía direto
                 # no fallback genérico no meio de uma venda, sem nenhuma nova tentativa.
-                is_retryable = any(code in erro_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
-                if is_retryable and attempt < max_retries:
-                    wait_time = 1.5 * (attempt + 1)
-                    print(f"⚠️ [Gemini Stream] Erro transitório detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time}s... ({erro_str[:120]})")
+                is_retryable = (
+                    any(code in erro_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
+                    or "timed out" in erro_str.lower() or "timeout" in erro_str.lower()
+                )
+                tempo_restante = cls._STREAM_DEADLINE_SECONDS - (time.time() - turn_start)
+                if is_retryable and attempt < max_retries and tempo_restante > 0:
+                    wait_time = min(1.5 * (attempt + 1), tempo_restante)
+                    print(f"⚠️ [Gemini Stream] Erro transitório detectado. Tentativa {attempt+1}/{max_retries}. Aguardando {wait_time:.1f}s... ({erro_str[:120]})")
                     time.sleep(wait_time)
                     continue
 
-                print(f"❌ [Gemini Stream] Erro final após {attempt} retentativas: {e}")
+                print(f"❌ [Gemini Stream] Erro final após {attempt} retentativas ({time.time()-turn_start:.1f}s decorridos): {e}")
                 yield cls._generate_fallback_response(user_message, context)
                 return
 
@@ -429,6 +691,7 @@ REGRAS OBRIGATÓRIAS:
                             top_k=40,
                             max_output_tokens=250,
                             response_modalities=['TEXT'],
+                            http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
                         )
                     )
                     # Registrar uso e sair do loop se sucesso
@@ -437,7 +700,12 @@ REGRAS OBRIGATÓRIAS:
                     break
                 except Exception as e_key:
                     erro_msg = str(e_key)
-                    if ("429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg) and key_index < len(cls._clients) - 1:
+                    erro_msg_lower = erro_msg.lower()
+                    is_transient = (
+                        "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg
+                        or "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
+                    )
+                    if is_transient and key_index < len(cls._clients) - 1:
                         print(f"⚠️ [Gemini] Chave {key_index+1} falhou. Tentando próxima... ({erro_msg[:60]})")
                         continue
                     raise e_key
@@ -505,6 +773,7 @@ REGRAS OBRIGATÓRIAS:
             top_k=40,
             max_output_tokens=250,
             tools=cls._TOOLS,
+            http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
         )
 
         acoes_executadas = []
@@ -542,7 +811,12 @@ REGRAS OBRIGATÓRIAS:
                     break # Sucesso total com este cliente
                 except Exception as e_key:
                     erro_msg = str(e_key)
-                    if ("429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg) and key_index < len(cls._clients) - 1:
+                    erro_msg_lower = erro_msg.lower()
+                    is_transient = (
+                        "429" in erro_msg or "RESOURCE_EXHAUSTED" in erro_msg or "503" in erro_msg
+                        or "timed out" in erro_msg_lower or "timeout" in erro_msg_lower
+                    )
+                    if is_transient and key_index < len(cls._clients) - 1:
                         print(f"⚠️ [Gemini Tools] Chave {key_index+1} falhou. Tentando próxima... ({erro_msg[:60]})")
                         continue
                     raise e_key
@@ -577,7 +851,7 @@ REGRAS OBRIGATÓRIAS:
         products_text = ""
         if products:
             products_text = "\n\n📦 PRODUTOS DISPONÍVEIS (Use o CÓDIGO GID para adicionar ao carrinho):\n"
-            for p in products[:15]:
+            for idx, p in enumerate(products[:15]):
                 line = f"• [CÓDIGO: {p['gid']}] {p['name']} - € {p['price']:.2f}"
 
                 # Detalhes complementares
@@ -598,6 +872,13 @@ REGRAS OBRIGATÓRIAS:
                     extras.append(f"🌶️ {p['spice_level']}")
                 if p.get('is_popular'):
                     extras.append("⭐ popular")
+                if p.get('is_surprise_box'):
+                    pickup_start = p.get('surprise_box_pickup_start')
+                    pickup_end = p.get('surprise_box_pickup_end')
+                    if pickup_start and pickup_end:
+                        extras.append(f"🎁 caixa surpresa (recolha das {pickup_start} às {pickup_end})")
+                    else:
+                        extras.append("🎁 caixa surpresa")
                 if p.get('rating'):
                     extras.append(f"avaliação: {p['rating']:.1f}")
 
@@ -605,21 +886,25 @@ REGRAS OBRIGATÓRIAS:
                     line += f" ({', '.join(extras)})"
                 products_text += line + "\n"
 
-                # Descrição
-                if p.get('description'):
-                    products_text += f"  Descrição: {p['description']}\n"
-                # Ingredientes
-                if p.get('ingredients'):
-                    products_text += f"  Ingredientes: {p['ingredients']}\n"
-                # Alérgenos
-                if p.get('allergens'):
-                    products_text += f"  ⚠️ Alérgenos: {p['allergens']}\n"
-                # Tags dietéticas
-                if p.get('dietary_tags'):
-                    products_text += f"  🌱 Dieta: {p['dietary_tags']}\n"
-                # Recomendado para
-                if p.get('recommended_for'):
-                    products_text += f"  🕐 Recomendado para: {p['recommended_for']}\n"
+                # Bloco de detalhe pesado — só para os _DETALHE_COMPLETO_TOP_N primeiros
+                # (ver nota junto da constante). Os demais produtos do pool continuam
+                # listados acima com nome/preço/GID/extras curtos, só sem este bloco.
+                if idx < cls._DETALHE_COMPLETO_TOP_N:
+                    # Descrição
+                    if p.get('description'):
+                        products_text += f"  Descrição: {p['description']}\n"
+                    # Ingredientes
+                    if p.get('ingredients'):
+                        products_text += f"  Ingredientes: {p['ingredients']}\n"
+                    # Alérgenos
+                    if p.get('allergens'):
+                        products_text += f"  ⚠️ Alérgenos: {p['allergens']}\n"
+                    # Tags dietéticas
+                    if p.get('dietary_tags'):
+                        products_text += f"  🌱 Dieta: {p['dietary_tags']}\n"
+                    # Recomendado para
+                    if p.get('recommended_for'):
+                        products_text += f"  🕐 Recomendado para: {p['recommended_for']}\n"
         else:
             products_text = "\n\n⚠️ NENHUM PRODUTO DISPONÍVEL NO MOMENTO. Informe o cliente educadamente."
 
@@ -689,12 +974,25 @@ REGRAS OBRIGATÓRIAS:
             else:
                 restaurant_section = f"\n\n🏪 RESTAURANTES NO PEDIDO ({qtd_atual}/{max_restaurantes}): {nomes}"
 
+        # Pedido com item de Caixa Surpresa é exclusivo — ver
+        # HybridAIService._bloqueado_por_caixa_surpresa_exclusiva. Só aparece quando há
+        # de fato um item desses no carrinho, mesmo padrão de restaurant_section acima.
+        surprise_box_section = ""
+        if context.get("tem_caixa_surpresa_no_carrinho"):
+            surprise_box_section = (
+                "\n\n🎁 CAIXA SURPRESA NO CARRINHO — PEDIDO EXCLUSIVO: este pedido já tem um item "
+                "de Caixa Surpresa. NÃO ofereça nem adicione nenhum outro produto (nem outro item "
+                "de Caixa Surpresa) — o cliente precisa finalizar este pedido ou remover o item de "
+                "Caixa Surpresa antes de buscar qualquer outra coisa. A entrega deste pedido é "
+                "SEMPRE recolha no restaurante, nunca entrega por estafeta."
+            )
+
         # Prompt final - nota de confirmação
         order_note = ""
         if context.get("order_confirmed"):
             order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
-        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{order_note}
+        prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{surprise_box_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"
@@ -758,7 +1056,56 @@ Responda considerando TODO o contexto acima. Seja consultivo e natural."""
             product_list.append(f"{p['name']} ({price})")
 
         products_str = ", ".join(product_list)
-        return f"Temos disponível: {products_str}. Qual prefere?"
+        # Este texto só sai quando a IA está indisponível. Antes repetia a lista como se tivesse entendido
+        # o pedido ("adiciona o vegetariano" → a mesma lista de sempre), o que parecia um bug da busca.
+        # Agora avisa que o pedido NÃO foi processado.
+        return (f"De momento estou com dificuldade em processar o seu pedido, por isso ainda não o fiz. "
+                f"Entretanto, temos disponível: {products_str}. Pode repetir daqui a instantes?")
+
+    # Modelo de TTS avulso (texto → áudio, sem conversa/tools) — usado pra unificar a
+    # voz do app inteiro (chat normal, onboarding, sacola, perfil) com a MESMA voz da
+    # ligação ao vivo ("Aoede", ver gemini_live_bridge.py), em vez das vozes nativas
+    # do Android/iOS. Testado isoladamente antes de usar em produção: devolve PCM16
+    # mono 24kHz (mesmo formato do áudio da Live API — o app reaproveita o mesmo
+    # player). "gemini-3.8-flash-tts"/"-lite-tts" também funcionam mas devolvem WAV
+    # com cabeçalho (exigiria parsing extra no app); este devolve PCM cru direto.
+    TTS_MODEL = "models/gemini-3.1-flash-tts-preview"
+    TTS_VOICE = "Aoede"
+
+    @classmethod
+    def synthesize_speech(cls, text: str) -> Optional[bytes]:
+        """Sintetiza `text` em áudio PCM16 mono 24kHz com a voz padrão do app,
+        tentando as chaves configuradas em ordem (mesmo padrão de failover das
+        outras chamadas). Retorna None se todas falharem."""
+        if not cls.is_ready():
+            cls.initialize()
+        if not text.strip():
+            return None
+
+        config = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=cls.TTS_VOICE)
+                ),
+                # Sotaque de Portugal, não do Brasil — testado isoladamente: a API
+                # aceita "pt-PT" como language_code válido (sem erro de validação).
+                language_code="pt-PT",
+            ),
+            http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
+        )
+        for key_index, client in enumerate(cls._clients):
+            try:
+                response = client.models.generate_content(model=cls.TTS_MODEL, contents=text, config=config)
+                parts = response.candidates[0].content.parts
+                for part in parts:
+                    if part.inline_data and part.inline_data.data:
+                        return part.inline_data.data
+                return None
+            except Exception as e:
+                print(f"⚠️ [TTS] Chave {key_index+1} falhou: {type(e).__name__}: {e}")
+                continue
+        return None
 
     @classmethod
     def is_ready(cls) -> bool:

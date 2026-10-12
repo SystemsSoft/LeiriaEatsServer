@@ -71,6 +71,12 @@ class HybridAIService:
         "mousse", "brigadeiro", "açaí", "acai", "brownie"
     }
 
+    # Palavras sobre a Caixa Surpresa (venda de excedentes do dia a preço reduzido)
+    _SURPRISE_BOX_INDICATORS = {
+        "caixa surpresa", "caixa misteriosa", "sacola surpresa",
+        "combo surpresa", "surpresa", "excedente", "excedentes"
+    }
+
 
 
     @staticmethod
@@ -109,6 +115,7 @@ class HybridAIService:
             "asks_quantity": any(q in msg_lower for q in HybridAIService._QUANTITY_INDICATORS),
             "mentions_drink": any(d in msg_lower for d in HybridAIService._DRINK_INDICATORS),
             "mentions_dessert": any(d in msg_lower for d in HybridAIService._DESSERT_INDICATORS),
+            "mentions_surprise_box": any(s in msg_lower for s in HybridAIService._SURPRISE_BOX_INDICATORS),
         }
 
         # Detectar se é pedido específico de produto (ex: "quero pizza grande")
@@ -131,8 +138,8 @@ class HybridAIService:
                 "comparison": has_comparison
             }
 
-        # Se pergunta sobre quantidade, bebida ou sobremesa
-        if details["asks_quantity"] or details["mentions_drink"] or details["mentions_dessert"]:
+        # Se pergunta sobre quantidade, bebida, sobremesa ou caixa surpresa
+        if details["asks_quantity"] or details["mentions_drink"] or details["mentions_dessert"] or details["mentions_surprise_box"]:
             return {
                 "type": "specific_question",
                 "details": details,
@@ -210,6 +217,48 @@ class HybridAIService:
         ]
 
     @staticmethod
+    def _filtrar_pool_por_caixa_surpresa(candidate_pool: list, session: UserSession,
+                                          mentions_surprise_box: bool) -> list:
+        """
+        Quando o cliente pergunta especificamente pela Caixa Surpresa, o pool passa a
+        conter só os produtos marcados com is_surprise_box=True — sem isso a IA
+        continuaria enxergando o cardápio normal junto e podia responder de forma
+        genérica em vez de apresentar só a oferta de excedentes do dia.
+
+        Itens já no carrinho continuam SEMPRE visíveis, pela mesma razão dos outros
+        filtros de pool: o cliente precisa conseguir removê-los pela própria conversa
+        mesmo que não sejam itens de Caixa Surpresa.
+        """
+        if not mentions_surprise_box:
+            return candidate_pool
+
+        ids_no_carrinho = {item.product_id for item in session.cart}
+        return [
+            p for p in candidate_pool
+            if p.id in ids_no_carrinho or getattr(p, "is_surprise_box", False)
+        ]
+
+    @staticmethod
+    def _filtrar_pool_por_caixa_surpresa_exclusiva_no_carrinho(candidate_pool: list, session: UserSession) -> list:
+        """
+        Um pedido com item de Caixa Surpresa é exclusivo (ver
+        UserSession.tem_item_caixa_surpresa_no_carrinho): assim que um item desses entra
+        no carrinho, o pool oferecido à IA passa a conter só esse(s) item(ns) já
+        presente(s) — nenhum outro produto do cardápio (normal ou de outra Caixa
+        Surpresa) aparece como opção, mesmo que o cliente peça algo diferente.
+
+        Diferente dos outros filtros de pool, aqui NÃO existe exceção para "item já no
+        carrinho de outro tipo" — a exclusividade é justamente sobre não haver outro
+        tipo de item. Só os produtos que já estão no carrinho continuam visíveis, para
+        o cliente conseguir ajustar quantidade ou remover pela própria conversa.
+        """
+        if not session.tem_item_caixa_surpresa_no_carrinho():
+            return candidate_pool
+
+        ids_no_carrinho = {item.product_id for item in session.cart}
+        return [p for p in candidate_pool if p.id in ids_no_carrinho]
+
+    @staticmethod
     def _bloqueado_por_limite_restaurantes(session: UserSession, gid_restaurante_produto: str,
                                             delta: int) -> bool:
         """
@@ -227,6 +276,27 @@ class HybridAIService:
         restaurantes_atuais = session.restaurantes_no_carrinho()
         e_restaurante_novo = gid_restaurante_produto not in restaurantes_atuais
         return e_restaurante_novo and len(restaurantes_atuais) >= HybridAIService.MAX_RESTAURANTES_POR_PEDIDO
+
+    @staticmethod
+    def _bloqueado_por_caixa_surpresa_exclusiva(session: UserSession, produto: Dict, delta: int) -> bool:
+        """
+        Um pedido com item de Caixa Surpresa é exclusivo: nenhum outro produto pode
+        entrar no mesmo carrinho, e nenhuma Caixa Surpresa pode ser adicionada a um
+        carrinho que já tenha outro item (de qualquer tipo).
+
+        Só bloqueia ADIÇÃO (delta > 0) de um produto DIFERENTE do que já está no
+        carrinho — aumentar a quantidade do próprio item de Caixa Surpresa já
+        presente continua permitido. Remoção (delta <= 0) nunca é bloqueada, pela
+        mesma razão do limite de restaurantes: é assim que a exclusividade libera
+        sozinha quando o cliente desiste do item.
+        """
+        if delta <= 0:
+            return False
+        produto_id = produto.get("id")
+        cart_tem_outro_item = any(item.product_id != produto_id for item in session.cart)
+        if not cart_tem_outro_item:
+            return False
+        return session.tem_item_caixa_surpresa_no_carrinho() or bool(produto.get("is_surprise_box", False))
 
     @staticmethod
     def _executar_ferramenta(nome_ferramenta: str, args: Dict, session: UserSession,
@@ -267,6 +337,17 @@ class HybridAIService:
                              "restaurantes atuais para abrir espaço."),
                 }
 
+            # Caixa Surpresa é exclusiva — ver _bloqueado_por_caixa_surpresa_exclusiva.
+            if HybridAIService._bloqueado_por_caixa_surpresa_exclusiva(session, produto, delta):
+                return {
+                    "ok": False,
+                    "erro": "CAIXA_SURPRESA_EXCLUSIVA",
+                    "dica": ("Explique que um pedido com Caixa Surpresa é exclusivo — não é "
+                             "possível adicionar outros produtos. O cliente precisa finalizar "
+                             "este pedido ou remover o item de Caixa Surpresa antes de buscar "
+                             "outra coisa. A entrega deste pedido é só recolha no restaurante."),
+                }
+
             atual = next((i.quantity for i in session.cart if i.product_id == produto["id"]), 0)
             alvo = max(0, min(atual + delta, HybridAIService.MAX_QTD_ITEM_FUNCTION_CALLING))
             if alvo == atual:
@@ -277,6 +358,7 @@ class HybridAIService:
                 restaurant_gid=produto["restaurant_gid"], quantity=alvo - atual,
                 serves_people=produto.get("serves_people") or 1, category=produto.get("category", ""),
                 restaurant_name=produto.get("restaurant_name", ""),
+                is_surprise_box=produto.get("is_surprise_box", False),
             )
             estado_turno["carrinho_mudou"] = True
             return {"ok": True, "produto": produto["name"], "quantidade_final": alvo}
@@ -429,7 +511,7 @@ class HybridAIService:
 
         start_time = time.time()
         if usar_e5:
-            search_results = AIService.process_search(user_query=user_message, db=db, scope="product")
+            search_results = AIService.process_search(user_query=user_message, db=db, scope="product", limite_por_plano=6)
         else:
             from schemas.models import SearchResponse
             search_results = SearchResponse(reply="", intent="skip_e5_menu_pequeno", restaurantResults=[], productResults=[])
@@ -458,7 +540,19 @@ class HybridAIService:
             for gp in search_results.productResults:
                 if gp.id not in seen_ids_local: all_products.append(gp)
         else:
-            all_products = AIService._product_obj_cache if len(AIService._product_obj_cache) <= 50 else search_results.productResults
+            # Antes: catálogo pequeno (≤50) ignorava por completo o ranking do E5 e
+            # despejava todo o cache na sua ordem crua — a IA sempre via/sugeria os
+            # mesmos primeiros produtos, independente do que o usuário pedisse (bug:
+            # toda pergunta devolvia sempre os 3 mesmos itens). Agora os resultados
+            # relevantes do E5 vêm primeiro — são eles que definem o que aparece como
+            # sugestão — e o resto do catálogo só entra depois, como contexto extra.
+            e5_relevant = search_results.productResults
+            e5_ids = {p.id for p in e5_relevant}
+            other_products = (
+                [p for p in AIService._product_obj_cache if p.id not in e5_ids]
+                if len(AIService._product_obj_cache) <= 50 else []
+            )
+            all_products = e5_relevant + other_products
 
         candidate_pool = []
         seen_ids = set()
@@ -481,6 +575,10 @@ class HybridAIService:
         candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
         # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0
         candidate_pool = HybridAIService._filtrar_pool_por_aptidao_de_pagamento(candidate_pool, session)
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa(
+            candidate_pool, session, intent_info.get("details", {}).get("mentions_surprise_box", False)
+        )
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa_exclusiva_no_carrinho(candidate_pool, session)
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -501,12 +599,16 @@ class HybridAIService:
                 # Ver PLANO_LIMITE_RESTAURANTES.md Fase 2.3 — usado pela IA e pelo
                 # executor para se referir ao restaurante pelo nome, não pelo GID.
                 "restaurant_name": AIService._restaurant_name_by_product_id.get(product.id, ""),
+                "restaurant_plan": AIService._restaurant_plan_by_product_id.get(product.id, ""),
                 "image_url": getattr(product, "image_url", ""),
                 "description": getattr(product, "description", ""),
                 "category": getattr(product, "category", ""),
                 "rating": getattr(product, "rating", None),
                 "is_popular": getattr(product, "is_popular", False),
                 "is_available": getattr(product, "is_available", True),
+                "is_surprise_box": getattr(product, "is_surprise_box", False),
+                "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[0],
+                "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[1],
                 "serves_people": getattr(product, "serves_people", 1),
                 "quantity": 0 # Valor base
             }
@@ -530,6 +632,7 @@ class HybridAIService:
             # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2
             "restaurantes_no_pedido": session.nomes_restaurantes_no_carrinho(),
             "max_restaurantes_por_pedido": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
+            "tem_caixa_surpresa_no_carrinho": session.tem_item_caixa_surpresa_no_carrinho(),
         }
         ms_pool = (time.time() - start_pool) * 1000
         print(f"⏱️  [Context Prep] Tempo: {ms_pool:.1f}ms")
@@ -602,12 +705,17 @@ class HybridAIService:
                     tags_descartadas_motivo.append("LIMITE_DE_RESTAURANTES")
                     print(f"⚠️ [Gemini Stream] Limite de {HybridAIService.MAX_RESTAURANTES_POR_PEDIDO} "
                           f"restaurantes atingido — GID {prod_gid} descartado.")
+                elif HybridAIService._bloqueado_por_caixa_surpresa_exclusiva(session, product_info, qty):
+                    # Caixa Surpresa é exclusiva — ver _bloqueado_por_caixa_surpresa_exclusiva.
+                    tags_descartadas_motivo.append("CAIXA_SURPRESA_EXCLUSIVA")
+                    print(f"⚠️ [Gemini Stream] Pedido exclusivo de Caixa Surpresa — GID {prod_gid} descartado.")
                 else:
                     session.add_to_cart(
                         product_id=product_info["id"], name=product_info["name"],
                         price=product_info["price"], restaurant_gid=product_info["restaurant_gid"],
                         quantity=qty, serves_people=product_info.get("serves_people") or 1,
                         restaurant_name=product_info.get("restaurant_name", ""),
+                        is_surprise_box=product_info.get("is_surprise_box", False),
                     )
                     tags_aplicadas += 1
 
@@ -624,6 +732,8 @@ class HybridAIService:
             # 1. Obter Sugestões (Mencionados no texto)
             # Nota: products_pool contém até 15-20 itens relevantes para a conversa
             suggested_products = HybridAIService._filter_mentioned_products(clean_response, found_products)
+            suggested_products = HybridAIService._completar_com_outras_sugestoes(
+                suggested_products, found_products, {p.id for p in search_results.productResults}, intent_type)
 
             # 2. Obter Detalhes do Carrinho (cartProducts)
             cart_products = []
@@ -641,9 +751,14 @@ class HybridAIService:
                         cart_products.append({
                             "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                             "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
+                            "restaurant_name": AIService._restaurant_name_by_product_id.get(full_p.id, ""),
+                        "restaurant_plan": AIService._restaurant_plan_by_product_id.get(full_p.id, ""),
                             "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                             "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                             "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
+                            "is_surprise_box": getattr(full_p, "is_surprise_box", False),
+                            "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[0],
+                            "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[1],
                             "serves_people": getattr(full_p, "serves_people", 1)
                         })
 
@@ -821,7 +936,8 @@ class HybridAIService:
             search_results = AIService.process_search(
                 user_query=user_message,
                 db=db,
-                scope="product"
+                scope="product",
+                limite_por_plano=6
             )
         else:
             from schemas.models import SearchResponse
@@ -868,12 +984,19 @@ class HybridAIService:
                 if global_prod.id not in seen_ids_local:
                     all_products.append(global_prod)
         else:
-            # ⭐ MELHORIA: Em busca global, se o número de produtos total for pequeno,
-            # enviamos todos para a IA ter contexto completo.
+            # Antes: catálogo pequeno (≤50) ignorava o ranking do E5 e despejava tudo
+            # na ordem crua do cache — a IA sempre sugeria os mesmos primeiros
+            # produtos, não importa o que o usuário pedisse (bug: toda pergunta
+            # devolvia sempre "Caixa Surpresa, King Jr., Shake Crocante"). Agora os
+            # resultados relevantes do E5 vêm primeiro; o resto do catálogo só entra
+            # depois, como contexto extra pra IA, sem atropelar a relevância.
+            e5_relevant = search_results.productResults
+            e5_ids = {p.id for p in e5_relevant}
             if len(AIService._product_obj_cache) <= 50:
-                all_products = AIService._product_obj_cache
+                other_products = [p for p in AIService._product_obj_cache if p.id not in e5_ids]
             else:
-                all_products = search_results.productResults
+                other_products = []
+            all_products = e5_relevant + other_products
 
         # ⭐ NOVO: Unir resultados da busca com itens que já estão no carrinho
         # E também com produtos sugeridos na última interação (Memória de Sugestões)
@@ -907,6 +1030,10 @@ class HybridAIService:
         candidate_pool = HybridAIService._filtrar_pool_por_restaurantes_travados(candidate_pool, session)
         # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 0
         candidate_pool = HybridAIService._filtrar_pool_por_aptidao_de_pagamento(candidate_pool, session)
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa(
+            candidate_pool, session, intent_info.get("details", {}).get("mentions_surprise_box", False)
+        )
+        candidate_pool = HybridAIService._filtrar_pool_por_caixa_surpresa_exclusiva_no_carrinho(candidate_pool, session)
 
         found_products = []
         produtos_sem_gid_excluidos = 0
@@ -930,12 +1057,16 @@ class HybridAIService:
                 "restaurant_gid": (getattr(product, "restaurant_gid", "") or restaurant_gid) or "", # Garantir que nunca retorne null
                 # Ver PLANO_LIMITE_RESTAURANTES.md Fase 2.3.
                 "restaurant_name": AIService._restaurant_name_by_product_id.get(product.id, ""),
+                "restaurant_plan": AIService._restaurant_plan_by_product_id.get(product.id, ""),
                 "image_url": _get("image_url"),
                 "description": _get("description", ""),
                 "category": _get("category", ""),
                 "rating": _get("rating"),
                 "is_available": _get("is_available", True),
                 "is_popular": _get("is_popular", False),
+                "is_surprise_box": _get("is_surprise_box", False),
+                "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[0],
+                "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(product.id, (None, None))[1],
                 # Porção e pessoas
                 "serves_people": _get("serves_people"),
                 "portion_size": _get("portion_size"),
@@ -981,6 +1112,7 @@ class HybridAIService:
             # PLANO_LIMITE_RESTAURANTES.md, Fase 3.2
             "restaurantes_no_pedido": session.nomes_restaurantes_no_carrinho(),
             "max_restaurantes_por_pedido": HybridAIService.MAX_RESTAURANTES_POR_PEDIDO,
+            "tem_caixa_surpresa_no_carrinho": session.tem_item_caixa_surpresa_no_carrinho(),
         }
 
         # ⭐ USAR GEMINI SEMPRE (API cloud - sem peso no servidor)
@@ -1051,6 +1183,9 @@ class HybridAIService:
                         print(f"⚠️ [Gemini] Limite de {HybridAIService.MAX_RESTAURANTES_POR_PEDIDO} "
                               f"restaurantes atingido — GID {prod_gid} descartado.")
                         tags_descartadas_motivo.append("LIMITE_DE_RESTAURANTES")
+                    elif HybridAIService._bloqueado_por_caixa_surpresa_exclusiva(session, product_info, qty):
+                        print(f"⚠️ [Gemini] Pedido exclusivo de Caixa Surpresa — GID {prod_gid} descartado.")
+                        tags_descartadas_motivo.append("CAIXA_SURPRESA_EXCLUSIVA")
                     else:
                         print(f"🛒 [Gemini] Adicionando ao carrinho: {product_info['name']} x{qty}")
                         session.add_to_cart(
@@ -1062,6 +1197,7 @@ class HybridAIService:
                             serves_people=product_info.get("serves_people") or 1,
                             category=product_info.get("category", ""),
                             restaurant_name=product_info.get("restaurant_name", ""),
+                            is_surprise_box=product_info.get("is_surprise_box", False),
                         )
                         tags_aplicadas += 1
 
@@ -1118,6 +1254,8 @@ class HybridAIService:
             suggested_products = [pool_por_gid[g] for g in gids_sugeridos_fc if g in pool_por_gid]
         else:
             suggested_products = HybridAIService._filter_mentioned_products(ai_response, found_products)
+            suggested_products = HybridAIService._completar_com_outras_sugestoes(
+                suggested_products, found_products, {p.id for p in search_results.productResults}, intent_type)
 
         # 2. Obter Detalhes do Carrinho (cartProducts)
         cart_products = []
@@ -1133,9 +1271,14 @@ class HybridAIService:
                     cart_products.append({
                         "id": full_p.id, "gid": getattr(full_p, "gid", ""), "name": full_p.name,
                         "price": float(full_p.price), "restaurant_gid": getattr(full_p, "restaurant_gid", "") or restaurant_gid or "",
+                        "restaurant_name": AIService._restaurant_name_by_product_id.get(full_p.id, ""),
+                        "restaurant_plan": AIService._restaurant_plan_by_product_id.get(full_p.id, ""),
                         "image_url": getattr(full_p, "image_url", ""), "description": getattr(full_p, "description", ""),
                         "category": getattr(full_p, "category", ""), "rating": getattr(full_p, "rating", None),
                         "is_popular": getattr(full_p, "is_popular", False), "is_available": getattr(full_p, "is_available", True),
+                        "is_surprise_box": getattr(full_p, "is_surprise_box", False),
+                        "surprise_box_pickup_start": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[0],
+                        "surprise_box_pickup_end": AIService._restaurant_surprise_box_window_by_product_id.get(full_p.id, (None, None))[1],
                         "serves_people": getattr(full_p, "serves_people", 1)
                     })
 
@@ -1217,6 +1360,27 @@ class HybridAIService:
             "order_confirmed": False,
             "restaurant_gid": session.restaurant_gid,
         }
+
+    @staticmethod
+    def _completar_com_outras_sugestoes(sugeridos: List[Dict], found_products: List[Dict],
+                                        ids_relevantes: set, intent_type: str, limite: int = 6) -> List[Dict]:
+        """"Outras sugestões" = produtos do plano SMART que a BUSCA achou relevantes para a pergunta,
+        mesmo que a IA não os cite pelo nome. Os cards eram só os produtos citados no texto, e a IA
+        cita os que a busca ranqueia primeiro — num restaurante ESSENCE com muitas pizzas, as 6 citações
+        iam todas para ele e as pizzas do restaurante SMART nunca apareciam ("tem alguma pizza?").
+
+        Só em pergunta de busca de produto e só se a IA já sugeriu algo (não cria cards em saudação nem
+        em pergunta de esclarecimento). Só entram produtos que passaram pelos filtros do turno
+        (found_products) E que vieram da busca (ids_relevantes) — nunca o resto do catálogo."""
+        if intent_type != "product_search" or not sugeridos:
+            return sugeridos
+        ja_sugeridos = {p["id"] for p in sugeridos}
+        extras = [
+            p for p in found_products
+            if p["id"] in ids_relevantes and p["id"] not in ja_sugeridos
+            and (p.get("restaurant_plan") or "").upper() == "SMART"
+        ]
+        return sugeridos + extras[:limite]
 
     @staticmethod
     def _filter_mentioned_products(ai_response: str, products: List[Dict]) -> List[Dict]:
