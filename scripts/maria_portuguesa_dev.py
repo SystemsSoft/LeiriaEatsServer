@@ -51,6 +51,7 @@ from modules.maria_portuguesa import catalogo
 from modules.maria_portuguesa.database import Base, get_db
 from modules.maria_portuguesa.live_service import AssistenteVoz
 from modules.maria_portuguesa.models import MpDomesticaDB
+from modules.maria_portuguesa import pagamentos as pagamentos_mp
 from modules.maria_portuguesa import routes as rotas_mp
 from modules.maria_portuguesa.routes import get_fabrica_db
 from modules.maria_portuguesa.search_service import BuscaService
@@ -206,6 +207,9 @@ def _usar_sqlite_em_memoria(app: FastAPI) -> None:
             email=EMAIL_DEMO if i == 0 else f"demo{i}@mariaportuguesa.test",
             senha_hash=gerar_hash_senha(SENHA_DEMO),
             publicado=True,
+            # Metade partilha o contacto (números inventados), para se verem os dois casos.
+            telemovel=f"91{i} 000 00{i}" if i % 2 == 0 else None,
+            mostrar_contacto=i % 2 == 0,
             **dados,
         )
         BuscaService.indexar(perfil)
@@ -259,6 +263,18 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_
 
     rotas_mp.upload_file_to_s3 = _guardar_foto_local
     app.mount("/_fotos", StaticFiles(directory=pasta_fotos), name="fotos")
+
+    # Pagamentos: sem MP_STRIPE_SECRET_KEY no .env, o «pagamento» é dado como feito
+    # e a pessoa volta logo ao site — serve para trabalhar o ecrã, não a Stripe.
+    if not pagamentos_mp.MP_STRIPE_SECRET_KEY:
+        pagamentos_mp.Pagamentos.definir_gateway(
+            lambda gid, nome, retorno: f"{retorno}?{pagamentos_mp.PARAMETRO_SESSAO}=cs_simulada_{gid}",
+            lambda sessao_id: pagamentos_mp.SessaoPagamento(
+                id=sessao_id, pago=True, gid=sessao_id.removeprefix("cs_simulada_"),
+                valor_centimos=pagamentos_mp.PRECO_CONTACTO_CENTIMOS, payment_intent=None,
+            ),
+        )
+        print("💳 Pagamento simulado: sem chave da Stripe, o contacto é dado como pago sem cobrar.")
 
     if pasta_landing:
         app.mount("/", StaticFiles(directory=pasta_landing, html=True), name="landing")

@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,7 +35,9 @@ from modules.maria_portuguesa import database as banco_mp
 from modules.maria_portuguesa.database import Base, get_db
 from modules.maria_portuguesa.firebase_auth import ContaFirebase, TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz, configuracao_live
-from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
+from modules.maria_portuguesa import pagamentos as pagamentos_mp
+from modules.maria_portuguesa.models import MpDesbloqueioDB, MpDomesticaDB, MpSessaoDB
+from modules.maria_portuguesa.pagamentos import ErroPagamento, Pagamentos, SessaoPagamento
 from modules.maria_portuguesa.routes import get_fabrica_db
 from modules.maria_portuguesa.search_service import BuscaService
 from modules.maria_portuguesa.security import gerar_hash_senha, verificar_senha
@@ -99,12 +102,13 @@ def _publicar(cliente: TestClient, email: str, nome: str, **perfil) -> str:
 
 def teste_banco_cria_tabelas_e_e_idempotente():
     from sqlalchemy import inspect
-    assert banco_mp.criar_banco_e_tabelas() == ["domesticas", "sessoes"]
-    assert banco_mp.criar_banco_e_tabelas() == ["domesticas", "sessoes"]   # segunda vez não falha
+    tabelas = ["desbloqueios", "domesticas", "sessoes"]
+    assert banco_mp.criar_banco_e_tabelas() == tabelas
+    assert banco_mp.criar_banco_e_tabelas() == tabelas   # segunda vez não falha
 
     colunas = {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
     assert {"gid", "email", "senha_hash", "firebase_uid", "servicos", "embedding", "publicado"} <= colunas
-    print("OK  - banco: cria as tabelas domesticas e sessoes, e pode correr várias vezes")
+    print("OK  - banco: cria as tabelas do módulo, e pode correr várias vezes")
 
 
 def teste_banco_acrescenta_firebase_uid_a_tabela_antiga():
@@ -123,7 +127,7 @@ def teste_banco_acrescenta_firebase_uid_a_tabela_antiga():
 
 def teste_banco_e_separado_do_leiria_eats():
     from core.database import Base as BaseLeiriaEats
-    assert set(Base.metadata.tables) == {"domesticas", "sessoes"}
+    assert set(Base.metadata.tables) == {"desbloqueios", "domesticas", "sessoes"}
     assert not set(Base.metadata.tables) & set(BaseLeiriaEats.metadata.tables)
     print("OK  - banco: as tabelas do módulo não se misturam com as do Leiria Eats")
 
@@ -132,7 +136,7 @@ def teste_ddl_mysql_e_valido():
     from sqlalchemy.dialects import mysql
     from sqlalchemy.schema import CreateTable
     ddl = {t.name: str(CreateTable(t).compile(dialect=mysql.dialect())) for t in Base.metadata.sorted_tables}
-    assert list(ddl) == ["domesticas", "sessoes"]          # a tabela referenciada vem primeiro
+    assert list(ddl)[0] == "domesticas"                    # a tabela referenciada vem primeiro
     assert "email VARCHAR(255) NOT NULL" in ddl["domesticas"]
     assert "servicos JSON NOT NULL" in ddl["domesticas"]
     assert "embedding BLOB" in ddl["domesticas"]
@@ -288,11 +292,162 @@ def teste_perfil_publico_protege_dados():
     cliente.put("/maria-portuguesa/domesticas/eu", json={"publicado": True}, headers=cabecalhos)
     publico = cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
     assert "email" not in publico and "senha_hash" not in publico and "embedding" not in publico
-    assert publico["telemovel"] is None
+    assert publico["telemovel"] is None and publico["contacto_disponivel"] is False
 
+    # Mesmo autorizado, o telemóvel não sai no perfil: só depois de pago.
     cliente.put("/maria-portuguesa/domesticas/eu", json={"mostrar_contacto": True}, headers=cabecalhos)
-    assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["telemovel"] == "912 345 678"
-    print("OK  - rascunho fica oculto; email nunca sai; telemóvel só com autorização")
+    publico = cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
+    assert publico["telemovel"] is None and publico["contacto_disponivel"] is True
+    assert "912 345 678" not in cliente.post("/maria-portuguesa/busca", json={"consulta": "limpeza"}).text
+    assert cliente.get("/maria-portuguesa/domesticas/eu", headers=cabecalhos).json()["telemovel"] == "912 345 678"
+    print("OK  - rascunho fica oculto; email e telemóvel nunca saem no perfil público")
+
+
+class _StripeFalsa:
+    """Faz de Stripe: abre sessões de pagamento e deixa o teste dá-las como pagas."""
+
+    def __init__(self):
+        self.sessoes: dict[str, SessaoPagamento] = {}
+        self.retornos: list[str] = []
+
+    def criar(self, *, gid: str, nome: str, retorno: str) -> str:
+        sessao_id = f"cs_test_{len(self.sessoes) + 1:04d}"
+        self.sessoes[sessao_id] = SessaoPagamento(
+            id=sessao_id, pago=False, gid=gid, valor_centimos=390, payment_intent=f"pi_{len(self.sessoes) + 1}")
+        self.retornos.append(retorno)
+        return f"https://checkout.stripe.test/{sessao_id}"
+
+    def consultar(self, sessao_id: str) -> SessaoPagamento:
+        if sessao_id not in self.sessoes:
+            raise ErroPagamento("sessão desconhecida")
+        return self.sessoes[sessao_id]
+
+    def pagar(self, sessao_id: str) -> None:
+        self.sessoes[sessao_id] = replace(self.sessoes[sessao_id], pago=True)
+
+
+def teste_contacto_so_e_mostrado_depois_de_pago():
+    cliente, Sessao = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
+    nao_partilha = _publicar(cliente, "bia@exemplo.pt", "Bia", telemovel="913 000 000")
+    sem_telemovel = _publicar(cliente, "carla@exemplo.pt", "Carla", mostrar_contacto=True)
+    rascunho = _publicar(cliente, "dina@exemplo.pt", "Dina", telemovel="914 000 000", mostrar_contacto=True,
+                         publicado=False)
+    verificar = "/maria-portuguesa/domesticas/{}/contacto"
+    checkout = "/maria-portuguesa/domesticas/{}/contacto/checkout"
+    confirmar = "/maria-portuguesa/contactos/confirmar"
+    stripe_falsa = _StripeFalsa()
+    Pagamentos.definir_gateway(stripe_falsa.criar, stripe_falsa.consultar)
+    try:
+        assert cliente.get("/maria-portuguesa/catalogo").json()["preco_contacto_centimos"] == 390
+        assert cliente.post(checkout.format("nao-existe"), json={}).status_code == 404
+        # Antes de propor o pagamento: há telemóvel registado e está autorizado?
+        r = cliente.get(verificar.format(gid))
+        assert r.json() == {"disponivel": True, "motivo": None, "preco_centimos": 390}
+        assert "912" not in r.text                               # verifica sem mostrar o número
+        assert cliente.get(verificar.format(nao_partilha)).json()["motivo"] == "nao_partilhado"
+        assert cliente.get(verificar.format(sem_telemovel)).json() == {
+            "disponivel": False, "motivo": "sem_contacto", "preco_centimos": 390}
+        assert cliente.get(verificar.format(rascunho)).status_code == 404
+        assert cliente.get(verificar.format("nao-existe")).status_code == 404
+
+        # E o pagamento recusa os mesmos casos, mesmo que o frontend não pergunte.
+        for sem in (nao_partilha, sem_telemovel):
+            r = cliente.post(checkout.format(sem), json={"retorno": "http://localhost:8092/"})
+            assert r.status_code == 409 and "contacto" in r.json()["detail"]
+        assert cliente.post(checkout.format(rascunho), json={"retorno": "http://localhost:8092/"}).status_code == 404
+        # O regresso só pode ser para o próprio site: endereços de fora não servem.
+        assert cliente.post(checkout.format(gid), json={"retorno": "https://site-alheio.example/"}).status_code == 503
+
+        r = cliente.post(checkout.format(gid), json={"retorno": "http://localhost:8092/?x=1#/perfil"})
+        assert r.status_code == 200, r.text
+        assert stripe_falsa.retornos == ["http://localhost:8092/"]
+        sessao_id = r.json()["url"].rsplit("/", 1)[-1]
+
+        # Voltar sem ter pago, ou com uma sessão inventada, não mostra nada.
+        assert cliente.post(confirmar, json={"sessao": sessao_id}).status_code == 402
+        assert cliente.post(confirmar, json={"sessao": "cs_test_inventada"}).status_code == 404
+
+        stripe_falsa.pagar(sessao_id)
+        r = cliente.post(confirmar, json={"sessao": sessao_id})
+        assert r.status_code == 200, r.text
+        assert r.json()["telemovel"] == "912 345 678" and r.json()["perfil"]["gid"] == gid
+        assert r.json()["perfil"]["telemovel"] is None
+
+        # Fica registado uma só vez, sem o id da sessão em claro, e volta a servir
+        # sem perguntar de novo à Stripe.
+        Pagamentos.definir_gateway(None, lambda _: (_ for _ in ()).throw(AssertionError("não devia consultar")))
+        assert cliente.post(confirmar, json={"sessao": sessao_id}).json()["telemovel"] == "912 345 678"
+        with Sessao() as db:
+            registo = db.query(MpDesbloqueioDB).one()
+            assert registo.valor_centimos == 390 and registo.payment_intent == "pi_1"
+            assert sessao_id not in registo.sessao_hash
+
+        # A profissional retira o contacto: deixa de ser mostrado, mesmo a quem pagou.
+        r = cliente.post("/maria-portuguesa/domesticas/login", json={"email": "ana@exemplo.pt", "senha": "segredo-de-teste"})
+        cabecalhos = {"Authorization": f"Bearer {r.json()['token']}"}
+        cliente.put("/maria-portuguesa/domesticas/eu", json={"mostrar_contacto": False}, headers=cabecalhos)
+        assert cliente.post(confirmar, json={"sessao": sessao_id}).status_code == 409
+        assert cliente.get(verificar.format(gid)).json()["motivo"] == "nao_partilhado"
+    finally:
+        Pagamentos.definir_gateway(None, None)
+    print("OK  - contacto: só é entregue depois de pago, e só de quem o autorizou")
+
+
+def teste_pagamentos_sem_stripe_configurada():
+    cliente, _ = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
+    chave = pagamentos_mp.MP_STRIPE_SECRET_KEY
+    pagamentos_mp.MP_STRIPE_SECRET_KEY = ""
+    try:
+        r = cliente.post(f"/maria-portuguesa/domesticas/{gid}/contacto/checkout", json={"retorno": "http://localhost:8092/"})
+        assert r.status_code == 503 and "pagamentos" in r.json()["detail"].lower()
+        assert cliente.post("/maria-portuguesa/contactos/confirmar", json={"sessao": "cs_test_qualquer"}).status_code == 503
+    finally:
+        pagamentos_mp.MP_STRIPE_SECRET_KEY = chave
+    print("OK  - contacto: sem chave da Stripe responde com aviso legível, sem cobrar")
+
+
+def teste_webhook_da_stripe_regista_o_pagamento():
+    import hmac
+    import time
+    cliente, Sessao = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
+    segredo = pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET
+    pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = "whsec_teste"
+
+    def _aviso(tipo: str, metadados: dict, assinar_com: str = "whsec_teste"):
+        corpo = json.dumps({
+            "id": "evt_1", "object": "event", "type": tipo,
+            "data": {"object": {
+                "id": "cs_test_aviso", "object": "checkout.session", "payment_status": "paid",
+                "amount_total": 390, "payment_intent": "pi_aviso", "metadata": metadados,
+            }},
+        })
+        carimbo = int(time.time())
+        assinatura = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
+        return cliente.post("/maria-portuguesa/stripe/webhook", content=corpo,
+                            headers={"Stripe-Signature": f"t={carimbo},v1={assinatura}"})
+
+    try:
+        meus = {"modulo": "maria_portuguesa", "gid": gid}
+        assert _aviso("checkout.session.completed", meus, assinar_com="whsec_outro").status_code == 400
+        # Pagamentos de outros produtos da mesma conta Stripe são ignorados.
+        assert _aviso("checkout.session.completed", {"pedido": "leiria-eats"}).status_code == 200
+        assert _aviso("payment_intent.succeeded", meus).status_code == 200
+        with Sessao() as db:
+            assert db.query(MpDesbloqueioDB).count() == 0
+
+        assert _aviso("checkout.session.completed", meus).status_code == 200
+        assert _aviso("checkout.session.completed", meus).status_code == 200   # a Stripe repete avisos
+        with Sessao() as db:
+            assert db.query(MpDesbloqueioDB).one().payment_intent == "pi_aviso"
+        # Com o aviso recebido, a pessoa vê o contacto sem nova consulta à Stripe.
+        r = cliente.post("/maria-portuguesa/contactos/confirmar", json={"sessao": "cs_test_aviso"})
+        assert r.status_code == 200 and r.json()["telemovel"] == "912 345 678"
+    finally:
+        pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = segredo
+    print("OK  - contacto: o aviso da Stripe regista o pagamento, uma vez, e só com assinatura válida")
 
 
 def teste_apagar_conta():

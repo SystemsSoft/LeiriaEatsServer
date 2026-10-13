@@ -51,6 +51,21 @@ CREATE INDEX ix_domesticas_id ON domesticas (id);
 
 CREATE INDEX ix_domesticas_publicado ON domesticas (publicado);
 
+CREATE TABLE IF NOT EXISTS desbloqueios (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	sessao_hash VARCHAR(64) NOT NULL, 
+	domestica_id INTEGER NOT NULL, 
+	valor_centimos INTEGER NOT NULL, 
+	payment_intent VARCHAR(64), 
+	pago_em DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(domestica_id) REFERENCES domesticas (id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_desbloqueios_domestica_id ON desbloqueios (domestica_id);
+
+CREATE UNIQUE INDEX ix_desbloqueios_sessao_hash ON desbloqueios (sessao_hash);
+
 CREATE TABLE IF NOT EXISTS sessoes (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
 	token_hash VARCHAR(64) NOT NULL, 

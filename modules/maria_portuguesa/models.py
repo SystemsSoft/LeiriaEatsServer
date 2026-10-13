@@ -74,6 +74,7 @@ class MpDomesticaDB(Base):
     atualizado_em = Column(DateTime, nullable=False, default=_agora, onupdate=_agora)
 
     sessoes = relationship("MpSessaoDB", back_populates="domestica", cascade="all, delete-orphan")
+    desbloqueios = relationship("MpDesbloqueioDB", back_populates="domestica", cascade="all, delete-orphan")
 
 
 class MpSessaoDB(Base):
@@ -89,3 +90,20 @@ class MpSessaoDB(Base):
 
     domestica = relationship("MpDomesticaDB", back_populates="sessoes")
 
+
+
+class MpDesbloqueioDB(Base):
+    """Contacto de uma doméstica pago por quem procura. Quem pagou não tem conta:
+    o comprovativo é o id da sessão de pagamento da Stripe, que fica no navegador
+    da pessoa — aqui guarda-se só o SHA-256 dele, como nas sessões de login."""
+    __tablename__ = "desbloqueios"
+
+    id = Column(Integer, primary_key=True)
+    sessao_hash = Column(String(64), unique=True, nullable=False, index=True)
+    domestica_id = Column(Integer, ForeignKey("domesticas.id", ondelete="CASCADE"), nullable=False, index=True)
+    valor_centimos = Column(Integer, nullable=False)
+    # Para encontrar o pagamento no painel da Stripe (reembolsos, reclamações).
+    payment_intent = Column(String(64), nullable=True)
+    pago_em = Column(DateTime, nullable=False, default=_agora)
+
+    domestica = relationship("MpDomesticaDB", back_populates="desbloqueios")
