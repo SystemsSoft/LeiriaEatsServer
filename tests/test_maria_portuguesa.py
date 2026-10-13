@@ -9,6 +9,7 @@ Execução:
 """
 import asyncio
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -31,6 +32,7 @@ from modules import maria_portuguesa
 from modules.maria_portuguesa import catalogo
 from modules.maria_portuguesa import database as banco_mp
 from modules.maria_portuguesa.database import Base, get_db
+from modules.maria_portuguesa.firebase_auth import ContaFirebase, TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz, configuracao_live
 from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
 from modules.maria_portuguesa.routes import get_fabrica_db
@@ -101,8 +103,22 @@ def teste_banco_cria_tabelas_e_e_idempotente():
     assert banco_mp.criar_banco_e_tabelas() == ["domesticas", "sessoes"]   # segunda vez não falha
 
     colunas = {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
-    assert {"gid", "email", "senha_hash", "servicos", "embedding", "publicado"} <= colunas
+    assert {"gid", "email", "senha_hash", "firebase_uid", "servicos", "embedding", "publicado"} <= colunas
     print("OK  - banco: cria as tabelas domesticas e sessoes, e pode correr várias vezes")
+
+
+def teste_banco_acrescenta_firebase_uid_a_tabela_antiga():
+    from sqlalchemy import inspect, text
+    banco_mp.criar_banco_e_tabelas()
+    # Simula uma instalação anterior ao Firebase: a tabela existe sem a coluna.
+    with banco_mp.engine.begin() as ligacao:
+        ligacao.execute(text("DROP INDEX ix_domesticas_firebase_uid"))
+        ligacao.execute(text("ALTER TABLE domesticas DROP COLUMN firebase_uid"))
+    assert "firebase_uid" not in {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
+    banco_mp.criar_banco_e_tabelas()
+    banco_mp.criar_banco_e_tabelas()
+    assert "firebase_uid" in {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
+    print("OK  - banco: acrescenta firebase_uid a uma tabela domesticas que já existia")
 
 
 def teste_banco_e_separado_do_leiria_eats():
@@ -163,6 +179,76 @@ def teste_login_e_sessao():
     assert cliente.get("/maria-portuguesa/domesticas/eu", headers=novos).status_code == 401
     assert cliente.get("/maria-portuguesa/domesticas/eu", headers=cabecalhos).status_code == 200
     print("OK  - login, sessão por token e terminar sessão")
+
+
+def _verificador_falso(id_token: str) -> ContaFirebase:
+    """Tokens de teste no formato «uid|email|verificado»."""
+    try:
+        uid, email, verificado = id_token.split("|")
+    except ValueError:
+        raise TokenFirebaseInvalido("formato de teste inválido")
+    return ContaFirebase(uid=uid, email=email, email_verificado=verificado == "sim")
+
+
+def teste_criar_perfil_e_entrar_com_firebase():
+    cliente, Sessao = _novo_cliente()
+    rota = "/maria-portuguesa/domesticas/firebase"
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        assert cliente.post(rota, json={"id_token": "lixo"}).status_code == 401
+        # Conta Firebase sem perfil: entrar não cria nada; criar exige nome e consentimento.
+        assert cliente.post(rota, json={"id_token": "u1|ana@exemplo.pt|nao"}).status_code == 404
+        assert cliente.post(rota, json={"id_token": "u1|ana@exemplo.pt|nao", "nome": "Ana"}).status_code == 422
+
+        r = cliente.post(rota, json={"id_token": "u1|ana@exemplo.pt|nao", "nome": " Ana ", "consentimento_rgpd": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["criado"] is True
+        assert r.json()["perfil"]["nome"] == "Ana" and r.json()["perfil"]["email"] == "ana@exemplo.pt"
+        cabecalhos = {"Authorization": f"Bearer {r.json()['token']}"}
+        assert cliente.get("/maria-portuguesa/domesticas/eu", headers=cabecalhos).status_code == 200
+
+        # Entrar de novo devolve o mesmo perfil, com ou sem os dados de registo.
+        r2 = cliente.post(rota, json={"id_token": "u1|ana@exemplo.pt|nao"})
+        assert r2.status_code == 200 and r2.json()["criado"] is False
+        assert r2.json()["perfil"]["gid"] == r.json()["perfil"]["gid"]
+        with Sessao() as db:
+            assert db.query(MpDomesticaDB).count() == 1
+
+        # A conta não tem palavra-passe neste servidor: o login antigo não entra.
+        for senha in ("firebase", "segredo-de-teste"):
+            assert cliente.post("/maria-portuguesa/domesticas/login",
+                                json={"email": "ana@exemplo.pt", "senha": senha}).status_code == 401
+        # Outro utilizador Firebase com o mesmo email não fica com o perfil.
+        assert cliente.post(rota, json={"id_token": "u2|ana@exemplo.pt|sim"}).status_code == 409
+    finally:
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - Firebase: cria o perfil com nome e consentimento e entra com o ID token")
+
+
+def teste_firebase_so_liga_conta_antiga_com_email_verificado():
+    cliente, Sessao = _novo_cliente()
+    _registar(cliente, "ana@exemplo.pt")          # conta anterior, com palavra-passe no servidor
+    rota = "/maria-portuguesa/domesticas/firebase"
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        pedido = {"nome": "Intrusa", "consentimento_rgpd": True}
+        assert cliente.post(rota, json={**pedido, "id_token": "u9|ana@exemplo.pt|nao"}).status_code == 409
+        r = cliente.post(rota, json={**pedido, "id_token": "u9|ana@exemplo.pt|sim"})
+        assert r.status_code == 200 and r.json()["criado"] is False
+        assert r.json()["perfil"]["nome"] == "Ana Teste"      # o perfil que já existia, intacto
+        with Sessao() as db:
+            assert db.query(MpDomesticaDB).one().firebase_uid == "u9"
+    finally:
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - Firebase: conta antiga só é ligada quando o email está verificado")
+
+
+def teste_token_firebase_verdadeiro_e_validado():
+    # Sem verificador de teste: um token inventado tem de ser recusado pela verificação real.
+    cliente, _ = _novo_cliente()
+    r = cliente.post("/maria-portuguesa/domesticas/firebase", json={"id_token": "a.b.c"})
+    assert r.status_code == 401, r.text
+    print("OK  - Firebase: um ID token inventado é recusado pela verificação real")
 
 
 def teste_publicar_exige_perfil_minimo():
@@ -316,10 +402,12 @@ class _SessaoLiveFalsa:
     """Imita o que o AssistenteVoz usa de google.genai.live.AsyncSession: um turno
     em que o modelo pede uma busca e depois fala, e a seguir fecha."""
 
-    def __init__(self):
+    def __init__(self, turnos=None, falha_no_fim: bool = False):
         self.enviado = []
         self.respostas_ferramenta = []
-        self._turnos = [self._turno_com_busca(), self._turno_falado()]
+        self._turnos = turnos if turnos is not None else [self._turno_com_busca(), self._turno_falado()]
+        # Em vez de fechar no fim dos turnos, a sessão rebenta (quota, ligação caída).
+        self._falha_no_fim = falha_no_fim
 
     async def __aenter__(self):
         return self
@@ -341,22 +429,99 @@ class _SessaoLiveFalsa:
         return [SimpleNamespace(tool_call=SimpleNamespace(function_calls=[chamada]), server_content=None)]
 
     @staticmethod
-    def _turno_falado():
+    def _turno_falado(texto: str = "Encontrei uma pessoa.", audio: bytes = b"\x01\x02"):
         conteudo = SimpleNamespace(
             interrupted=False,
-            model_turn=SimpleNamespace(parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x02"))]),
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(inline_data=SimpleNamespace(data=audio))]),
             input_transcription=None,
-            output_transcription=SimpleNamespace(text="Encontrei uma pessoa."),
+            output_transcription=SimpleNamespace(text=texto),
             turn_complete=True,
         )
         return [SimpleNamespace(tool_call=None, server_content=conteudo)]
 
     async def receive(self):
         if not self._turnos:
+            if self._falha_no_fim:
+                raise RuntimeError("1011 quota esgotada")
             await asyncio.sleep(0.2)   # dá tempo ao teste de ler tudo antes de fechar
             return
         for mensagem in self._turnos.pop(0):
             yield mensagem
+
+
+def _esperar_fecho(ws) -> list[dict]:
+    """Lê até o servidor fechar a ligação e devolve o que ainda chegou antes. Sair do
+    bloco `with` com a rota ainda a correr faz o TestClient cancelá-la a meio."""
+    mensagens = []
+    while True:
+        mensagem = ws.receive()
+        if mensagem["type"] == "websocket.close":
+            return mensagens
+        mensagens.append(json.loads(mensagem["text"]) if mensagem.get("text") else mensagem["bytes"])
+
+
+def _com_sessoes_live(sessoes: dict):
+    """Uma chave de API por sessão falsa; uma exceção no lugar da sessão = chave que nem abre."""
+    from core.config import settings
+
+    def _abrir(chave: str):
+        if isinstance(sessoes[chave], Exception):
+            raise sessoes[chave]
+        return sessoes[chave]
+
+    originais = settings.GEMINI_API_KEYS, AssistenteVoz._abrir_sessao_live
+    settings.GEMINI_API_KEYS = list(sessoes)
+    AssistenteVoz._abrir_sessao_live = staticmethod(_abrir)
+
+    def _repor():
+        settings.GEMINI_API_KEYS, AssistenteVoz._abrir_sessao_live = originais
+    return _repor
+
+
+def teste_voz_troca_de_chave_a_meio_sem_cair():
+    cliente, _ = _novo_cliente()
+    _publicar(cliente, "a@exemplo.pt", "Ana")
+    Falsa = _SessaoLiveFalsa
+    primeira = Falsa(falha_no_fim=True)                       # procura, fala e depois rebenta
+    terceira = Falsa(turnos=[Falsa._turno_falado("Já a ouço outra vez.", b"\x03")])
+    repor = _com_sessoes_live({"k1": primeira, "k2": RuntimeError("chave sem acesso"), "k3": terceira})
+    try:
+        with cliente.websocket_connect("/maria-portuguesa/voz") as ws:
+            assert ws.receive_json() == {"type": "ready"}
+            recebido = _esperar_fecho(ws)
+    finally:
+        repor()
+
+    tipos = [m if isinstance(m, bytes) else m["type"] for m in recebido]
+    # A mesma ligação: a conversa da 1.ª chave, o corte do áudio e a continuação com a 3.ª.
+    assert tipos == ["searching", "results", b"\x01\x02", "transcript", "turn_complete",
+                     "interrupted", b"\x03", "transcript", "turn_complete"], tipos
+    assert "error" not in tipos and "ready" not in tipos
+
+    # A sessão nova não se apresenta de novo: recebe a conversa e o que está no ecrã.
+    retoma = terceira.enviado[0]["text"]
+    assert retoma != "Olá" and "não voltes a apresentar-te" in retoma
+    assert "Maria: Encontrei uma pessoa." in retoma and '"nome": "Ana"' in retoma
+    assert AssistenteVoz._sessoes_ativas == 0
+    print("OK  - voz: a chave falha a meio e a conversa continua com outra na mesma ligação")
+
+
+def teste_voz_desiste_quando_todas_as_chaves_falham():
+    cliente, _ = _novo_cliente()
+    # Abrem, mas rebentam logo sem entregar nada: uma volta completa e desiste.
+    sessoes = {"k1": _SessaoLiveFalsa(turnos=[], falha_no_fim=True),
+               "k2": _SessaoLiveFalsa(turnos=[], falha_no_fim=True)}
+    repor = _com_sessoes_live(sessoes)
+    try:
+        with cliente.websocket_connect("/maria-portuguesa/voz") as ws:
+            assert ws.receive_json() == {"type": "ready"}
+            recebido = _esperar_fecho(ws)
+    finally:
+        repor()
+    assert [m["type"] for m in recebido] == ["interrupted", "interrupted", "error"], recebido
+    assert sessoes["k1"].enviado[0] == {"text": "Olá"} and len(sessoes["k2"].enviado) == 1
+    assert AssistenteVoz._sessoes_ativas == 0
+    print("OK  - voz: quando nenhuma chave aguenta, avisa uma vez e fecha")
 
 
 def teste_voz_faz_ponte_e_executa_busca():
@@ -375,6 +540,7 @@ def teste_voz_faz_ponte_e_executa_busca():
             assert ws.receive_bytes() == b"\x01\x02"
             assert ws.receive_json() == {"type": "transcript", "role": "assistant", "text": "Encontrei uma pessoa."}
             assert ws.receive_json() == {"type": "turn_complete"}
+            assert _esperar_fecho(ws) == []
     finally:
         AssistenteVoz._abrir_sessao_live = original
 
@@ -395,6 +561,7 @@ def teste_voz_sem_chave_avisa():
     try:
         with cliente.websocket_connect("/maria-portuguesa/voz") as ws:
             assert ws.receive_json()["type"] == "error"
+            assert _esperar_fecho(ws) == []
     finally:
         settings.GEMINI_API_KEYS = chaves
     print("OK  - voz: sem GEMINI_API_KEY devolve erro legível em vez de falhar")

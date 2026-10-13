@@ -12,6 +12,9 @@ def _agora() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+SENHA_NO_FIREBASE = "firebase"
+
+
 def _novo_gid() -> str:
     return uuid.uuid4().hex
 
@@ -27,7 +30,10 @@ class MpDomesticaDB(Base):
 
     # --- Conta ---
     email = Column(String(255), unique=True, nullable=False, index=True)
+    # Contas criadas pelo Firebase Authentication não têm palavra-passe aqui:
+    # fica SENHA_NO_FIREBASE, que nunca coincide com um hash scrypt.
     senha_hash = Column(String(255), nullable=False)
+    firebase_uid = Column(String(128), unique=True, nullable=True, index=True)
     consentimento_rgpd_em = Column(DateTime, nullable=False, default=_agora)
 
     # --- Perfil ---
@@ -82,3 +88,4 @@ class MpSessaoDB(Base):
     criado_em = Column(DateTime, nullable=False, default=_agora)
 
     domestica = relationship("MpDomesticaDB", back_populates="sessoes")
+

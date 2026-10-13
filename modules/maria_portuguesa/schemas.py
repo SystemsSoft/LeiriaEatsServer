@@ -68,6 +68,22 @@ class LoginRequest(BaseModel):
         return v.strip().lower()
 
 
+class EntrarFirebaseRequest(BaseModel):
+    """Sessão a partir de um ID token do Firebase. O nome e o consentimento só
+    vêm (e só são precisos) quando é para criar o perfil."""
+    id_token: str = Field(min_length=1, max_length=4096)
+    nome: Optional[str] = Field(default=None, max_length=120)
+    consentimento_rgpd: bool = False
+
+    @field_validator("nome")
+    @classmethod
+    def _nome(cls, v: Optional[str]) -> Optional[str]:
+        v = _limpar(v)
+        if v is not None and len(v) < 2:
+            raise ValueError("Indique o seu nome.")
+        return v
+
+
 class PerfilUpdate(BaseModel):
     """Atualização parcial: só os campos enviados são alterados."""
     nome: Optional[str] = Field(default=None, max_length=120)

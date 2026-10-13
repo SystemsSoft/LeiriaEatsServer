@@ -57,8 +57,9 @@ def get_db():
 def criar_banco_e_tabelas() -> list[str]:
     """Cria o banco (se for MySQL e ainda não existir) e as tabelas em falta.
 
-    É idempotente: pode correr a cada arranque do servidor. Não altera tabelas que
-    já existam — mudanças de colunas continuam a precisar de uma migração.
+    É idempotente: pode correr a cada arranque do servidor. Em tabelas que já
+    existam só acrescenta as colunas de _acrescentar_colunas_em_falta — outras
+    mudanças continuam a precisar de uma migração.
     Devolve os nomes das tabelas existentes no fim.
     """
     # Garante que os modelos estão registados na Base antes do create_all.
@@ -84,4 +85,15 @@ def criar_banco_e_tabelas() -> list[str]:
             servidor.dispose()
 
     Base.metadata.create_all(bind=engine)
+    _acrescentar_colunas_em_falta()
     return sorted(inspect(engine).get_table_names())
+
+
+def _acrescentar_colunas_em_falta() -> None:
+    """O create_all não mexe em tabelas que já existem. As colunas acrescentadas
+    depois da primeira instalação entram aqui (também idempotente)."""
+    colunas = {coluna["name"] for coluna in inspect(engine).get_columns("domesticas")}
+    if "firebase_uid" not in colunas:
+        with engine.begin() as ligacao:
+            ligacao.execute(text("ALTER TABLE domesticas ADD COLUMN firebase_uid VARCHAR(128) NULL"))
+            ligacao.execute(text("CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid)"))

@@ -8,10 +8,11 @@ from sqlalchemy.orm import Session
 
 from modules.maria_portuguesa import catalogo
 from modules.maria_portuguesa.database import SessionLocal, get_db
+from modules.maria_portuguesa.firebase_auth import TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz
-from modules.maria_portuguesa.models import MpDomesticaDB
+from modules.maria_portuguesa.models import SENHA_NO_FIREBASE, MpDomesticaDB
 from modules.maria_portuguesa.schemas import (
-    BuscaRequest, LoginRequest, PerfilUpdate, RegistoRequest,
+    BuscaRequest, EntrarFirebaseRequest, LoginRequest, PerfilUpdate, RegistoRequest,
     campos_em_falta, descrever_em_falta, perfil_privado, perfil_publico,
 )
 from modules.maria_portuguesa.search_service import BuscaService
@@ -62,6 +63,52 @@ def iniciar_sessao(pedido: LoginRequest, db: Session = Depends(get_db)):
     if domestica is None or not verificar_senha(pedido.senha, domestica.senha_hash):
         raise HTTPException(status_code=401, detail="Email ou palavra-passe incorretos.")
     return {"token": criar_sessao(db, domestica), "perfil": perfil_privado(domestica)}
+
+
+@router.post("/domesticas/firebase")
+def entrar_com_firebase(pedido: EntrarFirebaseRequest, db: Session = Depends(get_db)):
+    """Criar perfil e iniciar sessão com o Firebase Authentication: troca o ID token
+    do Firebase por uma sessão deste servidor. Com nome e consentimento cria o
+    perfil se ainda não existir; sem eles só entra em perfis que já existam."""
+    try:
+        conta = VerificadorFirebase.verificar(pedido.id_token)
+    except TokenFirebaseInvalido as e:
+        print(f"⚠️ [MariaPortuguesa] ID token do Firebase recusado: {e}")
+        raise HTTPException(status_code=401, detail="Não foi possível confirmar a sua conta. Inicie sessão novamente.")
+
+    domestica = db.query(MpDomesticaDB).filter(MpDomesticaDB.firebase_uid == conta.uid).first()
+    if domestica is None:
+        domestica = db.query(MpDomesticaDB).filter(MpDomesticaDB.email == conta.email).first()
+        if domestica is not None:
+            # Conta anterior ao Firebase com o mesmo email. Só é ligada se o Firebase
+            # confirmou que o email é de quem entra — sem isso, bastava criar uma conta
+            # Firebase com o email de outra pessoa para lhe ficar com o perfil.
+            if domestica.firebase_uid is not None or not conta.email_verificado:
+                raise HTTPException(status_code=409, detail="Já existe uma conta com este email.")
+            domestica.firebase_uid = conta.uid
+            db.commit()
+
+    if domestica is None:
+        if pedido.nome is None:
+            raise HTTPException(status_code=404, detail="Ainda não existe um perfil para esta conta. Crie o seu perfil.")
+        if not pedido.consentimento_rgpd:
+            raise HTTPException(
+                status_code=422, detail="É necessário aceitar o tratamento dos dados para criar o perfil.",
+            )
+        domestica = MpDomesticaDB(
+            nome=pedido.nome, email=conta.email, firebase_uid=conta.uid, senha_hash=SENHA_NO_FIREBASE,
+        )
+        db.add(domestica)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Já existe uma conta com este email.")
+        db.refresh(domestica)
+        print(f"🧹 [MariaPortuguesa] Novo registo (Firebase): {domestica.gid}")
+        return {"token": criar_sessao(db, domestica), "perfil": perfil_privado(domestica), "criado": True}
+
+    return {"token": criar_sessao(db, domestica), "perfil": perfil_privado(domestica), "criado": False}
 
 
 @router.post("/domesticas/sair", status_code=204)

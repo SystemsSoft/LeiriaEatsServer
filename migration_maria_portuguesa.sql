@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS domesticas (
 	gid VARCHAR(32) NOT NULL, 
 	email VARCHAR(255) NOT NULL, 
 	senha_hash VARCHAR(255) NOT NULL, 
+	firebase_uid VARCHAR(128), 
 	consentimento_rgpd_em DATETIME NOT NULL, 
 	nome VARCHAR(120) NOT NULL, 
 	titulo VARCHAR(140), 
@@ -42,6 +43,8 @@ CREATE INDEX ix_domesticas_distrito ON domesticas (distrito);
 
 CREATE UNIQUE INDEX ix_domesticas_email ON domesticas (email);
 
+CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid);
+
 CREATE UNIQUE INDEX ix_domesticas_gid ON domesticas (gid);
 
 CREATE INDEX ix_domesticas_id ON domesticas (id);
@@ -62,3 +65,8 @@ CREATE INDEX ix_sessoes_domestica_id ON sessoes (domestica_id);
 
 CREATE UNIQUE INDEX ix_sessoes_token_hash ON sessoes (token_hash);
 
+-- Instalações anteriores ao Firebase Authentication: a tabela domesticas já existe
+-- sem a coluna firebase_uid. O servidor acrescenta-a ao arrancar
+-- (_acrescentar_colunas_em_falta em database.py); à mão seria:
+--   ALTER TABLE domesticas ADD COLUMN firebase_uid VARCHAR(128) NULL;
+--   CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid);
