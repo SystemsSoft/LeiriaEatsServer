@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS domesticas (
 	publicado BOOL NOT NULL, 
 	premium_ate DATETIME, 
 	premium_renova BOOL NOT NULL, 
+	premium_estado VARCHAR(32), 
 	stripe_cliente_id VARCHAR(64), 
 	stripe_assinatura_id VARCHAR(64), 
 	embedding BLOB, 
@@ -71,7 +72,6 @@ CREATE INDEX ix_sessoes_domestica_id ON sessoes (domestica_id);
 
 CREATE UNIQUE INDEX ix_sessoes_token_hash ON sessoes (token_hash);
 
-
 -- Instalações anteriores: a tabela domesticas já existe sem as colunas
 -- acrescentadas depois (Firebase e Premium). O servidor acrescenta-as ao arrancar
 -- (_acrescentar_colunas_em_falta em database.py); à mão seria:
@@ -79,6 +79,7 @@ CREATE UNIQUE INDEX ix_sessoes_token_hash ON sessoes (token_hash);
 --   CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid);
 --   ALTER TABLE domesticas ADD COLUMN premium_ate DATETIME NULL;
 --   ALTER TABLE domesticas ADD COLUMN premium_renova BOOLEAN NOT NULL DEFAULT 0;
+--   ALTER TABLE domesticas ADD COLUMN premium_estado VARCHAR(32) NULL;
 --   ALTER TABLE domesticas ADD COLUMN stripe_cliente_id VARCHAR(64) NULL;
 --   ALTER TABLE domesticas ADD COLUMN stripe_assinatura_id VARCHAR(64) NULL;
 --   CREATE INDEX ix_domesticas_stripe_assinatura_id ON domesticas (stripe_assinatura_id);

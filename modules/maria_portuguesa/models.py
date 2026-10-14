@@ -76,6 +76,8 @@ class MpDomesticaDB(Base):
     premium_ate = Column(DateTime, nullable=True)
     # False quando a doméstica cancelou e a assinatura acaba em premium_ate.
     premium_renova = Column(Boolean, nullable=False, default=False)
+    # Estado da assinatura na Stripe (active, past_due, canceled, ...).
+    premium_estado = Column(String(32), nullable=True)
     stripe_cliente_id = Column(String(64), nullable=True)
     stripe_assinatura_id = Column(String(64), nullable=True, index=True)
 

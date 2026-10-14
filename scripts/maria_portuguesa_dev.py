@@ -270,10 +270,15 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_
 
     # Pagamentos: sem MP_STRIPE_SECRET_KEY no .env, a assinatura Premium é dada como
     # paga e a doméstica volta logo ao editor — serve para trabalhar o ecrã, não a Stripe.
+    # Aqui não há assinaturas verdadeiras para manter em dia.
+    from modules.maria_portuguesa import assinaturas as assinaturas_mp
+    assinaturas_mp.sincronizacao_ativa = False
+
     if not pagamentos_mp.MP_STRIPE_SECRET_KEY:
         def _assinatura_simulada(sessao_id: str):
             return pagamentos_mp.Assinatura(
-                id=f"sub_{sessao_id}", cliente="cus_simulado", gid=sessao_id.removeprefix("cs_simulada_"),
+                id=f"sub_{sessao_id}", cliente="cus_simulado", estado="active",
+                gid=sessao_id.removeprefix("cs_simulada_"),
                 ativa=True, valida_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30), cancela_no_fim=False,
             )
 
@@ -282,6 +287,7 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_
                 f"{retorno}?{pagamentos_mp.PARAMETRO_SESSAO}=cs_simulada_{gid}#/domestica",
             consultar=_assinatura_simulada,
             portal=lambda cliente, retorno: f"{retorno}#/domestica",
+            cancelar=lambda assinatura_id: None,
         )
         print("💳 Pagamento simulado: sem chave da Stripe, o Premium é ativado sem cobrar.")
 

@@ -344,7 +344,7 @@ class _StripeFalsa:
 
     def pagar(self, sessao_id: str, gid: str, dias: int = 30) -> None:
         self.sessoes[sessao_id] = Assinatura(
-            id="sub_1", cliente="cus_1", gid=gid, ativa=True,
+            id="sub_1", cliente="cus_1", estado="active", gid=gid, ativa=True,
             valida_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=dias), cancela_no_fim=False,
         )
 
@@ -429,56 +429,220 @@ def teste_premium_sem_stripe_configurada():
     print("OK  - Premium: sem chave da Stripe responde com aviso legível, sem cobrar")
 
 
-def teste_webhook_mantem_o_premium_em_dia():
+class _AssinaturasNaStripe:
+    """O estado «atual» de cada assinatura, tal como a Stripe o devolveria."""
+
+    def __init__(self):
+        self.estado: dict[str, Assinatura] = {}
+        self.consultas: list[str] = []
+        self.canceladas: list[str] = []
+        self.em_baixo = False
+
+    def definir(self, gid: str, estado: str = "active", dias: int = 30, cancela_no_fim: bool = False,
+                assinatura_id: str = "sub_9") -> None:
+        valida_ate = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=dias)
+        self.estado[assinatura_id] = Assinatura(
+            id=assinatura_id, cliente="cus_9", estado=estado, gid=gid,
+            ativa=estado in ("active", "trialing", "past_due") and dias > 0,
+            valida_ate=valida_ate, cancela_no_fim=cancela_no_fim,
+        )
+
+    def consultar(self, assinatura_id: str) -> Assinatura:
+        self.consultas.append(assinatura_id)
+        if self.em_baixo:
+            raise ErroPagamento("Stripe em baixo")
+        return self.estado[assinatura_id]
+
+    def cancelar(self, assinatura_id: str) -> None:
+        if self.em_baixo:
+            raise ErroPagamento("Stripe em baixo")
+        self.canceladas.append(assinatura_id)
+
+
+def _aviso_da_stripe(cliente: TestClient, tipo: str, gid: str, assinar_com: str = "whsec_teste", **campos):
+    """Envia ao webhook um aviso da Stripe assinado como ela o assinaria."""
     import hmac
     import time
-    cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    corpo = json.dumps({"id": "evt_1", "object": "event", "type": tipo, "data": {"object": {
+        "object": "subscription", "id": "sub_9", "customer": "cus_9", "status": "active",
+        "cancel_at_period_end": False, "metadata": {"modulo": "maria_portuguesa", "gid": gid},
+        "items": {"object": "list", "data": [{"current_period_end": int(time.time()) + 30 * 86400}]},
+        **campos,
+    }}})
+    carimbo = int(time.time())
+    assinatura_http = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
+    return cliente.post("/maria-portuguesa/stripe/webhook", content=corpo,
+                        headers={"Stripe-Signature": f"t={carimbo},v1={assinatura_http}"})
+
+
+def _com_stripe_falsa():
+    stripe = _AssinaturasNaStripe()
     segredo = pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET
     pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = "whsec_teste"
-    daqui_a_um_mes = int(time.time()) + 30 * 86400
+    Pagamentos.definir_gateway(assinatura=stripe.consultar, cancelar=stripe.cancelar)
 
-    def _aviso(tipo: str, assinatura: dict, assinar_com: str = "whsec_teste"):
-        corpo = json.dumps({"id": "evt_1", "object": "event", "type": tipo, "data": {"object": {
-            "object": "subscription", "id": "sub_9", "customer": "cus_9", "status": "active",
-            "cancel_at_period_end": False, "metadata": {"modulo": "maria_portuguesa", "gid": gid},
-            # Versões recentes da API: o período vive nos itens da assinatura.
-            "items": {"object": "list", "data": [{"current_period_end": daqui_a_um_mes}]},
-            **assinatura,
-        }}})
-        carimbo = int(time.time())
-        assinatura_http = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
-        return cliente.post("/maria-portuguesa/stripe/webhook", content=corpo,
-                            headers={"Stripe-Signature": f"t={carimbo},v1={assinatura_http}"})
+    def _repor():
+        pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = segredo
+        Pagamentos.definir_gateway()
+    return stripe, _repor
+
+
+def teste_webhook_mantem_o_premium_em_dia():
+    cliente, Sessao = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    stripe, repor = _com_stripe_falsa()
 
     def destaque() -> bool:
         return cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"]
 
     try:
-        assert _aviso("customer.subscription.created", {}, assinar_com="whsec_outro").status_code == 400
-        # Assinaturas de outros produtos da mesma conta Stripe são ignoradas.
-        assert _aviso("customer.subscription.created", {"id": "sub_x", "metadata": {"pedido": "leiria-eats"}}).status_code == 200
-        assert _aviso("invoice.paid", {}).status_code == 200
-        assert destaque() is False
+        assert _aviso_da_stripe(cliente, "customer.subscription.created", gid, assinar_com="whsec_outro").status_code == 400
+        # Assinaturas de outros produtos da mesma conta Stripe são ignoradas (nem se pergunta por elas).
+        assert _aviso_da_stripe(cliente, "customer.subscription.created", gid, id="sub_x",
+                                metadata={"pedido": "leiria-eats"}).status_code == 200
+        assert _aviso_da_stripe(cliente, "invoice.paid", gid).status_code == 200
+        assert stripe.consultas == [] and destaque() is False
 
-        assert _aviso("customer.subscription.created", {}).status_code == 200
-        assert destaque() is True
+        stripe.definir(gid)
+        assert _aviso_da_stripe(cliente, "customer.subscription.created", gid).status_code == 200
+        assert destaque() is True and stripe.consultas == ["sub_9"]
         with Sessao() as db:
             ana = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one()
-            assert ana.stripe_assinatura_id == "sub_9" and ana.premium_renova is True
+            assert (ana.stripe_assinatura_id, ana.premium_estado, ana.premium_renova) == ("sub_9", "active", True)
 
         # Cancelou: o destaque fica até ao fim do período, mas já não renova.
-        _aviso("customer.subscription.updated", {"cancel_at_period_end": True})
+        stripe.definir(gid, cancela_no_fim=True)
+        _aviso_da_stripe(cliente, "customer.subscription.updated", gid)
         assert destaque() is True
         with Sessao() as db:
             assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one().premium_renova is False
 
-        # Fim da assinatura (ou pagamento falhado de vez): o destaque acaba logo.
-        _aviso("customer.subscription.deleted", {"status": "canceled"})
+        # Fim da assinatura: o destaque acaba logo.
+        stripe.definir(gid, estado="canceled", dias=0)
+        _aviso_da_stripe(cliente, "customer.subscription.deleted", gid, status="canceled")
         assert destaque() is False
+
+        # Sem conseguir perguntar à Stripe, o aviso é recusado para ela o voltar a entregar.
+        stripe.em_baixo = True
+        assert _aviso_da_stripe(cliente, "customer.subscription.updated", gid).status_code == 502
     finally:
-        pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = segredo
+        repor()
     print("OK  - Premium: os avisos da Stripe ativam, mantêm e terminam o destaque")
+
+
+def teste_webhook_fora_de_ordem_nao_reativa_o_destaque():
+    cliente, _ = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    stripe, repor = _com_stripe_falsa()
+    try:
+        stripe.definir(gid)
+        _aviso_da_stripe(cliente, "customer.subscription.created", gid)
+        stripe.definir(gid, estado="canceled", dias=0)
+        _aviso_da_stripe(cliente, "customer.subscription.deleted", gid, status="canceled")
+        # Um "updated" antigo, ainda com a assinatura ativa no corpo, chega depois do fim.
+        assert _aviso_da_stripe(cliente, "customer.subscription.updated", gid, status="active").status_code == 200
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"] is False
+    finally:
+        repor()
+    print("OK  - Premium: um aviso antigo que chega fora de ordem não reativa o destaque")
+
+
+def teste_pagamento_em_atraso_e_avisado_a_domestica():
+    cliente, _ = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    ana = _entrar(cliente, "ana@exemplo.pt")
+    stripe, repor = _com_stripe_falsa()
+    try:
+        stripe.definir(gid)
+        _aviso_da_stripe(cliente, "customer.subscription.created", gid)
+        assert cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()["premium_em_atraso"] is False
+
+        # A renovação falhou e a Stripe está a tentar de novo: o destaque continua até ao
+        # fim do período pago, mas a doméstica é avisada para atualizar o cartão.
+        stripe.definir(gid, estado="past_due", dias=3)
+        _aviso_da_stripe(cliente, "customer.subscription.updated", gid, status="past_due")
+        eu = cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()
+        assert eu["premium_em_atraso"] is True and eu["destaque"] is True
+        assert "premium_em_atraso" not in cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
+
+        # A Stripe desistiu de cobrar: acaba o destaque e o aviso.
+        stripe.definir(gid, estado="unpaid", dias=3)
+        _aviso_da_stripe(cliente, "customer.subscription.updated", gid, status="unpaid")
+        eu = cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()
+        assert eu["destaque"] is False and eu["premium_em_atraso"] is False
+    finally:
+        repor()
+    print("OK  - Premium: pagamento em atraso aparece à doméstica; se a Stripe desistir, acaba o destaque")
+
+
+def teste_apagar_conta_cancela_a_assinatura():
+    cliente, Sessao = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    sem_premium = _publicar(cliente, "bia@exemplo.pt", "Bia")
+    stripe, repor = _com_stripe_falsa()
+    try:
+        stripe.definir(gid)
+        _aviso_da_stripe(cliente, "customer.subscription.created", gid)
+
+        # Com a Stripe em baixo a conta não é apagada: a assinatura continuaria a cobrar.
+        stripe.em_baixo = True
+        r = cliente.delete("/maria-portuguesa/domesticas/eu", headers=_entrar(cliente, "ana@exemplo.pt"))
+        assert r.status_code == 503 and "Premium" in r.json()["detail"]
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").status_code == 200
+
+        stripe.em_baixo = False
+        assert cliente.delete("/maria-portuguesa/domesticas/eu",
+                              headers=_entrar(cliente, "ana@exemplo.pt")).status_code == 204
+        assert stripe.canceladas == ["sub_9"]
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").status_code == 404
+
+        # Quem nunca assinou apaga a conta sem passar pela Stripe.
+        assert cliente.delete("/maria-portuguesa/domesticas/eu",
+                              headers=_entrar(cliente, "bia@exemplo.pt")).status_code == 204
+        assert stripe.canceladas == ["sub_9"]
+        with Sessao() as db:
+            assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == sem_premium).first() is None
+    finally:
+        repor()
+    print("OK  - apagar conta cancela antes a assinatura Premium, e não apaga se não conseguir")
+
+
+def teste_sincronizacao_diaria_corrige_avisos_perdidos():
+    from modules.maria_portuguesa.assinaturas import sincronizar_assinaturas
+    cliente, Sessao = _novo_cliente()
+    renovou = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    cancelou = _publicar(cliente, "bia@exemplo.pt", "Bia")
+    terminada = _publicar(cliente, "carla@exemplo.pt", "Carla")
+    _publicar(cliente, "dina@exemplo.pt", "Dina")                     # nunca assinou
+    stripe, repor = _com_stripe_falsa()
+    ontem = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+    try:
+        with Sessao() as db:
+            for gid, assinatura_id, estado, ate in ((renovou, "sub_a", "active", ontem),
+                                                    (cancelou, "sub_b", "active", ontem + timedelta(days=20)),
+                                                    (terminada, "sub_c", "canceled", None)):
+                db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).update({
+                    "stripe_assinatura_id": assinatura_id, "premium_estado": estado, "premium_ate": ate})
+            db.commit()
+        # Na Stripe: a Ana renovou (o aviso perdeu-se), a Bia cancelou entretanto.
+        stripe.definir(renovou, assinatura_id="sub_a")
+        stripe.definir(cancelou, estado="canceled", dias=0, assinatura_id="sub_b")
+
+        with Sessao() as db:
+            assert sincronizar_assinaturas(db) == {"verificadas": 2, "alteradas": 2, "falhadas": 0}
+        assert sorted(stripe.consultas) == ["sub_a", "sub_b"]          # a terminada não é consultada
+        destaques = {gid: cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"]
+                     for gid in (renovou, cancelou)}
+        assert destaques == {renovou: True, cancelou: False}
+
+        # Com a Stripe em baixo nada se perde: fica para o dia seguinte.
+        stripe.em_baixo = True
+        with Sessao() as db:
+            assert sincronizar_assinaturas(db)["falhadas"] == 1
+        assert cliente.get(f"/maria-portuguesa/domesticas/{renovou}").json()["destaque"] is True
+    finally:
+        repor()
+    print("OK  - Premium: a sincronização diária corrige renovações e cancelamentos que não chegaram")
 
 
 def teste_apagar_conta():

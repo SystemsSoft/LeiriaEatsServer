@@ -111,6 +111,7 @@ _COLUNAS_ACRESCENTADAS = [
     ]),
     ("premium_ate", ["ALTER TABLE domesticas ADD COLUMN premium_ate DATETIME NULL"]),
     ("premium_renova", ["ALTER TABLE domesticas ADD COLUMN premium_renova BOOLEAN NOT NULL DEFAULT 0"]),
+    ("premium_estado", ["ALTER TABLE domesticas ADD COLUMN premium_estado VARCHAR(32) NULL"]),
     ("stripe_cliente_id", ["ALTER TABLE domesticas ADD COLUMN stripe_cliente_id VARCHAR(64) NULL"]),
     ("stripe_assinatura_id", [
         "ALTER TABLE domesticas ADD COLUMN stripe_assinatura_id VARCHAR(64) NULL",

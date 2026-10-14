@@ -1,4 +1,5 @@
 # Arquivo: modules/maria_portuguesa/routes.py
+import asyncio
 import uuid
 from typing import Callable, Optional
 
@@ -6,13 +7,13 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Requ
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from modules.maria_portuguesa import catalogo
+from modules.maria_portuguesa import assinaturas, catalogo
 from modules.maria_portuguesa.database import SessionLocal, get_db
 from modules.maria_portuguesa.firebase_auth import TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz
 from modules.maria_portuguesa.models import SENHA_NO_FIREBASE, MpDomesticaDB, premium_ativo
 from modules.maria_portuguesa.pagamentos import (
-    Assinatura, ErroPagamento, Pagamentos, PagamentosIndisponiveis, url_de_retorno,
+    AvisoInvalido, ErroPagamento, Pagamentos, PagamentosIndisponiveis, url_de_retorno,
 )
 from modules.maria_portuguesa.schemas import (
     BuscaRequest, ConfirmarPremiumRequest, EntrarFirebaseRequest, LoginRequest, PerfilUpdate, RegistoRequest,
@@ -25,6 +26,12 @@ from modules.maria_portuguesa.security import (
 from services.s3_service import upload_file_to_s3
 
 router = APIRouter(prefix="/maria-portuguesa", tags=["Maria Portuguesa"])
+
+
+@router.on_event("startup")
+async def _arrancar_sincronizacao_de_assinaturas():
+    # Corre dentro do processo do Leiria Eats: o main.py junta este arranque ao seu.
+    asyncio.create_task(assinaturas.sincronizar_todos_os_dias(SessionLocal))
 
 _TAMANHO_MAX_FOTO = 5 * 1024 * 1024
 
@@ -188,7 +195,21 @@ async def enviar_foto(
 
 @router.delete("/domesticas/eu", status_code=204)
 def apagar_a_minha_conta(domestica: MpDomesticaDB = Depends(domestica_atual), db: Session = Depends(get_db)):
-    """Direito ao apagamento (RGPD, art.º 17.º): remove a conta, o perfil e as sessões."""
+    """Direito ao apagamento (RGPD, art.º 17.º): remove a conta, o perfil e as sessões.
+    Antes cancela a assinatura Premium: apagada a conta, ninguém a poderia cancelar e
+    a Stripe continuaria a cobrar todos os meses."""
+    if domestica.stripe_assinatura_id:
+        try:
+            Pagamentos.cancelar(domestica.stripe_assinatura_id)
+        except (PagamentosIndisponiveis, ErroPagamento) as e:
+            print(f"⚠️ [MariaPortuguesa] Não foi possível cancelar a assinatura de {domestica.gid}: {e}")
+            # Sem cancelar não se apaga: perder-se-ia a ligação à assinatura que continua a cobrar.
+            raise HTTPException(
+                status_code=503,
+                detail="Não foi possível cancelar a sua assinatura Premium agora, por isso a conta não foi "
+                       "apagada. Tente de novo dentro de instantes.",
+            )
+        print(f"⭐ [MariaPortuguesa] Assinatura cancelada com a conta: {domestica.gid}")
     print(f"🗑️ [MariaPortuguesa] Conta apagada a pedido da própria: {domestica.gid}")
     db.delete(domestica)
     db.commit()
@@ -221,14 +242,6 @@ def obter_perfil(gid: str, db: Session = Depends(get_db)):
 # ── Assinatura Premium da doméstica ──────────────────────────────────────────
 
 _PAGAMENTOS_EM_BAIXO = "Os pagamentos não estão disponíveis de momento. Tente de novo mais tarde."
-
-
-def _aplicar_assinatura(domestica: MpDomesticaDB, assinatura: Assinatura) -> None:
-    domestica.stripe_assinatura_id = assinatura.id
-    if assinatura.cliente:
-        domestica.stripe_cliente_id = assinatura.cliente
-    domestica.premium_ate = assinatura.valida_ate if assinatura.ativa else None
-    domestica.premium_renova = assinatura.ativa and not assinatura.cancela_no_fim
 
 
 def _erro_de_pagamento(e: Exception) -> HTTPException:
@@ -276,7 +289,7 @@ def confirmar_premium(
         raise HTTPException(status_code=404, detail="Não encontrámos este pagamento.")
     if not assinatura.ativa:
         raise HTTPException(status_code=402, detail="O pagamento ainda não foi confirmado.")
-    _aplicar_assinatura(domestica, assinatura)
+    assinaturas.aplicar_assinatura(domestica, assinatura)
     db.commit()
     db.refresh(domestica)
     print(f"⭐ [MariaPortuguesa] Premium ativo: {domestica.gid}")
@@ -304,8 +317,11 @@ async def webhook_stripe(request: Request, stripe_signature: Optional[str] = Hea
         assinatura = Pagamentos.evento_do_webhook(await request.body(), stripe_signature)
     except PagamentosIndisponiveis:
         raise HTTPException(status_code=503, detail="Webhook por configurar.")
-    except ErroPagamento:
+    except AvisoInvalido:
         raise HTTPException(status_code=400, detail="Assinatura inválida.")
+    except ErroPagamento:
+        # Não se conseguiu perguntar à Stripe o estado atual: ela volta a entregar o aviso.
+        raise HTTPException(status_code=502, detail="Estado da assinatura indisponível.")
     if assinatura is None:
         return {"recebido": True}
 
@@ -317,7 +333,7 @@ async def webhook_stripe(request: Request, stripe_signature: Optional[str] = Hea
     if domestica.stripe_assinatura_id not in (None, assinatura.id) and premium_ativo(domestica) and not assinatura.ativa:
         # Fim de uma assinatura antiga não apaga o destaque da assinatura atual.
         return {"recebido": True}
-    _aplicar_assinatura(domestica, assinatura)
+    assinaturas.aplicar_assinatura(domestica, assinatura)
     db.commit()
     print(f"⭐ [MariaPortuguesa] Assinatura {'ativa' if assinatura.ativa else 'terminada'}: {domestica.gid}")
     return {"recebido": True}

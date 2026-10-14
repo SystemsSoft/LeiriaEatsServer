@@ -35,6 +35,8 @@ _ROTA_EDITOR = "#/domestica"
 # pagamento em atraso (past_due) a Stripe ainda está a tentar cobrar: o destaque
 # fica até ao fim do período já pago.
 _ESTADOS_ATIVOS = {"active", "trialing", "past_due"}
+# Estados de onde uma assinatura já não sai: não vale a pena voltar a perguntar por ela.
+ESTADOS_TERMINADOS = {"canceled", "incomplete_expired"}
 
 
 class PagamentosIndisponiveis(Exception):
@@ -45,10 +47,16 @@ class ErroPagamento(Exception):
     """A Stripe recusou a operação; a mensagem pode ser mostrada à pessoa."""
 
 
+class AvisoInvalido(Exception):
+    """Um pedido ao webhook que não vem da Stripe (assinatura HTTP errada)."""
+
+
 @dataclass(frozen=True)
 class Assinatura:
     id: str
     cliente: Optional[str]
+    # Estado na Stripe: active, past_due (pagamento em atraso), canceled, ...
+    estado: str
     # gid do perfil; None se a assinatura não for deste módulo.
     gid: Optional[str]
     ativa: bool
@@ -102,6 +110,7 @@ def assinatura_de_objeto(assinatura) -> Assinatura:
     return Assinatura(
         id=_campo(assinatura, "id"),
         cliente=cliente if isinstance(cliente, str) else _campo(cliente, "id"),
+        estado=_campo(assinatura, "status", ""),
         gid=metadados.get("gid") if metadados.get("modulo") == _MODULO else None,
         ativa=_campo(assinatura, "status") in _ESTADOS_ATIVOS and valida_ate is not None and valida_ate > agora,
         valida_ate=valida_ate,
@@ -114,10 +123,17 @@ class Pagamentos:
     _criar: Optional[Callable[..., str]] = None
     _consultar: Optional[Callable[[str], Optional[Assinatura]]] = None
     _portal: Optional[Callable[..., str]] = None
+    _assinatura: Optional[Callable[[str], Assinatura]] = None
+    _cancelar: Optional[Callable[[str], None]] = None
 
     @classmethod
-    def definir_gateway(cls, criar=None, consultar=None, portal=None) -> None:
+    def definir_gateway(cls, criar=None, consultar=None, portal=None, assinatura=None, cancelar=None) -> None:
         cls._criar, cls._consultar, cls._portal = criar, consultar, portal
+        cls._assinatura, cls._cancelar = assinatura, cancelar
+
+    @staticmethod
+    def configurada() -> bool:
+        return bool(MP_STRIPE_SECRET_KEY) and not MP_STRIPE_SECRET_KEY.startswith("pk_")
 
     @classmethod
     def criar_checkout(cls, *, gid: str, email: str, cliente: Optional[str], retorno: str) -> str:
@@ -133,6 +149,16 @@ class Pagamentos:
     def portal(cls, *, cliente: str, retorno: str) -> str:
         """Página da Stripe onde a doméstica muda o cartão, vê faturas ou cancela."""
         return (cls._portal or cls._portal_na_stripe)(cliente=cliente, retorno=retorno)
+
+    @classmethod
+    def consultar_assinatura(cls, assinatura_id: str) -> Assinatura:
+        """Estado atual da assinatura, perguntado à Stripe (não ao que veio num aviso)."""
+        return (cls._assinatura or cls._assinatura_na_stripe)(assinatura_id)
+
+    @classmethod
+    def cancelar(cls, assinatura_id: str) -> None:
+        """Cancela já a assinatura, sem mais cobranças. Não faz nada se já tiver terminado."""
+        (cls._cancelar or cls._cancelar_na_stripe)(assinatura_id)
 
     # ── Stripe ───────────────────────────────────────────────────────────────
 
@@ -200,6 +226,20 @@ class Pagamentos:
         return assinatura_de_objeto(assinatura)
 
     @classmethod
+    def _assinatura_na_stripe(cls, assinatura_id: str) -> Assinatura:
+        import stripe
+
+        return assinatura_de_objeto(cls._chamar(stripe.Subscription.retrieve, assinatura_id))
+
+    @classmethod
+    def _cancelar_na_stripe(cls, assinatura_id: str) -> None:
+        import stripe
+
+        if cls._assinatura_na_stripe(assinatura_id).estado in ESTADOS_TERMINADOS:
+            return
+        cls._chamar(stripe.Subscription.cancel, assinatura_id)
+
+    @classmethod
     def _portal_na_stripe(cls, *, cliente: str, retorno: str) -> str:
         import stripe
 
@@ -211,8 +251,10 @@ class Pagamentos:
 
     @classmethod
     def evento_do_webhook(cls, corpo: bytes, assinatura_http: Optional[str]) -> Optional[Assinatura]:
-        """Valida o aviso da Stripe e devolve a assinatura a que ele se refere, se for
-        disso que se trata. Levanta ErroPagamento se a assinatura HTTP não for da Stripe."""
+        """Valida o aviso da Stripe e devolve o estado ATUAL da assinatura a que ele se
+        refere, se for disso que se trata. Levanta AvisoInvalido se a assinatura HTTP não
+        for da Stripe, e ErroPagamento se não conseguir perguntar à Stripe (o aviso volta
+        a ser entregue mais tarde)."""
         import stripe
 
         if not MP_STRIPE_WEBHOOK_SECRET:
@@ -220,11 +262,16 @@ class Pagamentos:
         try:
             evento = stripe.Webhook.construct_event(corpo, assinatura_http or "", MP_STRIPE_WEBHOOK_SECRET)
         except (ValueError, stripe.SignatureVerificationError) as e:
-            raise ErroPagamento(f"aviso recusado: {e}")
+            raise AvisoInvalido(str(e))
         objeto = evento.data.object
         if evento.type in ("customer.subscription.created", "customer.subscription.updated",
                            "customer.subscription.deleted"):
-            return assinatura_de_objeto(objeto)
+            # A Stripe pode entregar os avisos fora de ordem: um "updated" antigo a chegar
+            # depois do "deleted" reativaria o destaque. Por isso não se confia no que vem
+            # no aviso e pergunta-se o estado atual. Os de outros produtos ficam de fora.
+            if assinatura_de_objeto(objeto).gid is None:
+                return None
+            return cls.consultar_assinatura(_campo(objeto, "id"))
         if evento.type == "checkout.session.completed" and _campo(objeto, "mode") == "subscription":
             return cls.consultar_checkout(_campo(objeto, "id"))
         return None

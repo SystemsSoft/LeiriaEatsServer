@@ -250,5 +250,8 @@ def perfil_privado(d: MpDomesticaDB) -> dict:
         "em_falta": campos_em_falta(d),
         "premium_ate": d.premium_ate.isoformat() + "Z" if premium_ativo(d) else None,
         "premium_renova": bool(d.premium_renova) and premium_ativo(d),
+        # A Stripe não conseguiu cobrar e está a tentar de novo: o destaque acaba no
+        # fim do período pago se o cartão não for atualizado.
+        "premium_em_atraso": premium_ativo(d) and d.premium_estado == "past_due",
     })
     return dados
