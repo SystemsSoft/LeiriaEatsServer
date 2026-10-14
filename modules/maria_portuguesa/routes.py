@@ -12,7 +12,7 @@ from modules.maria_portuguesa.firebase_auth import TokenFirebaseInvalido, Verifi
 from modules.maria_portuguesa.live_service import AssistenteVoz
 from modules.maria_portuguesa.models import SENHA_NO_FIREBASE, MpDomesticaDB, premium_ativo
 from modules.maria_portuguesa.pagamentos import (
-    AvisoInvalido, ErroPagamento, Pagamentos, PagamentosIndisponiveis, url_de_retorno,
+    AvisoInvalido, ClienteInexistente, ErroPagamento, Pagamentos, PagamentosIndisponiveis, url_de_retorno,
 )
 from modules.maria_portuguesa.schemas import (
     BuscaRequest, ConfirmarPremiumRequest, EntrarFirebaseRequest, LoginRequest, PerfilUpdate, RegistoRequest,
@@ -296,12 +296,22 @@ def confirmar_premium(
 
 
 @router.post("/domesticas/eu/premium/gerir")
-def gerir_premium(pedido: RetornoRequest, domestica: MpDomesticaDB = Depends(domestica_atual)):
+def gerir_premium(
+        pedido: RetornoRequest,
+        domestica: MpDomesticaDB = Depends(domestica_atual),
+        db: Session = Depends(get_db),
+):
     """Página da Stripe para mudar o cartão, ver as faturas ou cancelar."""
+    sem_assinatura = HTTPException(status_code=409, detail="Ainda não tem uma assinatura para gerir.")
     if not domestica.stripe_cliente_id:
-        raise HTTPException(status_code=409, detail="Ainda não tem uma assinatura para gerir.")
+        raise sem_assinatura
     try:
         url = Pagamentos.portal(cliente=domestica.stripe_cliente_id, retorno=url_de_retorno(pedido.retorno))
+    except ClienteInexistente:
+        # Cliente de outro modo da Stripe (teste): esquece-o.
+        domestica.stripe_cliente_id = None
+        db.commit()
+        raise sem_assinatura
     except (PagamentosIndisponiveis, ErroPagamento) as e:
         raise _erro_de_pagamento(e)
     return {"url": url}

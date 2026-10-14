@@ -47,6 +47,15 @@ class ErroPagamento(Exception):
     """A Stripe recusou a operação; a mensagem pode ser mostrada à pessoa."""
 
 
+class RecursoInexistente(ErroPagamento):
+    """O objeto pedido não existe nesta conta Stripe (por exemplo, foi criado em modo
+    de teste e a chave agora é a live)."""
+
+
+class ClienteInexistente(RecursoInexistente):
+    """O cliente guardado no perfil não existe nesta conta Stripe."""
+
+
 class AvisoInvalido(Exception):
     """Um pedido ao webhook que não vem da Stripe (assinatura HTTP errada)."""
 
@@ -178,6 +187,8 @@ class Pagamentos:
             return funcao(*args, api_key=chave, **kwargs)
         except stripe.StripeError as e:
             print(f"⚠️ [MariaPortuguesa] Erro da Stripe: {e}")
+            if getattr(e, "code", None) == "resource_missing":
+                raise (ClienteInexistente if getattr(e, "param", None) == "customer" else RecursoInexistente)(str(e))
             raise ErroPagamento("Não foi possível falar com o serviço de pagamentos. Tente de novo dentro de instantes.")
 
     @classmethod
@@ -185,8 +196,19 @@ class Pagamentos:
         import stripe
 
         metadados = {"modulo": _MODULO, "gid": gid}
-        # Quem já foi assinante reutiliza o cliente da Stripe (cartão e faturas no mesmo sítio).
-        quem = {"customer": cliente} if cliente else {"customer_email": email}
+        if cliente:
+            # Quem já foi assinante reutiliza o cliente da Stripe (cartão e faturas no mesmo sítio).
+            try:
+                return cls._abrir_checkout(metadados, retorno, {"customer": cliente})
+            except ClienteInexistente:
+                pass  # cliente de outro modo/conta: começa um novo, com o email
+        return cls._abrir_checkout(metadados, retorno, {"customer_email": email})
+
+    @classmethod
+    def _abrir_checkout(cls, metadados: dict, retorno: str, quem: dict) -> str:
+        import stripe
+
+        gid = metadados["gid"]
         sessao = cls._chamar(
             stripe.checkout.Session.create,
             mode="subscription",
@@ -235,8 +257,11 @@ class Pagamentos:
     def _cancelar_na_stripe(cls, assinatura_id: str) -> None:
         import stripe
 
-        if cls._assinatura_na_stripe(assinatura_id).estado in ESTADOS_TERMINADOS:
-            return
+        try:
+            if cls._assinatura_na_stripe(assinatura_id).estado in ESTADOS_TERMINADOS:
+                return
+        except RecursoInexistente:
+            return  # não existe nesta conta (era de teste): não há nada que possa cobrar
         cls._chamar(stripe.Subscription.cancel, assinatura_id)
 
     @classmethod

@@ -414,6 +414,78 @@ def teste_premium_assinatura_ativa_o_destaque():
     print("OK  - Premium: assinatura paga ativa o destaque, que acaba com o período pago")
 
 
+def teste_premium_cliente_de_outro_modo_da_stripe():
+    """Um cliente guardado em modo de teste não existe com a chave live: o pagamento
+    começa um cliente novo em vez de falhar, e o portal esquece o cliente antigo."""
+    import stripe
+    from modules.maria_portuguesa.pagamentos import ClienteInexistente
+    cliente, Sessao = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    ana = _entrar(cliente, "ana@exemplo.pt")
+    with Sessao() as db:
+        db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).update({"stripe_cliente_id": "cus_teste"})
+        db.commit()
+
+    pedidos = []
+
+    def _criar_sessao(**params):
+        pedidos.append(params)
+        if params.get("customer") == "cus_teste":
+            raise stripe.InvalidRequestError("No such customer: 'cus_teste'", param="customer", code="resource_missing")
+        return {"url": "https://checkout.stripe.test/cs_novo"}
+
+    original_chave, original_criar = pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.checkout.Session.create
+    pagamentos_mp.MP_STRIPE_SECRET_KEY = "rk_test_falsa"
+    stripe.checkout.Session.create = lambda **params: _criar_sessao(**{k: v for k, v in params.items() if k != "api_key"})
+    try:
+        r = cliente.post("/maria-portuguesa/domesticas/eu/premium/checkout",
+                         json={"retorno": "http://localhost:8092/"}, headers=ana)
+        assert r.status_code == 200 and r.json()["url"].endswith("cs_novo"), r.text
+        assert [p.get("customer") for p in pedidos] == ["cus_teste", None]
+        assert pedidos[1]["customer_email"] == "ana@exemplo.pt"
+
+        def _portal(*, cliente, retorno):
+            raise ClienteInexistente("No such customer")
+        Pagamentos.definir_gateway(portal=_portal)
+        r = cliente.post("/maria-portuguesa/domesticas/eu/premium/gerir",
+                         json={"retorno": "http://localhost:8092/"}, headers=ana)
+        assert r.status_code == 409, r.text
+        with Sessao() as db:
+            assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one().stripe_cliente_id is None
+    finally:
+        pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.checkout.Session.create = original_chave, original_criar
+        Pagamentos.definir_gateway()
+    print("OK  - Premium: cliente da Stripe de outro modo (teste/live) não bloqueia o pagamento")
+
+
+def teste_apagar_conta_com_assinatura_que_ja_nao_existe_na_stripe():
+    """Uma assinatura criada em modo de teste não existe com a chave live: não pode
+    cobrar nada, por isso não impede a doméstica de apagar a conta."""
+    import stripe
+    cliente, Sessao = _novo_cliente()
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    with Sessao() as db:
+        db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).update({"stripe_assinatura_id": "sub_de_teste"})
+        db.commit()
+    canceladas = []
+
+    def _obter(assinatura_id, **_):
+        raise stripe.InvalidRequestError(f"No such subscription: '{assinatura_id}'", param="id", code="resource_missing")
+
+    original = (pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.Subscription.retrieve, stripe.Subscription.cancel)
+    pagamentos_mp.MP_STRIPE_SECRET_KEY = "rk_test_falsa"
+    stripe.Subscription.retrieve = _obter
+    stripe.Subscription.cancel = lambda assinatura_id, **_: canceladas.append(assinatura_id)
+    try:
+        assert cliente.delete("/maria-portuguesa/domesticas/eu",
+                              headers=_entrar(cliente, "ana@exemplo.pt")).status_code == 204
+        assert canceladas == []
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").status_code == 404
+    finally:
+        pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.Subscription.retrieve, stripe.Subscription.cancel = original
+    print("OK  - apagar conta não fica bloqueado por uma assinatura que não existe nesta conta Stripe")
+
+
 def teste_premium_sem_stripe_configurada():
     cliente, _ = _novo_cliente()
     _publicar(cliente, "ana@exemplo.pt", "Ana")
