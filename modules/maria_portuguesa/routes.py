@@ -1,5 +1,4 @@
 # Arquivo: modules/maria_portuguesa/routes.py
-import asyncio
 import uuid
 from typing import Callable, Optional
 
@@ -31,7 +30,7 @@ router = APIRouter(prefix="/maria-portuguesa", tags=["Maria Portuguesa"])
 @router.on_event("startup")
 async def _arrancar_sincronizacao_de_assinaturas():
     # Corre dentro do processo do Leiria Eats: o main.py junta este arranque ao seu.
-    asyncio.create_task(assinaturas.sincronizar_todos_os_dias(SessionLocal))
+    assinaturas.iniciar_sincronizacao(SessionLocal)
 
 _TAMANHO_MAX_FOTO = 5 * 1024 * 1024
 

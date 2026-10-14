@@ -5,7 +5,7 @@
 # perdido da Stripe tenha deixado desatualizado.
 import asyncio
 from datetime import timedelta
-from typing import Callable
+from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,16 @@ INTERVALO_SINCRONIZACAO = timedelta(hours=24)
 _ATRASO_INICIAL_S = 120
 # O servidor de desenvolvimento desliga a sincronização (não tem assinaturas verdadeiras).
 sincronizacao_ativa = True
+
+_tarefa: Optional[asyncio.Task] = None
+
+
+def iniciar_sincronizacao(fabrica_db: Callable[[], Session]) -> None:
+    """Arranca a sincronização diária, uma só vez por processo: o FastAPI chama o
+    arranque de um router incluído mais do que uma vez, e sem isto corriam duas."""
+    global _tarefa
+    if _tarefa is None or _tarefa.done():
+        _tarefa = asyncio.create_task(sincronizar_todos_os_dias(fabrica_db))
 
 
 def aplicar_assinatura(domestica: MpDomesticaDB, assinatura: Assinatura) -> None:

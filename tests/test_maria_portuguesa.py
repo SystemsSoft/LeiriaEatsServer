@@ -645,6 +645,29 @@ def teste_sincronizacao_diaria_corrige_avisos_perdidos():
     print("OK  - Premium: a sincronização diária corrige renovações e cancelamentos que não chegaram")
 
 
+def teste_sincronizacao_arranca_uma_so_vez():
+    from modules.maria_portuguesa import assinaturas
+    arranques = []
+
+    async def _falsa(fabrica_db):
+        arranques.append(fabrica_db)
+        await asyncio.sleep(3600)
+
+    original = assinaturas.sincronizar_todos_os_dias
+    assinaturas.sincronizar_todos_os_dias = _falsa
+    try:
+        app = FastAPI()
+        app.include_router(maria_portuguesa.router)
+        # O FastAPI corre o arranque do router duas vezes; a tarefa só pode existir uma.
+        with TestClient(app):
+            pass
+        assert len(arranques) == 1
+    finally:
+        assinaturas.sincronizar_todos_os_dias = original
+        assinaturas._tarefa = None
+    print("OK  - Premium: a sincronização diária arranca uma só vez por processo")
+
+
 def teste_apagar_conta():
     cliente, Sessao = _novo_cliente()
     cabecalhos = _registar(cliente, "ana@exemplo.pt")
