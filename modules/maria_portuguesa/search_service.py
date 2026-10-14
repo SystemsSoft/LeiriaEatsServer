@@ -16,7 +16,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from modules.maria_portuguesa import catalogo
-from modules.maria_portuguesa.models import MpDomesticaDB
+from modules.maria_portuguesa.models import MpDomesticaDB, premium_ativo
 from modules.maria_portuguesa.schemas import perfil_publico
 
 # Filtros que podem ser abandonados quando não há ninguém que os cumpra todos, pela
@@ -26,6 +26,10 @@ _ORDEM_RELAXAMENTO = ("dias", "preco_max")
 
 # Quem está no concelho pedido sobe face a quem só partilha o distrito.
 _BONUS_MESMO_CONCELHO = 0.05
+# Perfis Premium sobem nas pesquisas. É um empurrão e não um salto para o topo:
+# um perfil em destaque pouco relacionado com o pedido não passa à frente de quem
+# corresponde bem a ele.
+_BONUS_DESTAQUE = 0.04
 
 
 class BuscaService:
@@ -154,7 +158,8 @@ class BuscaService:
         if consulta:
             ordenados = cls._ordenar_por_afinidade(db, consulta, filtrados, chave_local)
         else:
-            recentes = sorted(filtrados, key=lambda d: d.atualizado_em, reverse=True)
+            # Sem pedido para comparar: primeiro os perfis em destaque, depois os mais recentes.
+            recentes = sorted(filtrados, key=lambda d: (premium_ativo(d), d.atualizado_em), reverse=True)
             ordenados = [(d, None) for d in recentes]
 
         resultados = []
@@ -190,6 +195,8 @@ class BuscaService:
         if chave_local:
             mesmo_concelho = np.array([catalogo.normalizar(d.concelho) == chave_local for d in perfis])
             pontuacoes = pontuacoes + _BONUS_MESMO_CONCELHO * mesmo_concelho
+        em_destaque = np.array([premium_ativo(d) for d in perfis])
+        pontuacoes = pontuacoes + _BONUS_DESTAQUE * em_destaque
 
         ordem = np.argsort(-pontuacoes)
         return [(perfis[i], round(float(pontuacoes[i]), 4)) for i in ordem]

@@ -1,5 +1,4 @@
 # Arquivo: modules/maria_portuguesa/routes.py
-import hashlib
 import uuid
 from typing import Callable, Optional
 
@@ -11,14 +10,13 @@ from modules.maria_portuguesa import catalogo
 from modules.maria_portuguesa.database import SessionLocal, get_db
 from modules.maria_portuguesa.firebase_auth import TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz
-from modules.maria_portuguesa.models import SENHA_NO_FIREBASE, MpDesbloqueioDB, MpDomesticaDB
+from modules.maria_portuguesa.models import SENHA_NO_FIREBASE, MpDomesticaDB, premium_ativo
 from modules.maria_portuguesa.pagamentos import (
-    PRECO_CONTACTO_CENTIMOS, ErroPagamento, Pagamentos, PagamentosIndisponiveis, SessaoPagamento, url_de_retorno,
+    Assinatura, ErroPagamento, Pagamentos, PagamentosIndisponiveis, url_de_retorno,
 )
 from modules.maria_portuguesa.schemas import (
-    BuscaRequest, CheckoutContactoRequest, ConfirmarContactoRequest, EntrarFirebaseRequest, LoginRequest,
-    PerfilUpdate, RegistoRequest, campos_em_falta, descrever_em_falta, motivo_sem_contacto, perfil_privado,
-    perfil_publico, tem_contacto,
+    BuscaRequest, ConfirmarPremiumRequest, EntrarFirebaseRequest, LoginRequest, PerfilUpdate, RegistoRequest,
+    RetornoRequest, campos_em_falta, descrever_em_falta, perfil_privado, perfil_publico,
 )
 from modules.maria_portuguesa.search_service import BuscaService
 from modules.maria_portuguesa.security import (
@@ -220,124 +218,108 @@ def obter_perfil(gid: str, db: Session = Depends(get_db)):
     return perfil_publico(domestica)
 
 
-# ── Contacto pago ────────────────────────────────────────────────────────────
+# ── Assinatura Premium da doméstica ──────────────────────────────────────────
 
 _PAGAMENTOS_EM_BAIXO = "Os pagamentos não estão disponíveis de momento. Tente de novo mais tarde."
 
 
-def _hash_sessao_pagamento(sessao_id: str) -> str:
-    return hashlib.sha256(sessao_id.encode("utf-8")).hexdigest()
+def _aplicar_assinatura(domestica: MpDomesticaDB, assinatura: Assinatura) -> None:
+    domestica.stripe_assinatura_id = assinatura.id
+    if assinatura.cliente:
+        domestica.stripe_cliente_id = assinatura.cliente
+    domestica.premium_ate = assinatura.valida_ate if assinatura.ativa else None
+    domestica.premium_renova = assinatura.ativa and not assinatura.cancela_no_fim
 
 
-def _registar_desbloqueio(db: Session, sessao: SessaoPagamento) -> Optional[MpDesbloqueioDB]:
-    """Guarda o contacto como pago (uma vez por sessão de pagamento). None se a
-    sessão não estiver paga, não for deste módulo ou o perfil já não existir."""
-    if not sessao.pago or not sessao.gid:
-        return None
-    domestica = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == sessao.gid).first()
-    if domestica is None:
-        return None
-    marca = _hash_sessao_pagamento(sessao.id)
-    desbloqueio = MpDesbloqueioDB(
-        sessao_hash=marca, domestica_id=domestica.id,
-        valor_centimos=sessao.valor_centimos, payment_intent=sessao.payment_intent,
-    )
-    db.add(desbloqueio)
-    try:
-        db.commit()
-    except IntegrityError:
-        # O aviso da Stripe e o regresso da pessoa chegaram ao mesmo tempo.
-        db.rollback()
-        return db.query(MpDesbloqueioDB).filter(MpDesbloqueioDB.sessao_hash == marca).first()
-    print(f"💶 [MariaPortuguesa] Contacto pago: perfil {domestica.gid}")
-    return desbloqueio
-
-
-_SEM_CONTACTO = {
-    "sem_contacto": "Esta profissional ainda não registou um contacto.",
-    "nao_partilhado": "Esta profissional não está a partilhar o contacto de momento.",
-}
-
-
-def _perfil_publicado(db: Session, gid: str) -> MpDomesticaDB:
-    domestica = db.query(MpDomesticaDB).filter(
-        MpDomesticaDB.gid == gid, MpDomesticaDB.publicado.is_(True),
-    ).first()
-    if domestica is None:
-        raise HTTPException(status_code=404, detail="Perfil não encontrado.")
-    return domestica
-
-
-@router.get("/domesticas/{gid}/contacto")
-def verificar_contacto(gid: str, db: Session = Depends(get_db)):
-    """Diz se há contacto para ver neste perfil, sem o mostrar. O frontend pergunta
-    antes de propor o pagamento: o perfil que tem no ecrã pode já estar desatualizado."""
-    motivo = motivo_sem_contacto(_perfil_publicado(db, gid))
-    return {"disponivel": motivo is None, "motivo": motivo, "preco_centimos": PRECO_CONTACTO_CENTIMOS}
-
-
-@router.post("/domesticas/{gid}/contacto/checkout")
-def pagar_contacto(gid: str, pedido: CheckoutContactoRequest, db: Session = Depends(get_db)):
-    """Abre a página de pagamento da Stripe para ver o contacto deste perfil."""
-    domestica = _perfil_publicado(db, gid)
-    motivo = motivo_sem_contacto(domestica)
-    if motivo is not None:
-        # Nunca se cobra por um contacto que não existe ou que a própria não autorizou a mostrar.
-        raise HTTPException(status_code=409, detail=_SEM_CONTACTO[motivo])
-    try:
-        url = Pagamentos.criar_checkout(gid=domestica.gid, nome=domestica.nome, retorno=url_de_retorno(pedido.retorno))
-    except PagamentosIndisponiveis as e:
+def _erro_de_pagamento(e: Exception) -> HTTPException:
+    if isinstance(e, PagamentosIndisponiveis):
         print(f"⚠️ [MariaPortuguesa] Pagamentos por configurar: {e}")
-        raise HTTPException(status_code=503, detail=_PAGAMENTOS_EM_BAIXO)
-    except ErroPagamento as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        return HTTPException(status_code=503, detail=_PAGAMENTOS_EM_BAIXO)
+    return HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/domesticas/eu/premium/checkout")
+def ativar_premium(
+        pedido: RetornoRequest,
+        domestica: MpDomesticaDB = Depends(domestica_atual),
+):
+    """Abre a página de pagamento da Stripe para a assinatura Premium."""
+    if premium_ativo(domestica):
+        raise HTTPException(status_code=409, detail="O seu destaque já está ativo.")
+    if not domestica.publicado:
+        # Pagar para destacar um perfil que ninguém vê não faz sentido.
+        raise HTTPException(status_code=409, detail="Publique o perfil antes de o pôr em destaque.")
+    try:
+        url = Pagamentos.criar_checkout(
+            gid=domestica.gid, email=domestica.email, cliente=domestica.stripe_cliente_id,
+            retorno=url_de_retorno(pedido.retorno),
+        )
+    except (PagamentosIndisponiveis, ErroPagamento) as e:
+        raise _erro_de_pagamento(e)
     return {"url": url}
 
 
-@router.post("/contactos/confirmar")
-def confirmar_contacto(pedido: ConfirmarContactoRequest, db: Session = Depends(get_db)):
-    """Entrega o contacto a quem o pagou. Serve no regresso da Stripe e sempre que a
-    pessoa volta a abrir um perfil que já pagou (o navegador guarda o id da sessão)."""
-    desbloqueio = db.query(MpDesbloqueioDB).filter(
-        MpDesbloqueioDB.sessao_hash == _hash_sessao_pagamento(pedido.sessao),
-    ).first()
-    if desbloqueio is None:
-        try:
-            sessao = Pagamentos.consultar(pedido.sessao)
-        except PagamentosIndisponiveis as e:
-            print(f"⚠️ [MariaPortuguesa] Pagamentos por configurar: {e}")
-            raise HTTPException(status_code=503, detail=_PAGAMENTOS_EM_BAIXO)
-        except ErroPagamento:
-            raise HTTPException(status_code=404, detail="Não encontrámos este pagamento.")
-        if sessao.gid and not sessao.pago:
-            raise HTTPException(status_code=402, detail="O pagamento ainda não foi confirmado.")
-        desbloqueio = _registar_desbloqueio(db, sessao)
-        if desbloqueio is None:
-            raise HTTPException(status_code=404, detail="Não encontrámos este pagamento.")
+@router.post("/domesticas/eu/premium/confirmar")
+def confirmar_premium(
+        pedido: ConfirmarPremiumRequest,
+        domestica: MpDomesticaDB = Depends(domestica_atual),
+        db: Session = Depends(get_db),
+):
+    """No regresso da Stripe: ativa já o destaque, sem esperar pelo aviso (webhook)."""
+    try:
+        assinatura = Pagamentos.consultar_checkout(pedido.sessao)
+    except PagamentosIndisponiveis as e:
+        raise _erro_de_pagamento(e)
+    except ErroPagamento:
+        raise HTTPException(status_code=404, detail="Não encontrámos este pagamento.")
+    if assinatura is None or assinatura.gid != domestica.gid:
+        raise HTTPException(status_code=404, detail="Não encontrámos este pagamento.")
+    if not assinatura.ativa:
+        raise HTTPException(status_code=402, detail="O pagamento ainda não foi confirmado.")
+    _aplicar_assinatura(domestica, assinatura)
+    db.commit()
+    db.refresh(domestica)
+    print(f"⭐ [MariaPortuguesa] Premium ativo: {domestica.gid}")
+    return perfil_privado(domestica)
 
-    domestica = desbloqueio.domestica
-    if not tem_contacto(domestica):
-        # Pagou, mas entretanto a profissional retirou o contacto: não se mostra.
-        raise HTTPException(
-            status_code=409,
-            detail="Esta profissional deixou de partilhar o contacto. Fale connosco para ser reembolsado.",
-        )
-    return {"perfil": perfil_publico(domestica), "telemovel": domestica.telemovel}
+
+@router.post("/domesticas/eu/premium/gerir")
+def gerir_premium(pedido: RetornoRequest, domestica: MpDomesticaDB = Depends(domestica_atual)):
+    """Página da Stripe para mudar o cartão, ver as faturas ou cancelar."""
+    if not domestica.stripe_cliente_id:
+        raise HTTPException(status_code=409, detail="Ainda não tem uma assinatura para gerir.")
+    try:
+        url = Pagamentos.portal(cliente=domestica.stripe_cliente_id, retorno=url_de_retorno(pedido.retorno))
+    except (PagamentosIndisponiveis, ErroPagamento) as e:
+        raise _erro_de_pagamento(e)
+    return {"url": url}
 
 
 @router.post("/stripe/webhook")
 async def webhook_stripe(request: Request, stripe_signature: Optional[str] = Header(default=None),
                          db: Session = Depends(get_db)):
-    """Aviso da Stripe de que um pagamento ficou concluído. Garante que o contacto
-    fica registado como pago mesmo que a pessoa feche o separador antes de voltar."""
+    """Avisos da Stripe sobre a assinatura: criada, renovada, cancelada, terminada.
+    É o que mantém o destaque em dia mês após mês."""
     try:
-        sessao = Pagamentos.evento_do_webhook(await request.body(), stripe_signature)
+        assinatura = Pagamentos.evento_do_webhook(await request.body(), stripe_signature)
     except PagamentosIndisponiveis:
         raise HTTPException(status_code=503, detail="Webhook por configurar.")
     except ErroPagamento:
         raise HTTPException(status_code=400, detail="Assinatura inválida.")
-    if sessao is not None:
-        _registar_desbloqueio(db, sessao)
+    if assinatura is None:
+        return {"recebido": True}
+
+    domestica = db.query(MpDomesticaDB).filter(MpDomesticaDB.stripe_assinatura_id == assinatura.id).first()
+    if domestica is None and assinatura.gid:
+        domestica = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == assinatura.gid).first()
+    if domestica is None:
+        return {"recebido": True}  # de outro produto da mesma conta Stripe, ou conta já apagada
+    if domestica.stripe_assinatura_id not in (None, assinatura.id) and premium_ativo(domestica) and not assinatura.ativa:
+        # Fim de uma assinatura antiga não apaga o destaque da assinatura atual.
+        return {"recebido": True}
+    _aplicar_assinatura(domestica, assinatura)
+    db.commit()
+    print(f"⭐ [MariaPortuguesa] Assinatura {'ativa' if assinatura.ativa else 'terminada'}: {domestica.gid}")
     return {"recebido": True}
 
 

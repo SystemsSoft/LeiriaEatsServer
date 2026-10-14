@@ -87,7 +87,7 @@ def resolver_distrito(texto: Optional[str]) -> Optional[str]:
 
 def como_dict() -> dict:
     """Formato servido ao frontend em GET /maria-portuguesa/catalogo."""
-    from modules.maria_portuguesa.pagamentos import PRECO_CONTACTO_CENTIMOS
+    from modules.maria_portuguesa.pagamentos import PRECO_PREMIUM_CENTIMOS
 
     def pares(mapa: dict[str, str]) -> list[dict]:
         return [{"id": k, "nome": v} for k, v in mapa.items()]
@@ -99,5 +99,5 @@ def como_dict() -> dict:
         "periodos": pares(PERIODOS),
         "regimes": pares(REGIMES),
         "idiomas": IDIOMAS,
-        "preco_contacto_centimos": PRECO_CONTACTO_CENTIMOS,
+        "preco_premium_centimos": PRECO_PREMIUM_CENTIMOS,
     }

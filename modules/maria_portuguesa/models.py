@@ -15,6 +15,10 @@ def _agora() -> datetime:
 SENHA_NO_FIREBASE = "firebase"
 
 
+def premium_ativo(d: "MpDomesticaDB") -> bool:
+    return d.premium_ate is not None and d.premium_ate > _agora()
+
+
 def _novo_gid() -> str:
     return uuid.uuid4().hex
 
@@ -66,6 +70,15 @@ class MpDomesticaDB(Base):
     # Perfil só aparece na busca quando está publicado.
     publicado = Column(Boolean, nullable=False, default=False, index=True)
 
+    # --- Assinatura Premium (destaque nas pesquisas) ---
+    # Fim do período pago; o destaque vale enquanto for no futuro. Atualizado pelos
+    # avisos da Stripe (webhook) e no regresso da página de pagamento.
+    premium_ate = Column(DateTime, nullable=True)
+    # False quando a doméstica cancelou e a assinatura acaba em premium_ate.
+    premium_renova = Column(Boolean, nullable=False, default=False)
+    stripe_cliente_id = Column(String(64), nullable=True)
+    stripe_assinatura_id = Column(String(64), nullable=True, index=True)
+
     # Vetor E5 (float32 em bytes) do texto do perfil. Guardado na linha para não
     # recalcular todos os perfis a cada arranque do servidor.
     embedding = Column(LargeBinary, nullable=True)
@@ -74,7 +87,6 @@ class MpDomesticaDB(Base):
     atualizado_em = Column(DateTime, nullable=False, default=_agora, onupdate=_agora)
 
     sessoes = relationship("MpSessaoDB", back_populates="domestica", cascade="all, delete-orphan")
-    desbloqueios = relationship("MpDesbloqueioDB", back_populates="domestica", cascade="all, delete-orphan")
 
 
 class MpSessaoDB(Base):
@@ -91,19 +103,3 @@ class MpSessaoDB(Base):
     domestica = relationship("MpDomesticaDB", back_populates="sessoes")
 
 
-
-class MpDesbloqueioDB(Base):
-    """Contacto de uma doméstica pago por quem procura. Quem pagou não tem conta:
-    o comprovativo é o id da sessão de pagamento da Stripe, que fica no navegador
-    da pessoa — aqui guarda-se só o SHA-256 dele, como nas sessões de login."""
-    __tablename__ = "desbloqueios"
-
-    id = Column(Integer, primary_key=True)
-    sessao_hash = Column(String(64), unique=True, nullable=False, index=True)
-    domestica_id = Column(Integer, ForeignKey("domesticas.id", ondelete="CASCADE"), nullable=False, index=True)
-    valor_centimos = Column(Integer, nullable=False)
-    # Para encontrar o pagamento no painel da Stripe (reembolsos, reclamações).
-    payment_intent = Column(String(64), nullable=True)
-    pago_em = Column(DateTime, nullable=False, default=_agora)
-
-    domestica = relationship("MpDomesticaDB", back_populates="desbloqueios")

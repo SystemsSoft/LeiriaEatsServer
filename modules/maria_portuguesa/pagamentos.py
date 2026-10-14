@@ -1,33 +1,40 @@
 # Arquivo: modules/maria_portuguesa/pagamentos.py
 #
-# Pagamento para ver o contacto de uma doméstica (Stripe Checkout).
+# Assinatura Premium da doméstica (Stripe Checkout + Stripe Billing).
 #
-# Quem procura paga um valor único por contacto. A página de pagamento é a da
-# própria Stripe: nenhum dado de cartão passa por este servidor. A chave é a do
-# módulo e segue em cada chamada — o stripe.api_key global é do Leiria Eats.
+# A doméstica paga uma mensalidade e o perfil dela fica em destaque nas
+# pesquisas. A página de pagamento e a de gerir a assinatura (cartão, cancelar)
+# são da própria Stripe: nenhum dado de cartão passa por este servidor. A chave é
+# a do módulo e segue em cada chamada — o stripe.api_key global é do Leiria Eats.
 #
 # Variáveis de ambiente:
 #   MP_STRIPE_SECRET_KEY         chave SECRETA da Stripe (sk_live_... ou sk_test_...)
 #   MP_STRIPE_WEBHOOK_SECRET     segredo do webhook (whsec_...) de
-#                                POST /maria-portuguesa/stripe/webhook (opcional)
-#   MP_APP_URL                   endereço(s) do site, separados por vírgula
-#                                (ex.: https://mariaportuguesa.pt). É para onde a Stripe
-#                                devolve a pessoa depois de pagar
-#   MP_PRECO_CONTACTO_CENTIMOS   preço de um contacto, em cêntimos (por omissão: 390)
+#                                POST /maria-portuguesa/stripe/webhook
+#   MP_APP_URL                   endereço(s) do site, separados por vírgula. É para
+#                                onde a Stripe devolve a doméstica
+#   MP_PRECO_PREMIUM_CENTIMOS    mensalidade, em cêntimos (por omissão: 390)
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 MP_STRIPE_SECRET_KEY = os.getenv("MP_STRIPE_SECRET_KEY", "").strip()
 MP_STRIPE_WEBHOOK_SECRET = os.getenv("MP_STRIPE_WEBHOOK_SECRET", "").strip()
 MP_APP_URLS = [u.strip().rstrip("/") for u in os.getenv("MP_APP_URL", "").split(",") if u.strip()]
-PRECO_CONTACTO_CENTIMOS = int(os.getenv("MP_PRECO_CONTACTO_CENTIMOS") or 390)
+PRECO_PREMIUM_CENTIMOS = int(os.getenv("MP_PRECO_PREMIUM_CENTIMOS") or 390)
 
-# Marca as sessões de pagamento deste módulo: a conta Stripe pode ser partilhada.
+# Marca o que é deste módulo: a conta Stripe pode ser partilhada.
 _MODULO = "maria_portuguesa"
-# Parâmetro com que a pessoa volta ao site depois de pagar.
-PARAMETRO_SESSAO = "mp_sessao"
+# Parâmetro com que a doméstica volta ao site depois de pagar.
+PARAMETRO_SESSAO = "mp_premium"
+# Página da aplicação para onde a doméstica volta (rota do editor do perfil).
+_ROTA_EDITOR = "#/domestica"
+# Estados da Stripe em que a assinatura ainda dá direito ao destaque. Com o
+# pagamento em atraso (past_due) a Stripe ainda está a tentar cobrar: o destaque
+# fica até ao fim do período já pago.
+_ESTADOS_ATIVOS = {"active", "trialing", "past_due"}
 
 
 class PagamentosIndisponiveis(Exception):
@@ -39,13 +46,16 @@ class ErroPagamento(Exception):
 
 
 @dataclass(frozen=True)
-class SessaoPagamento:
+class Assinatura:
     id: str
-    pago: bool
-    # gid do perfil comprado; None se a sessão não for deste módulo.
+    cliente: Optional[str]
+    # gid do perfil; None se a assinatura não for deste módulo.
     gid: Optional[str]
-    valor_centimos: int
-    payment_intent: Optional[str]
+    ativa: bool
+    # Fim do período pago (UTC, sem fuso, como o resto do módulo).
+    valida_ate: Optional[datetime]
+    # A doméstica cancelou: não renova no fim do período.
+    cancela_no_fim: bool
 
 
 def _origem(url: str) -> str:
@@ -54,7 +64,7 @@ def _origem(url: str) -> str:
 
 
 def url_de_retorno(pedido: Optional[str]) -> str:
-    """Para onde a Stripe devolve a pessoa. O endereço pedido pelo navegador só é
+    """Para onde a Stripe devolve a doméstica. O endereço pedido pelo navegador só é
     aceite se for do próprio site (MP_APP_URL) ou de desenvolvimento local — de outro
     modo a página de pagamento serviria para encaminhar pessoas para sites alheios."""
     permitidas = {_origem(u) for u in MP_APP_URLS}
@@ -68,23 +78,61 @@ def url_de_retorno(pedido: Optional[str]) -> str:
     raise PagamentosIndisponiveis("MP_APP_URL não está definido")
 
 
+def _campo(objeto, nome: str, omissao=None):
+    """Lê um campo de um objeto da Stripe (StripeObject ou dict)."""
+    try:
+        valor = objeto[nome]
+    except (KeyError, TypeError, AttributeError):
+        valor = getattr(objeto, nome, omissao)
+    return omissao if valor is None else valor
+
+
+def assinatura_de_objeto(assinatura) -> Assinatura:
+    """Converte a Subscription da Stripe no que o módulo precisa dela."""
+    metadados = _campo(assinatura, "metadata", {})
+    metadados = metadados.to_dict() if hasattr(metadados, "to_dict") else dict(metadados)
+    fim = _campo(assinatura, "current_period_end")
+    if fim is None:
+        # Nas versões recentes da API o período vive em cada item da assinatura.
+        itens = _campo(_campo(assinatura, "items", {}), "data", [])
+        fim = _campo(itens[0], "current_period_end") if itens else None
+    valida_ate = datetime.fromtimestamp(int(fim), tz=timezone.utc).replace(tzinfo=None) if fim else None
+    agora = datetime.now(timezone.utc).replace(tzinfo=None)
+    cliente = _campo(assinatura, "customer")
+    return Assinatura(
+        id=_campo(assinatura, "id"),
+        cliente=cliente if isinstance(cliente, str) else _campo(cliente, "id"),
+        gid=metadados.get("gid") if metadados.get("modulo") == _MODULO else None,
+        ativa=_campo(assinatura, "status") in _ESTADOS_ATIVOS and valida_ate is not None and valida_ate > agora,
+        valida_ate=valida_ate,
+        cancela_no_fim=bool(_campo(assinatura, "cancel_at_period_end", False)),
+    )
+
+
 class Pagamentos:
-    # Substituíveis nos testes, que não falam com a Stripe.
+    # Substituíveis nos testes e no servidor de desenvolvimento, que não falam com a Stripe.
     _criar: Optional[Callable[..., str]] = None
-    _consultar: Optional[Callable[[str], SessaoPagamento]] = None
+    _consultar: Optional[Callable[[str], Optional[Assinatura]]] = None
+    _portal: Optional[Callable[..., str]] = None
 
     @classmethod
-    def definir_gateway(cls, criar: Optional[Callable[..., str]], consultar: Optional[Callable[[str], SessaoPagamento]]) -> None:
-        cls._criar, cls._consultar = criar, consultar
+    def definir_gateway(cls, criar=None, consultar=None, portal=None) -> None:
+        cls._criar, cls._consultar, cls._portal = criar, consultar, portal
 
     @classmethod
-    def criar_checkout(cls, *, gid: str, nome: str, retorno: str) -> str:
-        """Abre a página de pagamento do contacto e devolve o endereço dela."""
-        return (cls._criar or cls._criar_na_stripe)(gid=gid, nome=nome, retorno=retorno)
+    def criar_checkout(cls, *, gid: str, email: str, cliente: Optional[str], retorno: str) -> str:
+        """Abre a página de pagamento da assinatura e devolve o endereço dela."""
+        return (cls._criar or cls._criar_na_stripe)(gid=gid, email=email, cliente=cliente, retorno=retorno)
 
     @classmethod
-    def consultar(cls, sessao_id: str) -> SessaoPagamento:
+    def consultar_checkout(cls, sessao_id: str) -> Optional[Assinatura]:
+        """A assinatura criada por esta sessão de pagamento; None se ainda não há."""
         return (cls._consultar or cls._consultar_na_stripe)(sessao_id)
+
+    @classmethod
+    def portal(cls, *, cliente: str, retorno: str) -> str:
+        """Página da Stripe onde a doméstica muda o cartão, vê faturas ou cancela."""
+        return (cls._portal or cls._portal_na_stripe)(cliente=cliente, retorno=retorno)
 
     # ── Stripe ───────────────────────────────────────────────────────────────
 
@@ -107,66 +155,76 @@ class Pagamentos:
             raise ErroPagamento("Não foi possível falar com o serviço de pagamentos. Tente de novo dentro de instantes.")
 
     @classmethod
-    def _criar_na_stripe(cls, *, gid: str, nome: str, retorno: str) -> str:
+    def _criar_na_stripe(cls, *, gid: str, email: str, cliente: Optional[str], retorno: str) -> str:
         import stripe
 
+        metadados = {"modulo": _MODULO, "gid": gid}
+        # Quem já foi assinante reutiliza o cliente da Stripe (cartão e faturas no mesmo sítio).
+        quem = {"customer": cliente} if cliente else {"customer_email": email}
         sessao = cls._chamar(
             stripe.checkout.Session.create,
-            mode="payment",
+            mode="subscription",
             line_items=[{
                 "quantity": 1,
                 "price_data": {
                     "currency": "eur",
-                    "unit_amount": PRECO_CONTACTO_CENTIMOS,
+                    "unit_amount": PRECO_PREMIUM_CENTIMOS,
+                    "recurring": {"interval": "month"},
                     "product_data": {
-                        "name": f"Contacto de {nome}",
-                        "description": "Maria Portuguesa — telemóvel para falar diretamente com esta profissional.",
+                        "name": "Maria Portuguesa Premium",
+                        "description": "Perfil em destaque nas pesquisas das famílias.",
                     },
                 },
             }],
+            client_reference_id=gid,
+            metadata=metadados,
+            subscription_data={"metadata": metadados},
             # A Stripe troca {CHECKOUT_SESSION_ID} pelo id verdadeiro ao devolver a pessoa.
-            success_url=f"{retorno}?{PARAMETRO_SESSAO}={{CHECKOUT_SESSION_ID}}",
-            cancel_url=retorno,
+            success_url=f"{retorno}?{PARAMETRO_SESSAO}={{CHECKOUT_SESSION_ID}}{_ROTA_EDITOR}",
+            cancel_url=f"{retorno}{_ROTA_EDITOR}",
             locale="pt",
-            custom_text={"submit": {"message": (
-                "Depois de pagar, o contacto é-lhe mostrado de imediato e o serviço fica prestado nesse momento."
-            )}},
-            metadata={"modulo": _MODULO, "gid": gid},
+            **quem,
         )
-        return sessao.url
+        return _campo(sessao, "url")
 
     @classmethod
-    def _consultar_na_stripe(cls, sessao_id: str) -> SessaoPagamento:
+    def _consultar_na_stripe(cls, sessao_id: str) -> Optional[Assinatura]:
         import stripe
 
-        return sessao_de_objeto(cls._chamar(stripe.checkout.Session.retrieve, sessao_id))
+        sessao = cls._chamar(stripe.checkout.Session.retrieve, sessao_id, expand=["subscription"])
+        assinatura = _campo(sessao, "subscription")
+        if not assinatura:
+            return None
+        if isinstance(assinatura, str):
+            assinatura = cls._chamar(stripe.Subscription.retrieve, assinatura)
+        return assinatura_de_objeto(assinatura)
 
-    @staticmethod
-    def evento_do_webhook(corpo: bytes, assinatura: Optional[str]) -> Optional[SessaoPagamento]:
-        """Valida o aviso da Stripe e devolve a sessão paga, se for disso que se trata.
-        Levanta ErroPagamento se a assinatura não for da Stripe."""
+    @classmethod
+    def _portal_na_stripe(cls, *, cliente: str, retorno: str) -> str:
+        import stripe
+
+        sessao = cls._chamar(
+            stripe.billing_portal.Session.create, customer=cliente, return_url=f"{retorno}{_ROTA_EDITOR}",
+            locale="pt",
+        )
+        return _campo(sessao, "url")
+
+    @classmethod
+    def evento_do_webhook(cls, corpo: bytes, assinatura_http: Optional[str]) -> Optional[Assinatura]:
+        """Valida o aviso da Stripe e devolve a assinatura a que ele se refere, se for
+        disso que se trata. Levanta ErroPagamento se a assinatura HTTP não for da Stripe."""
         import stripe
 
         if not MP_STRIPE_WEBHOOK_SECRET:
             raise PagamentosIndisponiveis("MP_STRIPE_WEBHOOK_SECRET não está definido")
         try:
-            evento = stripe.Webhook.construct_event(corpo, assinatura or "", MP_STRIPE_WEBHOOK_SECRET)
+            evento = stripe.Webhook.construct_event(corpo, assinatura_http or "", MP_STRIPE_WEBHOOK_SECRET)
         except (ValueError, stripe.SignatureVerificationError) as e:
             raise ErroPagamento(f"aviso recusado: {e}")
-        if evento.type not in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
-            return None
-        return sessao_de_objeto(evento.data.object)
-
-
-def sessao_de_objeto(sessao) -> SessaoPagamento:
-    """Converte a Checkout Session da Stripe no que o módulo precisa dela."""
-    metadados = sessao.metadata
-    metadados = metadados.to_dict() if hasattr(metadados, "to_dict") else dict(metadados or {})
-    intent = getattr(sessao, "payment_intent", None)
-    return SessaoPagamento(
-        id=sessao.id,
-        pago=getattr(sessao, "payment_status", None) == "paid",
-        gid=metadados.get("gid") if metadados.get("modulo") == _MODULO else None,
-        valor_centimos=int(getattr(sessao, "amount_total", None) or 0),
-        payment_intent=intent if isinstance(intent, str) else getattr(intent, "id", None),
-    )
+        objeto = evento.data.object
+        if evento.type in ("customer.subscription.created", "customer.subscription.updated",
+                           "customer.subscription.deleted"):
+            return assinatura_de_objeto(objeto)
+        if evento.type == "checkout.session.completed" and _campo(objeto, "mode") == "subscription":
+            return cls.consultar_checkout(_campo(objeto, "id"))
+        return None

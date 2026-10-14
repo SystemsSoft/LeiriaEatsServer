@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from modules.maria_portuguesa import catalogo
-from modules.maria_portuguesa.models import MpDomesticaDB
+from modules.maria_portuguesa.models import MpDomesticaDB, premium_ativo
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _TELEMOVEL_RE = re.compile(r"^\+?[0-9 ]{9,20}$")
@@ -84,12 +84,12 @@ class EntrarFirebaseRequest(BaseModel):
         return v
 
 
-class CheckoutContactoRequest(BaseModel):
-    # Página onde a pessoa está, para a Stripe a devolver ao mesmo sítio.
+class RetornoRequest(BaseModel):
+    # Página onde a doméstica está, para a Stripe a devolver ao mesmo sítio.
     retorno: Optional[str] = Field(default=None, max_length=500)
 
 
-class ConfirmarContactoRequest(BaseModel):
+class ConfirmarPremiumRequest(BaseModel):
     # Id da sessão de pagamento da Stripe (cs_...), tal como voltou no endereço.
     sessao: str = Field(min_length=8, max_length=255)
 
@@ -196,9 +196,8 @@ def descrever_em_falta(campos: list[str]) -> str:
 
 
 def perfil_publico(d: MpDomesticaDB) -> dict:
-    """Perfil tal como qualquer visitante o vê. Nunca inclui email nem telemóvel:
-    o contacto só sai depois de pago (rotas de contacto), e só se a própria o
-    autorizou — contacto_disponivel diz se há contacto para ver."""
+    """Perfil tal como qualquer visitante o vê. Nunca inclui email; o telemóvel só
+    sai se estiver registado e a própria tiver autorizado mostrá-lo."""
     return {
         "gid": d.gid,
         "nome": d.nome,
@@ -218,13 +217,15 @@ def perfil_publico(d: MpDomesticaDB) -> dict:
         "aceita_animais": bool(d.aceita_animais),
         "passa_recibo": bool(d.passa_recibo),
         "tem_referencias": bool(d.tem_referencias),
-        "telemovel": None,
+        "telemovel": d.telemovel.strip() if tem_contacto(d) else None,
         "contacto_disponivel": tem_contacto(d),
+        # Assinatura Premium ativa: o perfil sobe nas pesquisas e leva o selo.
+        "destaque": premium_ativo(d),
     }
 
 
 def motivo_sem_contacto(d: MpDomesticaDB) -> Optional[str]:
-    """Porque é que o contacto desta pessoa não pode ser mostrado (nem vendido);
+    """Porque é que o contacto desta pessoa não pode ser mostrado;
     None quando pode. As duas condições: ter um telemóvel registado e ter
     autorizado que o vejam."""
     if not _TELEMOVEL_RE.match((d.telemovel or "").strip()):
@@ -247,5 +248,7 @@ def perfil_privado(d: MpDomesticaDB) -> dict:
         "mostrar_contacto": bool(d.mostrar_contacto),
         "publicado": bool(d.publicado),
         "em_falta": campos_em_falta(d),
+        "premium_ate": d.premium_ate.isoformat() + "Z" if premium_ativo(d) else None,
+        "premium_renova": bool(d.premium_renova) and premium_ativo(d),
     })
     return dados

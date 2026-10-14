@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS domesticas (
 	telemovel VARCHAR(30), 
 	mostrar_contacto BOOL NOT NULL, 
 	publicado BOOL NOT NULL, 
+	premium_ate DATETIME, 
+	premium_renova BOOL NOT NULL, 
+	stripe_cliente_id VARCHAR(64), 
+	stripe_assinatura_id VARCHAR(64), 
 	embedding BLOB, 
 	criado_em DATETIME NOT NULL, 
 	atualizado_em DATETIME NOT NULL, 
@@ -51,20 +55,7 @@ CREATE INDEX ix_domesticas_id ON domesticas (id);
 
 CREATE INDEX ix_domesticas_publicado ON domesticas (publicado);
 
-CREATE TABLE IF NOT EXISTS desbloqueios (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	sessao_hash VARCHAR(64) NOT NULL, 
-	domestica_id INTEGER NOT NULL, 
-	valor_centimos INTEGER NOT NULL, 
-	payment_intent VARCHAR(64), 
-	pago_em DATETIME NOT NULL, 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(domestica_id) REFERENCES domesticas (id) ON DELETE CASCADE
-);
-
-CREATE INDEX ix_desbloqueios_domestica_id ON desbloqueios (domestica_id);
-
-CREATE UNIQUE INDEX ix_desbloqueios_sessao_hash ON desbloqueios (sessao_hash);
+CREATE INDEX ix_domesticas_stripe_assinatura_id ON domesticas (stripe_assinatura_id);
 
 CREATE TABLE IF NOT EXISTS sessoes (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -80,8 +71,17 @@ CREATE INDEX ix_sessoes_domestica_id ON sessoes (domestica_id);
 
 CREATE UNIQUE INDEX ix_sessoes_token_hash ON sessoes (token_hash);
 
--- Instalações anteriores ao Firebase Authentication: a tabela domesticas já existe
--- sem a coluna firebase_uid. O servidor acrescenta-a ao arrancar
+
+-- Instalações anteriores: a tabela domesticas já existe sem as colunas
+-- acrescentadas depois (Firebase e Premium). O servidor acrescenta-as ao arrancar
 -- (_acrescentar_colunas_em_falta em database.py); à mão seria:
 --   ALTER TABLE domesticas ADD COLUMN firebase_uid VARCHAR(128) NULL;
 --   CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid);
+--   ALTER TABLE domesticas ADD COLUMN premium_ate DATETIME NULL;
+--   ALTER TABLE domesticas ADD COLUMN premium_renova BOOLEAN NOT NULL DEFAULT 0;
+--   ALTER TABLE domesticas ADD COLUMN stripe_cliente_id VARCHAR(64) NULL;
+--   ALTER TABLE domesticas ADD COLUMN stripe_assinatura_id VARCHAR(64) NULL;
+--   CREATE INDEX ix_domesticas_stripe_assinatura_id ON domesticas (stripe_assinatura_id);
+--
+-- A tabela desbloqueios (contacto pago, retirado) deixou de ser usada:
+--   DROP TABLE IF EXISTS desbloqueios;

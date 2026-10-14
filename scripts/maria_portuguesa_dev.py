@@ -23,6 +23,7 @@ A voz precisa de GEMINI_API_KEY no .env; sem ela a pesquisa escrita funciona na 
 """
 import argparse
 import asyncio
+from datetime import datetime, timedelta, timezone
 import hashlib
 import math
 import os
@@ -210,6 +211,9 @@ def _usar_sqlite_em_memoria(app: FastAPI) -> None:
             # Metade partilha o contacto (números inventados), para se verem os dois casos.
             telemovel=f"91{i} 000 00{i}" if i % 2 == 0 else None,
             mostrar_contacto=i % 2 == 0,
+            # Um perfil Premium, para se ver o destaque nas pesquisas.
+            premium_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30) if i == 1 else None,
+            premium_renova=i == 1,
             **dados,
         )
         BuscaService.indexar(perfil)
@@ -264,17 +268,22 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_
     rotas_mp.upload_file_to_s3 = _guardar_foto_local
     app.mount("/_fotos", StaticFiles(directory=pasta_fotos), name="fotos")
 
-    # Pagamentos: sem MP_STRIPE_SECRET_KEY no .env, o «pagamento» é dado como feito
-    # e a pessoa volta logo ao site — serve para trabalhar o ecrã, não a Stripe.
+    # Pagamentos: sem MP_STRIPE_SECRET_KEY no .env, a assinatura Premium é dada como
+    # paga e a doméstica volta logo ao editor — serve para trabalhar o ecrã, não a Stripe.
     if not pagamentos_mp.MP_STRIPE_SECRET_KEY:
+        def _assinatura_simulada(sessao_id: str):
+            return pagamentos_mp.Assinatura(
+                id=f"sub_{sessao_id}", cliente="cus_simulado", gid=sessao_id.removeprefix("cs_simulada_"),
+                ativa=True, valida_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30), cancela_no_fim=False,
+            )
+
         pagamentos_mp.Pagamentos.definir_gateway(
-            lambda gid, nome, retorno: f"{retorno}?{pagamentos_mp.PARAMETRO_SESSAO}=cs_simulada_{gid}",
-            lambda sessao_id: pagamentos_mp.SessaoPagamento(
-                id=sessao_id, pago=True, gid=sessao_id.removeprefix("cs_simulada_"),
-                valor_centimos=pagamentos_mp.PRECO_CONTACTO_CENTIMOS, payment_intent=None,
-            ),
+            criar=lambda gid, email, cliente, retorno:
+                f"{retorno}?{pagamentos_mp.PARAMETRO_SESSAO}=cs_simulada_{gid}#/domestica",
+            consultar=_assinatura_simulada,
+            portal=lambda cliente, retorno: f"{retorno}#/domestica",
         )
-        print("💳 Pagamento simulado: sem chave da Stripe, o contacto é dado como pago sem cobrar.")
+        print("💳 Pagamento simulado: sem chave da Stripe, o Premium é ativado sem cobrar.")
 
     if pasta_landing:
         app.mount("/", StaticFiles(directory=pasta_landing, html=True), name="landing")

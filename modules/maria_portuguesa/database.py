@@ -93,7 +93,27 @@ def _acrescentar_colunas_em_falta() -> None:
     """O create_all não mexe em tabelas que já existem. As colunas acrescentadas
     depois da primeira instalação entram aqui (também idempotente)."""
     colunas = {coluna["name"] for coluna in inspect(engine).get_columns("domesticas")}
-    if "firebase_uid" not in colunas:
-        with engine.begin() as ligacao:
-            ligacao.execute(text("ALTER TABLE domesticas ADD COLUMN firebase_uid VARCHAR(128) NULL"))
-            ligacao.execute(text("CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid)"))
+    em_falta = [(nome, ddl) for nome, ddl in _COLUNAS_ACRESCENTADAS if nome not in colunas]
+    if not em_falta:
+        return
+    with engine.begin() as ligacao:
+        for _, instrucoes in em_falta:
+            for instrucao in instrucoes:
+                ligacao.execute(text(instrucao))
+
+
+# Por ordem de chegada. Cada coluna nova da tabela domesticas entra aqui, com as
+# instruções que a criam numa tabela que já existe.
+_COLUNAS_ACRESCENTADAS = [
+    ("firebase_uid", [
+        "ALTER TABLE domesticas ADD COLUMN firebase_uid VARCHAR(128) NULL",
+        "CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid)",
+    ]),
+    ("premium_ate", ["ALTER TABLE domesticas ADD COLUMN premium_ate DATETIME NULL"]),
+    ("premium_renova", ["ALTER TABLE domesticas ADD COLUMN premium_renova BOOLEAN NOT NULL DEFAULT 0"]),
+    ("stripe_cliente_id", ["ALTER TABLE domesticas ADD COLUMN stripe_cliente_id VARCHAR(64) NULL"]),
+    ("stripe_assinatura_id", [
+        "ALTER TABLE domesticas ADD COLUMN stripe_assinatura_id VARCHAR(64) NULL",
+        "CREATE INDEX ix_domesticas_stripe_assinatura_id ON domesticas (stripe_assinatura_id)",
+    ]),
+]

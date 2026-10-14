@@ -13,8 +13,9 @@ import json
 import os
 import sys
 import tempfile
-from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test-key-nao-usada")
@@ -36,8 +37,8 @@ from modules.maria_portuguesa.database import Base, get_db
 from modules.maria_portuguesa.firebase_auth import ContaFirebase, TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz, configuracao_live
 from modules.maria_portuguesa import pagamentos as pagamentos_mp
-from modules.maria_portuguesa.models import MpDesbloqueioDB, MpDomesticaDB, MpSessaoDB
-from modules.maria_portuguesa.pagamentos import ErroPagamento, Pagamentos, SessaoPagamento
+from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
+from modules.maria_portuguesa.pagamentos import Assinatura, ErroPagamento, Pagamentos
 from modules.maria_portuguesa.routes import get_fabrica_db
 from modules.maria_portuguesa.search_service import BuscaService
 from modules.maria_portuguesa.security import gerar_hash_senha, verificar_senha
@@ -102,32 +103,40 @@ def _publicar(cliente: TestClient, email: str, nome: str, **perfil) -> str:
 
 def teste_banco_cria_tabelas_e_e_idempotente():
     from sqlalchemy import inspect
-    tabelas = ["desbloqueios", "domesticas", "sessoes"]
+    tabelas = ["domesticas", "sessoes"]
     assert banco_mp.criar_banco_e_tabelas() == tabelas
     assert banco_mp.criar_banco_e_tabelas() == tabelas   # segunda vez não falha
 
     colunas = {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
-    assert {"gid", "email", "senha_hash", "firebase_uid", "servicos", "embedding", "publicado"} <= colunas
+    assert {"gid", "email", "senha_hash", "firebase_uid", "servicos", "embedding", "publicado",
+            "premium_ate", "premium_renova", "stripe_cliente_id", "stripe_assinatura_id"} <= colunas
     print("OK  - banco: cria as tabelas do módulo, e pode correr várias vezes")
 
 
-def teste_banco_acrescenta_firebase_uid_a_tabela_antiga():
+def teste_banco_acrescenta_colunas_novas_a_tabela_antiga():
     from sqlalchemy import inspect, text
     banco_mp.criar_banco_e_tabelas()
-    # Simula uma instalação anterior ao Firebase: a tabela existe sem a coluna.
+    novas = {"firebase_uid", "premium_ate", "premium_renova", "stripe_cliente_id", "stripe_assinatura_id"}
+    # Simula uma instalação anterior ao Firebase e ao Premium: a tabela existe sem estas colunas.
     with banco_mp.engine.begin() as ligacao:
-        ligacao.execute(text("DROP INDEX ix_domesticas_firebase_uid"))
-        ligacao.execute(text("ALTER TABLE domesticas DROP COLUMN firebase_uid"))
-    assert "firebase_uid" not in {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
+        for indice in ("ix_domesticas_firebase_uid", "ix_domesticas_stripe_assinatura_id"):
+            ligacao.execute(text(f"DROP INDEX {indice}"))
+        for coluna in novas:
+            ligacao.execute(text(f"ALTER TABLE domesticas DROP COLUMN {coluna}"))
+
+    def colunas() -> set[str]:
+        return {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
+
+    assert not novas & colunas()
     banco_mp.criar_banco_e_tabelas()
     banco_mp.criar_banco_e_tabelas()
-    assert "firebase_uid" in {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
-    print("OK  - banco: acrescenta firebase_uid a uma tabela domesticas que já existia")
+    assert novas <= colunas()
+    print("OK  - banco: acrescenta as colunas novas a uma tabela domesticas que já existia")
 
 
 def teste_banco_e_separado_do_leiria_eats():
     from core.database import Base as BaseLeiriaEats
-    assert set(Base.metadata.tables) == {"desbloqueios", "domesticas", "sessoes"}
+    assert set(Base.metadata.tables) == {"domesticas", "sessoes"}
     assert not set(Base.metadata.tables) & set(BaseLeiriaEats.metadata.tables)
     print("OK  - banco: as tabelas do módulo não se misturam com as do Leiria Eats")
 
@@ -294,160 +303,182 @@ def teste_perfil_publico_protege_dados():
     assert "email" not in publico and "senha_hash" not in publico and "embedding" not in publico
     assert publico["telemovel"] is None and publico["contacto_disponivel"] is False
 
-    # Mesmo autorizado, o telemóvel não sai no perfil: só depois de pago.
     cliente.put("/maria-portuguesa/domesticas/eu", json={"mostrar_contacto": True}, headers=cabecalhos)
     publico = cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
-    assert publico["telemovel"] is None and publico["contacto_disponivel"] is True
-    assert "912 345 678" not in cliente.post("/maria-portuguesa/busca", json={"consulta": "limpeza"}).text
-    assert cliente.get("/maria-portuguesa/domesticas/eu", headers=cabecalhos).json()["telemovel"] == "912 345 678"
-    print("OK  - rascunho fica oculto; email e telemóvel nunca saem no perfil público")
+    assert publico["telemovel"] == "912 345 678" and publico["contacto_disponivel"] is True
+    assert "912 345 678" in cliente.post("/maria-portuguesa/busca", json={"consulta": "limpeza"}).text
+    print("OK  - rascunho fica oculto; email nunca sai; telemóvel só com autorização")
+
+
+def teste_contacto_so_aparece_se_registado_e_autorizado():
+    cliente, _ = _novo_cliente()
+    casos = {
+        "ana": _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True),
+        "bia": _publicar(cliente, "bia@exemplo.pt", "Bia", telemovel="913 000 000"),        # não autorizou
+        "carla": _publicar(cliente, "carla@exemplo.pt", "Carla", mostrar_contacto=True),    # sem telemóvel
+    }
+    vistos = {nome: cliente.get(f"/maria-portuguesa/domesticas/{gid}").json() for nome, gid in casos.items()}
+    assert vistos["ana"]["telemovel"] == "912 345 678" and vistos["ana"]["contacto_disponivel"] is True
+    for nome in ("bia", "carla"):
+        assert vistos[nome]["telemovel"] is None and vistos[nome]["contacto_disponivel"] is False
+    print("OK  - contacto: aparece de graça, só se estiver registado e autorizado")
 
 
 class _StripeFalsa:
     """Faz de Stripe: abre sessões de pagamento e deixa o teste dá-las como pagas."""
 
     def __init__(self):
-        self.sessoes: dict[str, SessaoPagamento] = {}
-        self.retornos: list[str] = []
+        self.sessoes: dict[str, Optional[Assinatura]] = {}
+        self.pedidos: list[dict] = []
 
-    def criar(self, *, gid: str, nome: str, retorno: str) -> str:
+    def criar(self, *, gid: str, email: str, cliente, retorno: str) -> str:
         sessao_id = f"cs_test_{len(self.sessoes) + 1:04d}"
-        self.sessoes[sessao_id] = SessaoPagamento(
-            id=sessao_id, pago=False, gid=gid, valor_centimos=390, payment_intent=f"pi_{len(self.sessoes) + 1}")
-        self.retornos.append(retorno)
+        self.sessoes[sessao_id] = None
+        self.pedidos.append({"gid": gid, "email": email, "cliente": cliente, "retorno": retorno})
         return f"https://checkout.stripe.test/{sessao_id}"
 
-    def consultar(self, sessao_id: str) -> SessaoPagamento:
+    def consultar(self, sessao_id: str) -> Optional[Assinatura]:
         if sessao_id not in self.sessoes:
             raise ErroPagamento("sessão desconhecida")
         return self.sessoes[sessao_id]
 
-    def pagar(self, sessao_id: str) -> None:
-        self.sessoes[sessao_id] = replace(self.sessoes[sessao_id], pago=True)
+    def pagar(self, sessao_id: str, gid: str, dias: int = 30) -> None:
+        self.sessoes[sessao_id] = Assinatura(
+            id="sub_1", cliente="cus_1", gid=gid, ativa=True,
+            valida_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=dias), cancela_no_fim=False,
+        )
+
+    @staticmethod
+    def portal(*, cliente: str, retorno: str) -> str:
+        return f"https://billing.stripe.test/{cliente}"
 
 
-def teste_contacto_so_e_mostrado_depois_de_pago():
+def _entrar(cliente: TestClient, email: str) -> dict:
+    r = cliente.post("/maria-portuguesa/domesticas/login", json={"email": email, "senha": "segredo-de-teste"})
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def teste_premium_assinatura_ativa_o_destaque():
     cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
-    nao_partilha = _publicar(cliente, "bia@exemplo.pt", "Bia", telemovel="913 000 000")
-    sem_telemovel = _publicar(cliente, "carla@exemplo.pt", "Carla", mostrar_contacto=True)
-    rascunho = _publicar(cliente, "dina@exemplo.pt", "Dina", telemovel="914 000 000", mostrar_contacto=True,
-                         publicado=False)
-    verificar = "/maria-portuguesa/domesticas/{}/contacto"
-    checkout = "/maria-portuguesa/domesticas/{}/contacto/checkout"
-    confirmar = "/maria-portuguesa/contactos/confirmar"
+    rascunho = _registar(cliente, "bia@exemplo.pt", "Bia")
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+    ana = _entrar(cliente, "ana@exemplo.pt")
+    checkout, confirmar, gerir = (f"/maria-portuguesa/domesticas/eu/premium/{acao}"
+                                  for acao in ("checkout", "confirmar", "gerir"))
     stripe_falsa = _StripeFalsa()
-    Pagamentos.definir_gateway(stripe_falsa.criar, stripe_falsa.consultar)
+    Pagamentos.definir_gateway(stripe_falsa.criar, stripe_falsa.consultar, stripe_falsa.portal)
     try:
-        assert cliente.get("/maria-portuguesa/catalogo").json()["preco_contacto_centimos"] == 390
-        assert cliente.post(checkout.format("nao-existe"), json={}).status_code == 404
-        # Antes de propor o pagamento: há telemóvel registado e está autorizado?
-        r = cliente.get(verificar.format(gid))
-        assert r.json() == {"disponivel": True, "motivo": None, "preco_centimos": 390}
-        assert "912" not in r.text                               # verifica sem mostrar o número
-        assert cliente.get(verificar.format(nao_partilha)).json()["motivo"] == "nao_partilhado"
-        assert cliente.get(verificar.format(sem_telemovel)).json() == {
-            "disponivel": False, "motivo": "sem_contacto", "preco_centimos": 390}
-        assert cliente.get(verificar.format(rascunho)).status_code == 404
-        assert cliente.get(verificar.format("nao-existe")).status_code == 404
+        assert cliente.get("/maria-portuguesa/catalogo").json()["preco_premium_centimos"] == 390
+        assert cliente.post(checkout, json={}).status_code == 401
+        # Um rascunho ninguém o vê: não se vende destaque para ele.
+        assert cliente.post(checkout, json={"retorno": "http://localhost:8092/"}, headers=rascunho).status_code == 409
+        # Ainda sem assinatura não há nada para gerir.
+        assert cliente.post(gerir, json={"retorno": "http://localhost:8092/"}, headers=ana).status_code == 409
 
-        # E o pagamento recusa os mesmos casos, mesmo que o frontend não pergunte.
-        for sem in (nao_partilha, sem_telemovel):
-            r = cliente.post(checkout.format(sem), json={"retorno": "http://localhost:8092/"})
-            assert r.status_code == 409 and "contacto" in r.json()["detail"]
-        assert cliente.post(checkout.format(rascunho), json={"retorno": "http://localhost:8092/"}).status_code == 404
-        # O regresso só pode ser para o próprio site: endereços de fora não servem.
-        assert cliente.post(checkout.format(gid), json={"retorno": "https://site-alheio.example/"}).status_code == 503
-
-        r = cliente.post(checkout.format(gid), json={"retorno": "http://localhost:8092/?x=1#/perfil"})
+        r = cliente.post(checkout, json={"retorno": "http://localhost:8092/?x=1#/domestica"}, headers=ana)
         assert r.status_code == 200, r.text
-        assert stripe_falsa.retornos == ["http://localhost:8092/"]
+        assert stripe_falsa.pedidos == [{"gid": gid, "email": "ana@exemplo.pt", "cliente": None,
+                                         "retorno": "http://localhost:8092/"}]
         sessao_id = r.json()["url"].rsplit("/", 1)[-1]
 
-        # Voltar sem ter pago, ou com uma sessão inventada, não mostra nada.
-        assert cliente.post(confirmar, json={"sessao": sessao_id}).status_code == 402
-        assert cliente.post(confirmar, json={"sessao": "cs_test_inventada"}).status_code == 404
+        # Voltar sem ter pago, ou com uma sessão de outra pessoa, não ativa nada.
+        assert cliente.post(confirmar, json={"sessao": sessao_id}, headers=ana).status_code == 404
+        stripe_falsa.pagar(sessao_id, gid="outro-gid")
+        assert cliente.post(confirmar, json={"sessao": sessao_id}, headers=ana).status_code == 404
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"] is False
 
-        stripe_falsa.pagar(sessao_id)
-        r = cliente.post(confirmar, json={"sessao": sessao_id})
+        stripe_falsa.pagar(sessao_id, gid=gid)
+        r = cliente.post(confirmar, json={"sessao": sessao_id}, headers=ana)
         assert r.status_code == 200, r.text
-        assert r.json()["telemovel"] == "912 345 678" and r.json()["perfil"]["gid"] == gid
-        assert r.json()["perfil"]["telemovel"] is None
+        assert r.json()["premium_ate"] and r.json()["premium_renova"] is True and r.json()["destaque"] is True
+        publico = cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
+        assert publico["destaque"] is True
+        assert "premium_ate" not in publico and "stripe_cliente_id" not in publico
 
-        # Fica registado uma só vez, sem o id da sessão em claro, e volta a servir
-        # sem perguntar de novo à Stripe.
-        Pagamentos.definir_gateway(None, lambda _: (_ for _ in ()).throw(AssertionError("não devia consultar")))
-        assert cliente.post(confirmar, json={"sessao": sessao_id}).json()["telemovel"] == "912 345 678"
+        # Já ativo: não abre outro pagamento; e passa a poder gerir a assinatura.
+        assert cliente.post(checkout, json={}, headers=ana).status_code == 409
+        r = cliente.post(gerir, json={"retorno": "http://localhost:8092/"}, headers=ana)
+        assert r.json()["url"] == "https://billing.stripe.test/cus_1"
         with Sessao() as db:
-            registo = db.query(MpDesbloqueioDB).one()
-            assert registo.valor_centimos == 390 and registo.payment_intent == "pi_1"
-            assert sessao_id not in registo.sessao_hash
-
-        # A profissional retira o contacto: deixa de ser mostrado, mesmo a quem pagou.
-        r = cliente.post("/maria-portuguesa/domesticas/login", json={"email": "ana@exemplo.pt", "senha": "segredo-de-teste"})
-        cabecalhos = {"Authorization": f"Bearer {r.json()['token']}"}
-        cliente.put("/maria-portuguesa/domesticas/eu", json={"mostrar_contacto": False}, headers=cabecalhos)
-        assert cliente.post(confirmar, json={"sessao": sessao_id}).status_code == 409
-        assert cliente.get(verificar.format(gid)).json()["motivo"] == "nao_partilhado"
+            ana_db = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one()
+            assert (ana_db.stripe_cliente_id, ana_db.stripe_assinatura_id) == ("cus_1", "sub_1")
+            # Período pago terminado (sem renovação registada): o destaque desaparece sozinho.
+            ana_db.premium_ate = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
+            db.commit()
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"] is False
+        # Quem volta a assinar reutiliza o cliente da Stripe.
+        cliente.post(checkout, json={"retorno": "http://localhost:8092/"}, headers=ana)
+        assert stripe_falsa.pedidos[-1]["cliente"] == "cus_1"
     finally:
-        Pagamentos.definir_gateway(None, None)
-    print("OK  - contacto: só é entregue depois de pago, e só de quem o autorizou")
+        Pagamentos.definir_gateway()
+    print("OK  - Premium: assinatura paga ativa o destaque, que acaba com o período pago")
 
 
-def teste_pagamentos_sem_stripe_configurada():
+def teste_premium_sem_stripe_configurada():
     cliente, _ = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
+    _publicar(cliente, "ana@exemplo.pt", "Ana")
+    ana = _entrar(cliente, "ana@exemplo.pt")
     chave = pagamentos_mp.MP_STRIPE_SECRET_KEY
     pagamentos_mp.MP_STRIPE_SECRET_KEY = ""
     try:
-        r = cliente.post(f"/maria-portuguesa/domesticas/{gid}/contacto/checkout", json={"retorno": "http://localhost:8092/"})
+        r = cliente.post("/maria-portuguesa/domesticas/eu/premium/checkout",
+                         json={"retorno": "http://localhost:8092/"}, headers=ana)
         assert r.status_code == 503 and "pagamentos" in r.json()["detail"].lower()
-        assert cliente.post("/maria-portuguesa/contactos/confirmar", json={"sessao": "cs_test_qualquer"}).status_code == 503
     finally:
         pagamentos_mp.MP_STRIPE_SECRET_KEY = chave
-    print("OK  - contacto: sem chave da Stripe responde com aviso legível, sem cobrar")
+    print("OK  - Premium: sem chave da Stripe responde com aviso legível, sem cobrar")
 
 
-def teste_webhook_da_stripe_regista_o_pagamento():
+def teste_webhook_mantem_o_premium_em_dia():
     import hmac
     import time
     cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
+    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
     segredo = pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET
     pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = "whsec_teste"
+    daqui_a_um_mes = int(time.time()) + 30 * 86400
 
-    def _aviso(tipo: str, metadados: dict, assinar_com: str = "whsec_teste"):
-        corpo = json.dumps({
-            "id": "evt_1", "object": "event", "type": tipo,
-            "data": {"object": {
-                "id": "cs_test_aviso", "object": "checkout.session", "payment_status": "paid",
-                "amount_total": 390, "payment_intent": "pi_aviso", "metadata": metadados,
-            }},
-        })
+    def _aviso(tipo: str, assinatura: dict, assinar_com: str = "whsec_teste"):
+        corpo = json.dumps({"id": "evt_1", "object": "event", "type": tipo, "data": {"object": {
+            "object": "subscription", "id": "sub_9", "customer": "cus_9", "status": "active",
+            "cancel_at_period_end": False, "metadata": {"modulo": "maria_portuguesa", "gid": gid},
+            # Versões recentes da API: o período vive nos itens da assinatura.
+            "items": {"object": "list", "data": [{"current_period_end": daqui_a_um_mes}]},
+            **assinatura,
+        }}})
         carimbo = int(time.time())
-        assinatura = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
+        assinatura_http = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
         return cliente.post("/maria-portuguesa/stripe/webhook", content=corpo,
-                            headers={"Stripe-Signature": f"t={carimbo},v1={assinatura}"})
+                            headers={"Stripe-Signature": f"t={carimbo},v1={assinatura_http}"})
+
+    def destaque() -> bool:
+        return cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"]
 
     try:
-        meus = {"modulo": "maria_portuguesa", "gid": gid}
-        assert _aviso("checkout.session.completed", meus, assinar_com="whsec_outro").status_code == 400
-        # Pagamentos de outros produtos da mesma conta Stripe são ignorados.
-        assert _aviso("checkout.session.completed", {"pedido": "leiria-eats"}).status_code == 200
-        assert _aviso("payment_intent.succeeded", meus).status_code == 200
-        with Sessao() as db:
-            assert db.query(MpDesbloqueioDB).count() == 0
+        assert _aviso("customer.subscription.created", {}, assinar_com="whsec_outro").status_code == 400
+        # Assinaturas de outros produtos da mesma conta Stripe são ignoradas.
+        assert _aviso("customer.subscription.created", {"id": "sub_x", "metadata": {"pedido": "leiria-eats"}}).status_code == 200
+        assert _aviso("invoice.paid", {}).status_code == 200
+        assert destaque() is False
 
-        assert _aviso("checkout.session.completed", meus).status_code == 200
-        assert _aviso("checkout.session.completed", meus).status_code == 200   # a Stripe repete avisos
+        assert _aviso("customer.subscription.created", {}).status_code == 200
+        assert destaque() is True
         with Sessao() as db:
-            assert db.query(MpDesbloqueioDB).one().payment_intent == "pi_aviso"
-        # Com o aviso recebido, a pessoa vê o contacto sem nova consulta à Stripe.
-        r = cliente.post("/maria-portuguesa/contactos/confirmar", json={"sessao": "cs_test_aviso"})
-        assert r.status_code == 200 and r.json()["telemovel"] == "912 345 678"
+            ana = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one()
+            assert ana.stripe_assinatura_id == "sub_9" and ana.premium_renova is True
+
+        # Cancelou: o destaque fica até ao fim do período, mas já não renova.
+        _aviso("customer.subscription.updated", {"cancel_at_period_end": True})
+        assert destaque() is True
+        with Sessao() as db:
+            assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one().premium_renova is False
+
+        # Fim da assinatura (ou pagamento falhado de vez): o destaque acaba logo.
+        _aviso("customer.subscription.deleted", {"status": "canceled"})
+        assert destaque() is False
     finally:
         pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = segredo
-    print("OK  - contacto: o aviso da Stripe regista o pagamento, uma vez, e só com assinatura válida")
+    print("OK  - Premium: os avisos da Stripe ativam, mantêm e terminam o destaque")
 
 
 def teste_apagar_conta():
@@ -482,6 +513,32 @@ def teste_busca_ordena_por_afinidade():
     assert resultado["resultados"][0]["gid"] == idosos
     assert resultado["resultados"][0]["afinidade"] > resultado["resultados"][1]["afinidade"]
     print("OK  - busca ordena por afinidade semântica e ignora rascunhos")
+
+
+def teste_busca_poe_premium_em_destaque():
+    cliente, Sessao = _novo_cliente()
+    sobre = "Faço limpeza de casas com cuidado e pontualidade."
+    antiga = _publicar(cliente, "a@exemplo.pt", "Ana", sobre=sobre)
+    premium = _publicar(cliente, "b@exemplo.pt", "Beatriz", sobre=sobre)
+    recente = _publicar(cliente, "c@exemplo.pt", "Carla", sobre=sobre)
+    idosos = _publicar(cliente, "d@exemplo.pt", "Dora", servicos=["idosos"],
+                       sobre="Acompanho idosos com paciência, ajudo nas refeições e na medicação.")
+    with Sessao() as db:
+        db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == premium).update(
+            {"premium_ate": datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30)})
+        db.commit()
+
+    # Pedidos iguais para todas: quem está em destaque aparece primeiro.
+    resultado = _busca(cliente, consulta="limpeza de casas com cuidado")
+    assert resultado["resultados"][0]["gid"] == premium and resultado["resultados"][0]["destaque"] is True
+    assert {p["gid"] for p in resultado["resultados"][1:3]} == {antiga, recente}
+    # Mas o destaque não passa à frente de quem corresponde muito melhor ao pedido.
+    resultado = _busca(cliente, consulta="alguém com paciência para acompanhar idosos")
+    assert resultado["resultados"][0]["gid"] == idosos
+    # Sem pedido, a listagem também começa pelos perfis em destaque.
+    listagem = cliente.get("/maria-portuguesa/domesticas").json()["resultados"]
+    assert listagem[0]["gid"] == premium
+    print("OK  - busca: perfis Premium sobem, sem passar à frente de quem corresponde muito melhor")
 
 
 def teste_busca_por_localidade():
