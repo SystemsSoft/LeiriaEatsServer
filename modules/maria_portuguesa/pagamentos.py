@@ -1,42 +1,46 @@
 # Arquivo: modules/maria_portuguesa/pagamentos.py
 #
-# Assinatura Premium da doméstica (Stripe Checkout + Stripe Billing).
+# Pagamentos do marketplace (Stripe Connect, «cobranças e transferências separadas»).
 #
-# A doméstica paga uma mensalidade e o perfil dela fica em destaque nas
-# pesquisas. A página de pagamento e a de gerir a assinatura (cartão, cancelar)
-# são da própria Stripe: nenhum dado de cartão passa por este servidor. A chave é
-# a do módulo e segue em cada chamada — o stripe.api_key global é do Leiria Eats.
+# A família paga um acordo pela Stripe Checkout; o dinheiro fica no saldo da
+# plataforma. Quando a família confirma que o serviço foi feito (ou passado o prazo
+# de libertação automática), a plataforma transfere para a conta Connect da
+# doméstica o valor menos a comissão. A doméstica cria essa conta (Express) nas
+# páginas da própria Stripe: nenhum dado de cartão ou bancário passa por este
+# servidor. A chave é a do módulo e segue em cada chamada — o stripe.api_key global
+# é do Leiria Eats.
 #
 # Variáveis de ambiente:
 #   MP_STRIPE_SECRET_KEY         chave SECRETA da Stripe (sk_live_... ou sk_test_...)
-#   MP_STRIPE_WEBHOOK_SECRET     segredo do webhook (whsec_...) de
-#                                POST /maria-portuguesa/stripe/webhook
+#   MP_STRIPE_WEBHOOK_SECRET     segredo(s) do webhook (whsec_...) de
+#                                POST /maria-portuguesa/stripe/webhook, separados por
+#                                vírgula: o endpoint da conta e o das contas ligadas
+#                                (Connect) têm segredos diferentes
 #   MP_APP_URL                   endereço(s) do site, separados por vírgula. É para
-#                                onde a Stripe devolve a doméstica
-#   MP_PRECO_PREMIUM_CENTIMOS    mensalidade, em cêntimos (por omissão: 390)
+#                                onde a Stripe devolve quem paga ou ativa a conta
+#   MP_COMISSAO_PERCENT          comissão da plataforma sobre cada acordo, em % (10)
+#   MP_DIAS_LIBERTACAO           dias depois do serviço até o pagamento seguir sozinho
+#                                para a doméstica, se a família não o fizer (7)
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Optional, Protocol
 from urllib.parse import urlsplit
 
 MP_STRIPE_SECRET_KEY = os.getenv("MP_STRIPE_SECRET_KEY", "").strip()
-MP_STRIPE_WEBHOOK_SECRET = os.getenv("MP_STRIPE_WEBHOOK_SECRET", "").strip()
+MP_STRIPE_WEBHOOK_SECRETS = [s.strip() for s in os.getenv("MP_STRIPE_WEBHOOK_SECRET", "").split(",") if s.strip()]
 MP_APP_URLS = [u.strip().rstrip("/") for u in os.getenv("MP_APP_URL", "").split(",") if u.strip()]
-PRECO_PREMIUM_CENTIMOS = int(os.getenv("MP_PRECO_PREMIUM_CENTIMOS") or 390)
+COMISSAO_PERCENT = float(os.getenv("MP_COMISSAO_PERCENT") or 10)
+DIAS_LIBERTACAO = int(os.getenv("MP_DIAS_LIBERTACAO") or 7)
 
 # Marca o que é deste módulo: a conta Stripe pode ser partilhada.
 _MODULO = "maria_portuguesa"
-# Parâmetro com que a doméstica volta ao site depois de pagar.
-PARAMETRO_SESSAO = "mp_premium"
-# Página da aplicação para onde a doméstica volta (rota do editor do perfil).
-_ROTA_EDITOR = "#/domestica"
-# Estados da Stripe em que a assinatura ainda dá direito ao destaque. Com o
-# pagamento em atraso (past_due) a Stripe ainda está a tentar cobrar: o destaque
-# fica até ao fim do período já pago.
-_ESTADOS_ATIVOS = {"active", "trialing", "past_due"}
-# Estados de onde uma assinatura já não sai: não vale a pena voltar a perguntar por ela.
-ESTADOS_TERMINADOS = {"canceled", "incomplete_expired"}
+# Parâmetro com que a família volta ao site depois de pagar.
+PARAMETRO_SESSAO = "mp_acordo"
+# Páginas da aplicação para onde a Stripe devolve cada um.
+ROTA_FAMILIA = "#/familia"
+ROTA_DOMESTICA = "#/domestica"
+# Atividade da doméstica para a Stripe: limpeza e manutenção (MCC 7349).
+_MCC_LIMPEZA = "7349"
 
 
 class PagamentosIndisponiveis(Exception):
@@ -47,32 +51,34 @@ class ErroPagamento(Exception):
     """A Stripe recusou a operação; a mensagem pode ser mostrada à pessoa."""
 
 
-class RecursoInexistente(ErroPagamento):
-    """O objeto pedido não existe nesta conta Stripe (por exemplo, foi criado em modo
-    de teste e a chave agora é a live)."""
-
-
-class ClienteInexistente(RecursoInexistente):
-    """O cliente guardado no perfil não existe nesta conta Stripe."""
-
-
 class AvisoInvalido(Exception):
     """Um pedido ao webhook que não vem da Stripe (assinatura HTTP errada)."""
 
 
 @dataclass(frozen=True)
-class Assinatura:
-    id: str
-    cliente: Optional[str]
-    # Estado na Stripe: active, past_due (pagamento em atraso), canceled, ...
-    estado: str
-    # gid do perfil; None se a assinatura não for deste módulo.
-    gid: Optional[str]
-    ativa: bool
-    # Fim do período pago (UTC, sem fuso, como o resto do módulo).
-    valida_ate: Optional[datetime]
-    # A doméstica cancelou: não renova no fim do período.
-    cancela_no_fim: bool
+class PagamentoCheckout:
+    """Uma sessão da Stripe Checkout de um acordo."""
+    sessao: str
+    # gid do acordo; None se a sessão não for deste módulo.
+    acordo: Optional[str]
+    pago: bool
+    pagamento_id: Optional[str] = None   # PaymentIntent (pi_...)
+    cobranca_id: Optional[str] = None    # Charge (ch_...), origem da transferência
+
+
+@dataclass(frozen=True)
+class Aviso:
+    """O que um aviso da Stripe muda neste módulo."""
+    # "pago" (checkout), "reembolsado" (pagamento devolvido) ou "conta" (conta Connect mudou)
+    tipo: str
+    checkout: Optional[PagamentoCheckout] = None
+    pagamento_id: Optional[str] = None
+    conta_id: Optional[str] = None
+
+
+def comissao(valor_centimos: int) -> int:
+    """A parte da plataforma num acordo deste valor, em cêntimos."""
+    return round(valor_centimos * COMISSAO_PERCENT / 100)
 
 
 def _origem(url: str) -> str:
@@ -81,7 +87,7 @@ def _origem(url: str) -> str:
 
 
 def url_de_retorno(pedido: Optional[str]) -> str:
-    """Para onde a Stripe devolve a doméstica. O endereço pedido pelo navegador só é
+    """Para onde a Stripe devolve a pessoa. O endereço pedido pelo navegador só é
     aceite se for do próprio site (MP_APP_URL) ou de desenvolvimento local — de outro
     modo a página de pagamento serviria para encaminhar pessoas para sites alheios."""
     permitidas = {_origem(u) for u in MP_APP_URLS}
@@ -104,72 +110,129 @@ def _campo(objeto, nome: str, omissao=None):
     return omissao if valor is None else valor
 
 
-def assinatura_de_objeto(assinatura) -> Assinatura:
-    """Converte a Subscription da Stripe no que o módulo precisa dela."""
-    metadados = _campo(assinatura, "metadata", {})
-    metadados = metadados.to_dict() if hasattr(metadados, "to_dict") else dict(metadados)
-    fim = _campo(assinatura, "current_period_end")
-    if fim is None:
-        # Nas versões recentes da API o período vive em cada item da assinatura.
-        itens = _campo(_campo(assinatura, "items", {}), "data", [])
-        fim = _campo(itens[0], "current_period_end") if itens else None
-    valida_ate = datetime.fromtimestamp(int(fim), tz=timezone.utc).replace(tzinfo=None) if fim else None
-    agora = datetime.now(timezone.utc).replace(tzinfo=None)
-    cliente = _campo(assinatura, "customer")
-    return Assinatura(
-        id=_campo(assinatura, "id"),
-        cliente=cliente if isinstance(cliente, str) else _campo(cliente, "id"),
-        estado=_campo(assinatura, "status", ""),
-        gid=metadados.get("gid") if metadados.get("modulo") == _MODULO else None,
-        ativa=_campo(assinatura, "status") in _ESTADOS_ATIVOS and valida_ate is not None and valida_ate > agora,
-        valida_ate=valida_ate,
-        cancela_no_fim=bool(_campo(assinatura, "cancel_at_period_end", False)),
-    )
+def _id(objeto) -> Optional[str]:
+    """Id de um campo da Stripe que tanto pode vir como texto como expandido."""
+    if objeto is None or isinstance(objeto, str):
+        return objeto
+    return _campo(objeto, "id")
+
+
+def _metadados(objeto) -> dict:
+    metadados = _campo(objeto, "metadata", {})
+    return metadados.to_dict() if hasattr(metadados, "to_dict") else dict(metadados)
+
+
+class Gateway(Protocol):
+    """O que o módulo precisa da Stripe. Os testes e o servidor de desenvolvimento
+    passam uma implementação falsa (Pagamentos.definir_gateway)."""
+
+    def criar_conta(self, *, gid: str, email: str) -> str: ...
+    def link_de_ativacao(self, *, conta: str, retorno: str) -> str: ...
+    def conta_pronta(self, conta: str) -> bool: ...
+    def link_do_painel(self, conta: str) -> str: ...
+    def criar_checkout(self, *, acordo: str, valor_centimos: int, nome: str, descricao: str,
+                       email: str, retorno: str) -> tuple[str, str]: ...
+    def consultar_checkout(self, sessao: str) -> PagamentoCheckout: ...
+    def transferir(self, *, conta: str, valor_centimos: int, acordo: str, cobranca: str) -> str: ...
 
 
 class Pagamentos:
-    # Substituíveis nos testes e no servidor de desenvolvimento, que não falam com a Stripe.
-    _criar: Optional[Callable[..., str]] = None
-    _consultar: Optional[Callable[[str], Optional[Assinatura]]] = None
-    _portal: Optional[Callable[..., str]] = None
-    _assinatura: Optional[Callable[[str], Assinatura]] = None
-    _cancelar: Optional[Callable[[str], None]] = None
+    _gateway: Optional[Gateway] = None
 
     @classmethod
-    def definir_gateway(cls, criar=None, consultar=None, portal=None, assinatura=None, cancelar=None) -> None:
-        cls._criar, cls._consultar, cls._portal = criar, consultar, portal
-        cls._assinatura, cls._cancelar = assinatura, cancelar
+    def definir_gateway(cls, gateway: Optional[Gateway] = None) -> None:
+        cls._gateway = gateway
+
+    @classmethod
+    def _g(cls) -> Gateway:
+        return cls._gateway or _GatewayStripe
 
     @staticmethod
     def configurada() -> bool:
         return bool(MP_STRIPE_SECRET_KEY) and not MP_STRIPE_SECRET_KEY.startswith("pk_")
 
-    @classmethod
-    def criar_checkout(cls, *, gid: str, email: str, cliente: Optional[str], retorno: str) -> str:
-        """Abre a página de pagamento da assinatura e devolve o endereço dela."""
-        return (cls._criar or cls._criar_na_stripe)(gid=gid, email=email, cliente=cliente, retorno=retorno)
+    # ── Conta da doméstica (Connect) ────────────────────────────────────────
 
     @classmethod
-    def consultar_checkout(cls, sessao_id: str) -> Optional[Assinatura]:
-        """A assinatura criada por esta sessão de pagamento; None se ainda não há."""
-        return (cls._consultar or cls._consultar_na_stripe)(sessao_id)
+    def criar_conta(cls, *, gid: str, email: str) -> str:
+        """Cria a conta Connect (Express) onde a doméstica vai receber. Devolve o id."""
+        return cls._g().criar_conta(gid=gid, email=email)
 
     @classmethod
-    def portal(cls, *, cliente: str, retorno: str) -> str:
-        """Página da Stripe onde a doméstica muda o cartão, vê faturas ou cancela."""
-        return (cls._portal or cls._portal_na_stripe)(cliente=cliente, retorno=retorno)
+    def link_de_ativacao(cls, *, conta: str, retorno: str) -> str:
+        """Páginas da Stripe onde a doméstica indica a identidade e o IBAN."""
+        return cls._g().link_de_ativacao(conta=conta, retorno=retorno)
 
     @classmethod
-    def consultar_assinatura(cls, assinatura_id: str) -> Assinatura:
-        """Estado atual da assinatura, perguntado à Stripe (não ao que veio num aviso)."""
-        return (cls._assinatura or cls._assinatura_na_stripe)(assinatura_id)
+    def conta_pronta(cls, conta: str) -> bool:
+        """A conta já pode receber transferências."""
+        return cls._g().conta_pronta(conta)
 
     @classmethod
-    def cancelar(cls, assinatura_id: str) -> None:
-        """Cancela já a assinatura, sem mais cobranças. Não faz nada se já tiver terminado."""
-        (cls._cancelar or cls._cancelar_na_stripe)(assinatura_id)
+    def link_do_painel(cls, conta: str) -> str:
+        """Painel Express da doméstica: transferências recebidas e dados bancários."""
+        return cls._g().link_do_painel(conta)
 
-    # ── Stripe ───────────────────────────────────────────────────────────────
+    # ── Pagamento da família ────────────────────────────────────────────────
+
+    @classmethod
+    def criar_checkout(cls, *, acordo: str, valor_centimos: int, nome: str, descricao: str,
+                       email: str, retorno: str) -> tuple[str, str]:
+        """Abre a página de pagamento de um acordo. Devolve (id da sessão, endereço)."""
+        return cls._g().criar_checkout(acordo=acordo, valor_centimos=valor_centimos, nome=nome,
+                                       descricao=descricao, email=email, retorno=retorno)
+
+    @classmethod
+    def consultar_checkout(cls, sessao: str) -> PagamentoCheckout:
+        return cls._g().consultar_checkout(sessao)
+
+    @classmethod
+    def transferir(cls, *, conta: str, valor_centimos: int, acordo: str, cobranca: str) -> str:
+        """Liberta o pagamento retido: transfere para a conta da doméstica. Repetir a
+        chamada para o mesmo acordo não transfere duas vezes."""
+        return cls._g().transferir(conta=conta, valor_centimos=valor_centimos, acordo=acordo, cobranca=cobranca)
+
+    # ── Avisos (webhook) ────────────────────────────────────────────────────
+
+    @classmethod
+    def evento_do_webhook(cls, corpo: bytes, assinatura_http: Optional[str]) -> Optional[Aviso]:
+        """Valida o aviso da Stripe e diz o que ele muda. Levanta AvisoInvalido se a
+        assinatura HTTP não for da Stripe, e ErroPagamento se não conseguir confirmar
+        o estado com a Stripe (o aviso volta a ser entregue mais tarde)."""
+        import stripe
+
+        if not MP_STRIPE_WEBHOOK_SECRETS:
+            raise PagamentosIndisponiveis("MP_STRIPE_WEBHOOK_SECRET não está definido")
+        evento, recusa = None, None
+        for segredo in MP_STRIPE_WEBHOOK_SECRETS:
+            try:
+                evento = stripe.Webhook.construct_event(corpo, assinatura_http or "", segredo)
+                break
+            except stripe.SignatureVerificationError as e:
+                recusa = e
+            except ValueError as e:
+                raise AvisoInvalido(str(e))
+        if evento is None:
+            raise AvisoInvalido(str(recusa))
+
+        objeto = evento.data.object
+        if evento.type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+            if _campo(objeto, "mode") != "payment" or _metadados(objeto).get("modulo") != _MODULO:
+                return None
+            # Não se confia no que vem no aviso: pergunta-se à Stripe o estado atual.
+            return Aviso("pago", checkout=cls.consultar_checkout(_campo(objeto, "id")))
+        if evento.type == "charge.refunded":
+            # Só o reembolso total desfaz o acordo; um parcial fica para tratar à mão.
+            if _campo(objeto, "amount_refunded", 0) < _campo(objeto, "amount", 0):
+                return None
+            return Aviso("reembolsado", pagamento_id=_id(_campo(objeto, "payment_intent")))
+        if evento.type == "account.updated":
+            return Aviso("conta", conta_id=_campo(objeto, "id"))
+        return None
+
+
+class _GatewayStripe:
+    """A Stripe verdadeira."""
 
     @staticmethod
     def _chave() -> str:
@@ -187,116 +250,116 @@ class Pagamentos:
             return funcao(*args, api_key=chave, **kwargs)
         except stripe.StripeError as e:
             print(f"⚠️ [MariaPortuguesa] Erro da Stripe: {e}")
-            if getattr(e, "code", None) == "resource_missing":
-                raise (ClienteInexistente if getattr(e, "param", None) == "customer" else RecursoInexistente)(str(e))
             raise ErroPagamento("Não foi possível falar com o serviço de pagamentos. Tente de novo dentro de instantes.")
 
     @classmethod
-    def _criar_na_stripe(cls, *, gid: str, email: str, cliente: Optional[str], retorno: str) -> str:
+    def criar_conta(cls, *, gid: str, email: str) -> str:
         import stripe
 
-        metadados = {"modulo": _MODULO, "gid": gid}
-        if cliente:
-            # Quem já foi assinante reutiliza o cliente da Stripe (cartão e faturas no mesmo sítio).
-            try:
-                return cls._abrir_checkout(metadados, retorno, {"customer": cliente})
-            except ClienteInexistente:
-                pass  # cliente de outro modo/conta: começa um novo, com o email
-        return cls._abrir_checkout(metadados, retorno, {"customer_email": email})
+        conta = cls._chamar(
+            stripe.Account.create,
+            type="express",
+            country="PT",
+            email=email,
+            business_type="individual",
+            capabilities={"card_payments": {"requested": True}, "transfers": {"requested": True}},
+            business_profile={
+                "mcc": _MCC_LIMPEZA,
+                "product_description": "Serviços domésticos contratados através da Maria Portuguesa.",
+            },
+            metadata={"modulo": _MODULO, "gid": gid},
+            # Uma conta por doméstica, mesmo que o pedido chegue duas vezes.
+            idempotency_key=f"mp-conta-{gid}",
+        )
+        return _campo(conta, "id")
 
     @classmethod
-    def _abrir_checkout(cls, metadados: dict, retorno: str, quem: dict) -> str:
+    def link_de_ativacao(cls, *, conta: str, retorno: str) -> str:
         import stripe
 
-        gid = metadados["gid"]
+        link = cls._chamar(
+            stripe.AccountLink.create,
+            account=conta,
+            type="account_onboarding",
+            # O link é de uso único e expira: a Stripe manda para refresh_url, que volta
+            # ao editor, onde «Continuar a ativação» pede um link novo.
+            refresh_url=f"{retorno}{ROTA_DOMESTICA}",
+            return_url=f"{retorno}{ROTA_DOMESTICA}",
+        )
+        return _campo(link, "url")
+
+    @classmethod
+    def conta_pronta(cls, conta: str) -> bool:
+        import stripe
+
+        dados = cls._chamar(stripe.Account.retrieve, conta)
+        capacidades = _campo(dados, "capabilities", {})
+        return bool(_campo(dados, "details_submitted", False)) and _campo(capacidades, "transfers") == "active"
+
+    @classmethod
+    def link_do_painel(cls, conta: str) -> str:
+        import stripe
+
+        return _campo(cls._chamar(stripe.Account.create_login_link, conta), "url")
+
+    @classmethod
+    def criar_checkout(cls, *, acordo: str, valor_centimos: int, nome: str, descricao: str,
+                       email: str, retorno: str) -> tuple[str, str]:
+        import stripe
+
+        metadados = {"modulo": _MODULO, "acordo": acordo}
         sessao = cls._chamar(
             stripe.checkout.Session.create,
-            mode="subscription",
+            mode="payment",
             line_items=[{
                 "quantity": 1,
                 "price_data": {
                     "currency": "eur",
-                    "unit_amount": PRECO_PREMIUM_CENTIMOS,
-                    "recurring": {"interval": "month"},
-                    "product_data": {
-                        "name": "Maria Portuguesa Premium",
-                        "description": "Perfil em destaque nas pesquisas das famílias.",
-                    },
+                    "unit_amount": valor_centimos,
+                    "product_data": {"name": f"Serviço doméstico com {nome}", "description": descricao[:300]},
                 },
             }],
-            client_reference_id=gid,
+            client_reference_id=acordo,
             metadata=metadados,
-            subscription_data={"metadata": metadados},
+            payment_intent_data={"metadata": metadados, "transfer_group": acordo,
+                                 "description": f"Maria Portuguesa — acordo {acordo}"},
+            customer_email=email,
             # A Stripe troca {CHECKOUT_SESSION_ID} pelo id verdadeiro ao devolver a pessoa.
-            success_url=f"{retorno}?{PARAMETRO_SESSAO}={{CHECKOUT_SESSION_ID}}{_ROTA_EDITOR}",
-            cancel_url=f"{retorno}{_ROTA_EDITOR}",
-            locale="pt",
-            **quem,
-        )
-        return _campo(sessao, "url")
-
-    @classmethod
-    def _consultar_na_stripe(cls, sessao_id: str) -> Optional[Assinatura]:
-        import stripe
-
-        sessao = cls._chamar(stripe.checkout.Session.retrieve, sessao_id, expand=["subscription"])
-        assinatura = _campo(sessao, "subscription")
-        if not assinatura:
-            return None
-        if isinstance(assinatura, str):
-            assinatura = cls._chamar(stripe.Subscription.retrieve, assinatura)
-        return assinatura_de_objeto(assinatura)
-
-    @classmethod
-    def _assinatura_na_stripe(cls, assinatura_id: str) -> Assinatura:
-        import stripe
-
-        return assinatura_de_objeto(cls._chamar(stripe.Subscription.retrieve, assinatura_id))
-
-    @classmethod
-    def _cancelar_na_stripe(cls, assinatura_id: str) -> None:
-        import stripe
-
-        try:
-            if cls._assinatura_na_stripe(assinatura_id).estado in ESTADOS_TERMINADOS:
-                return
-        except RecursoInexistente:
-            return  # não existe nesta conta (era de teste): não há nada que possa cobrar
-        cls._chamar(stripe.Subscription.cancel, assinatura_id)
-
-    @classmethod
-    def _portal_na_stripe(cls, *, cliente: str, retorno: str) -> str:
-        import stripe
-
-        sessao = cls._chamar(
-            stripe.billing_portal.Session.create, customer=cliente, return_url=f"{retorno}{_ROTA_EDITOR}",
+            success_url=f"{retorno}?{PARAMETRO_SESSAO}={{CHECKOUT_SESSION_ID}}{ROTA_FAMILIA}",
+            cancel_url=f"{retorno}{ROTA_FAMILIA}",
             locale="pt",
         )
-        return _campo(sessao, "url")
+        return _campo(sessao, "id"), _campo(sessao, "url")
 
     @classmethod
-    def evento_do_webhook(cls, corpo: bytes, assinatura_http: Optional[str]) -> Optional[Assinatura]:
-        """Valida o aviso da Stripe e devolve o estado ATUAL da assinatura a que ele se
-        refere, se for disso que se trata. Levanta AvisoInvalido se a assinatura HTTP não
-        for da Stripe, e ErroPagamento se não conseguir perguntar à Stripe (o aviso volta
-        a ser entregue mais tarde)."""
+    def consultar_checkout(cls, sessao: str) -> PagamentoCheckout:
         import stripe
 
-        if not MP_STRIPE_WEBHOOK_SECRET:
-            raise PagamentosIndisponiveis("MP_STRIPE_WEBHOOK_SECRET não está definido")
-        try:
-            evento = stripe.Webhook.construct_event(corpo, assinatura_http or "", MP_STRIPE_WEBHOOK_SECRET)
-        except (ValueError, stripe.SignatureVerificationError) as e:
-            raise AvisoInvalido(str(e))
-        objeto = evento.data.object
-        if evento.type in ("customer.subscription.created", "customer.subscription.updated",
-                           "customer.subscription.deleted"):
-            # A Stripe pode entregar os avisos fora de ordem: um "updated" antigo a chegar
-            # depois do "deleted" reativaria o destaque. Por isso não se confia no que vem
-            # no aviso e pergunta-se o estado atual. Os de outros produtos ficam de fora.
-            if assinatura_de_objeto(objeto).gid is None:
-                return None
-            return cls.consultar_assinatura(_campo(objeto, "id"))
-        if evento.type == "checkout.session.completed" and _campo(objeto, "mode") == "subscription":
-            return cls.consultar_checkout(_campo(objeto, "id"))
-        return None
+        dados = cls._chamar(stripe.checkout.Session.retrieve, sessao, expand=["payment_intent"])
+        metadados = _metadados(dados)
+        intencao = _campo(dados, "payment_intent")
+        return PagamentoCheckout(
+            sessao=_campo(dados, "id"),
+            acordo=metadados.get("acordo") if metadados.get("modulo") == _MODULO else None,
+            pago=_campo(dados, "payment_status") == "paid",
+            pagamento_id=_id(intencao),
+            cobranca_id=_id(_campo(intencao, "latest_charge")) if intencao and not isinstance(intencao, str) else None,
+        )
+
+    @classmethod
+    def transferir(cls, *, conta: str, valor_centimos: int, acordo: str, cobranca: str) -> str:
+        import stripe
+
+        transferencia = cls._chamar(
+            stripe.Transfer.create,
+            amount=valor_centimos,
+            currency="eur",
+            destination=conta,
+            transfer_group=acordo,
+            # Liga a transferência à cobrança: pode seguir antes de o dinheiro estar
+            # disponível no saldo da plataforma.
+            source_transaction=cobranca,
+            metadata={"modulo": _MODULO, "acordo": acordo},
+            idempotency_key=f"mp-libertar-{acordo}",
+        )
+        return _campo(transferencia, "id")

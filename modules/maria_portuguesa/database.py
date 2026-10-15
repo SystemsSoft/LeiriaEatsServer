@@ -94,12 +94,18 @@ def _acrescentar_colunas_em_falta() -> None:
     depois da primeira instalação entram aqui (também idempotente)."""
     colunas = {coluna["name"] for coluna in inspect(engine).get_columns("domesticas")}
     em_falta = [(nome, ddl) for nome, ddl in _COLUNAS_ACRESCENTADAS if nome not in colunas]
-    if not em_falta:
+    # Colunas que o modelo já não conhece não podem impedir que se criem perfis: as
+    # obrigatórias passam a ter valor por omissão (só no MySQL; o SQLite dos testes
+    # nunca as teve).
+    retiradas = [ddl for nome, ddl in _COLUNAS_RETIRADAS if nome in colunas] if _E_MYSQL else []
+    if not em_falta and not retiradas:
         return
     with engine.begin() as ligacao:
         for _, instrucoes in em_falta:
             for instrucao in instrucoes:
                 ligacao.execute(text(instrucao))
+        for instrucao in retiradas:
+            ligacao.execute(text(instrucao))
 
 
 # Por ordem de chegada. Cada coluna nova da tabela domesticas entra aqui, com as
@@ -109,12 +115,18 @@ _COLUNAS_ACRESCENTADAS = [
         "ALTER TABLE domesticas ADD COLUMN firebase_uid VARCHAR(128) NULL",
         "CREATE UNIQUE INDEX ix_domesticas_firebase_uid ON domesticas (firebase_uid)",
     ]),
-    ("premium_ate", ["ALTER TABLE domesticas ADD COLUMN premium_ate DATETIME NULL"]),
-    ("premium_renova", ["ALTER TABLE domesticas ADD COLUMN premium_renova BOOLEAN NOT NULL DEFAULT 0"]),
-    ("premium_estado", ["ALTER TABLE domesticas ADD COLUMN premium_estado VARCHAR(32) NULL"]),
-    ("stripe_cliente_id", ["ALTER TABLE domesticas ADD COLUMN stripe_cliente_id VARCHAR(64) NULL"]),
-    ("stripe_assinatura_id", [
-        "ALTER TABLE domesticas ADD COLUMN stripe_assinatura_id VARCHAR(64) NULL",
-        "CREATE INDEX ix_domesticas_stripe_assinatura_id ON domesticas (stripe_assinatura_id)",
+    # O Premium (premium_*, stripe_cliente_id, stripe_assinatura_id) deixou de existir:
+    # em bancos antigos essas colunas ficam, sem uso (têm valor por omissão), e as
+    # instalações novas já não as criam.
+    ("stripe_conta_id", [
+        "ALTER TABLE domesticas ADD COLUMN stripe_conta_id VARCHAR(64) NULL",
+        "CREATE INDEX ix_domesticas_stripe_conta_id ON domesticas (stripe_conta_id)",
     ]),
+    ("recebimentos_ativos", ["ALTER TABLE domesticas ADD COLUMN recebimentos_ativos BOOLEAN NOT NULL DEFAULT 0"]),
+]
+
+# Colunas que deixaram de existir no modelo e que eram NOT NULL sem valor por
+# omissão no banco (criadas pelo create_all): ganham um, para os INSERT não falharem.
+_COLUNAS_RETIRADAS = [
+    ("premium_renova", "ALTER TABLE domesticas MODIFY COLUMN premium_renova BOOLEAN NOT NULL DEFAULT 0"),
 ]

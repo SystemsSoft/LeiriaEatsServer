@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint,
+    Boolean, Column, Date, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -15,10 +15,6 @@ def _agora() -> datetime:
 
 
 SENHA_NO_FIREBASE = "firebase"
-
-
-def premium_ativo(d: "MpDomesticaDB") -> bool:
-    return d.premium_ate is not None and d.premium_ate > _agora()
 
 
 def _novo_gid() -> str:
@@ -72,16 +68,11 @@ class MpDomesticaDB(Base):
     # Perfil só aparece na busca quando está publicado.
     publicado = Column(Boolean, nullable=False, default=False, index=True)
 
-    # --- Assinatura Premium (destaque nas pesquisas) ---
-    # Fim do período pago; o destaque vale enquanto for no futuro. Atualizado pelos
-    # avisos da Stripe (webhook) e no regresso da página de pagamento.
-    premium_ate = Column(DateTime, nullable=True)
-    # False quando a doméstica cancelou e a assinatura acaba em premium_ate.
-    premium_renova = Column(Boolean, nullable=False, default=False)
-    # Estado da assinatura na Stripe (active, past_due, canceled, ...).
-    premium_estado = Column(String(32), nullable=True)
-    stripe_cliente_id = Column(String(64), nullable=True)
-    stripe_assinatura_id = Column(String(64), nullable=True, index=True)
+    # --- Recebimentos (Stripe Connect) ---
+    # Conta Express onde recebe o que as famílias pagam pelos acordos.
+    stripe_conta_id = Column(String(64), nullable=True, index=True)
+    # A Stripe já confirmou a identidade e o IBAN: pode receber transferências.
+    recebimentos_ativos = Column(Boolean, nullable=False, default=False)
 
     # Vetor E5 (float32 em bytes) do texto do perfil. Guardado na linha para não
     # recalcular todos os perfis a cada arranque do servidor.
@@ -93,6 +84,8 @@ class MpDomesticaDB(Base):
     sessoes = relationship("MpSessaoDB", back_populates="domestica", cascade="all, delete-orphan")
     # Quando a conta é apagada, sai também das listas de quem a tinha guardado.
     guardada_por = relationship("MpFavoritoDB", back_populates="domestica", cascade="all, delete-orphan")
+    # Os acordos ficam (são registos de pagamentos), só perdem a ligação à conta.
+    acordos = relationship("MpAcordoDB", back_populates="domestica")
 
 
 class MpSessaoDB(Base):
@@ -133,6 +126,7 @@ class MpFamiliaDB(Base):
     sessoes = relationship("MpSessaoFamiliaDB", back_populates="familia", cascade="all, delete-orphan")
     favoritos = relationship("MpFavoritoDB", back_populates="familia", cascade="all, delete-orphan",
                              order_by="MpFavoritoDB.criado_em.desc()")
+    acordos = relationship("MpAcordoDB", back_populates="familia")
 
 
 class MpSessaoFamiliaDB(Base):
@@ -160,3 +154,65 @@ class MpFavoritoDB(Base):
 
     familia = relationship("MpFamiliaDB", back_populates="favoritos")
     domestica = relationship("MpDomesticaDB", back_populates="guardada_por")
+
+
+class EstadoAcordo:
+    PROPOSTO = "proposto"          # a família propôs; falta a doméstica aceitar
+    RECUSADO = "recusado"          # a doméstica recusou
+    CANCELADO = "cancelado"        # a família desistiu antes de pagar
+    ACEITE = "aceite"              # a doméstica aceitou; falta a família pagar
+    PAGO = "pago"                  # pago e retido na plataforma até ser libertado
+    EM_DISPUTA = "em_disputa"      # retido; a família reportou um problema
+    LIBERTADO = "libertado"        # transferido para a doméstica
+    REEMBOLSADO = "reembolsado"    # devolvido à família
+
+    # Com dinheiro retido na plataforma: nenhuma das contas pode ser apagada.
+    RETIDOS = (PAGO, EM_DISPUTA)
+
+
+class MpAcordoDB(Base):
+    """Serviço combinado entre uma família e uma doméstica, e o pagamento dele.
+
+    A família propõe (o quê, quando, quanto); a doméstica aceita; a família paga e
+    o dinheiro fica retido na plataforma; quando a família confirma que o serviço
+    foi feito — ou passado o prazo sem ela reportar um problema — o valor menos a
+    comissão é transferido para a doméstica."""
+    __tablename__ = "acordos"
+
+    id = Column(Integer, primary_key=True)
+    gid = Column(String(32), unique=True, nullable=False, index=True, default=_novo_gid)
+    # Ficam a NULL se a conta for apagada: o registo do pagamento continua.
+    familia_id = Column(Integer, ForeignKey("familias.id", ondelete="SET NULL"), nullable=True, index=True)
+    domestica_id = Column(Integer, ForeignKey("domesticas.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    descricao = Column(Text, nullable=False)
+    # Contacto que a família escolheu partilhar com a doméstica (a conta não o mostra).
+    contacto_familia = Column(String(80), nullable=True)
+    data_servico = Column(Date, nullable=False)
+    valor_centimos = Column(Integer, nullable=False)
+    # Fixada na proposta: mudar a percentagem depois não altera acordos já feitos.
+    comissao_centimos = Column(Integer, nullable=False)
+
+    estado = Column(String(16), nullable=False, default=EstadoAcordo.PROPOSTO, index=True)
+    motivo_problema = Column(Text, nullable=True)
+
+    stripe_checkout_id = Column(String(255), nullable=True, index=True)
+    stripe_pagamento_id = Column(String(64), nullable=True, index=True)
+    stripe_cobranca_id = Column(String(64), nullable=True)
+    stripe_transferencia_id = Column(String(64), nullable=True)
+
+    criado_em = Column(DateTime, nullable=False, default=_agora)
+    atualizado_em = Column(DateTime, nullable=False, default=_agora, onupdate=_agora)
+    respondido_em = Column(DateTime, nullable=True)
+    pago_em = Column(DateTime, nullable=True)
+    # Sem problema reportado, o pagamento segue sozinho para a doméstica neste dia.
+    libertar_em = Column(Date, nullable=True, index=True)
+    libertado_em = Column(DateTime, nullable=True)
+    libertado_automaticamente = Column(Boolean, nullable=False, default=False)
+
+    familia = relationship("MpFamiliaDB", back_populates="acordos")
+    domestica = relationship("MpDomesticaDB", back_populates="acordos")
+
+    @property
+    def a_receber_centimos(self) -> int:
+        return self.valor_centimos - self.comissao_centimos

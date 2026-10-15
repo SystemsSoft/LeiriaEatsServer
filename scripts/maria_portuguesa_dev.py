@@ -23,7 +23,6 @@ A voz precisa de GEMINI_API_KEY no .env; sem ela a pesquisa escrita funciona na 
 """
 import argparse
 import asyncio
-from datetime import datetime, timedelta, timezone
 import hashlib
 import math
 import os
@@ -211,9 +210,10 @@ def _usar_sqlite_em_memoria(app: FastAPI) -> None:
             # Metade partilha o contacto (números inventados), para se verem os dois casos.
             telemovel=f"91{i} 000 00{i}" if i % 2 == 0 else None,
             mostrar_contacto=i % 2 == 0,
-            # Um perfil Premium, para se ver o destaque nas pesquisas.
-            premium_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30) if i == 1 else None,
-            premium_renova=i == 1,
+            # Quase todos recebem pela plataforma (conta Connect simulada), para se poder
+            # propor acordos; o último não, para se ver o perfil sem essa opção.
+            stripe_conta_id=f"acct_simulada_{i}" if i < len(PERFIS_DEMO) - 1 else None,
+            recebimentos_ativos=i < len(PERFIS_DEMO) - 1,
             **dados,
         )
         BuscaService.indexar(perfil)
@@ -268,28 +268,45 @@ def criar_app(pasta_landing: str | None, sem_e5: bool, porta: int = 8090, banco_
     rotas_mp.upload_file_to_s3 = _guardar_foto_local
     app.mount("/_fotos", StaticFiles(directory=pasta_fotos), name="fotos")
 
-    # Pagamentos: sem MP_STRIPE_SECRET_KEY no .env, a assinatura Premium é dada como
-    # paga e a doméstica volta logo ao editor — serve para trabalhar o ecrã, não a Stripe.
-    # Aqui não há assinaturas verdadeiras para manter em dia.
-    from modules.maria_portuguesa import assinaturas as assinaturas_mp
-    assinaturas_mp.sincronizacao_ativa = False
-
+    # Pagamentos: sem MP_STRIPE_SECRET_KEY no .env, a Stripe é simulada — ativar os
+    # recebimentos fica feito na hora, pagar volta logo como pago e libertar não
+    # transfere nada. Serve para trabalhar os ecrãs, não a Stripe.
     if not pagamentos_mp.MP_STRIPE_SECRET_KEY:
-        def _assinatura_simulada(sessao_id: str):
-            return pagamentos_mp.Assinatura(
-                id=f"sub_{sessao_id}", cliente="cus_simulado", estado="active",
-                gid=sessao_id.removeprefix("cs_simulada_"),
-                ativa=True, valida_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30), cancela_no_fim=False,
-            )
+        class _StripeSimulada:
+            @staticmethod
+            def criar_conta(*, gid, email):
+                return f"acct_simulada_{gid}"
 
-        pagamentos_mp.Pagamentos.definir_gateway(
-            criar=lambda gid, email, cliente, retorno:
-                f"{retorno}?{pagamentos_mp.PARAMETRO_SESSAO}=cs_simulada_{gid}#/domestica",
-            consultar=_assinatura_simulada,
-            portal=lambda cliente, retorno: f"{retorno}#/domestica",
-            cancelar=lambda assinatura_id: None,
-        )
-        print("💳 Pagamento simulado: sem chave da Stripe, o Premium é ativado sem cobrar.")
+            @staticmethod
+            def link_de_ativacao(*, conta, retorno):
+                return f"{retorno}{pagamentos_mp.ROTA_DOMESTICA}"
+
+            @staticmethod
+            def conta_pronta(conta):
+                return True
+
+            @staticmethod
+            def link_do_painel(conta):
+                return "https://docs.stripe.com/connect/express-dashboard"
+
+            @staticmethod
+            def criar_checkout(*, acordo, valor_centimos, nome, descricao, email, retorno):
+                sessao = f"cs_simulada_{acordo}"
+                return sessao, f"{retorno}?{pagamentos_mp.PARAMETRO_SESSAO}={sessao}{pagamentos_mp.ROTA_FAMILIA}"
+
+            @staticmethod
+            def consultar_checkout(sessao):
+                return pagamentos_mp.PagamentoCheckout(
+                    sessao=sessao, acordo=sessao.removeprefix("cs_simulada_"), pago=True,
+                    pagamento_id=f"pi_{sessao}", cobranca_id=f"ch_{sessao}",
+                )
+
+            @staticmethod
+            def transferir(*, conta, valor_centimos, acordo, cobranca):
+                return f"tr_simulada_{acordo}"
+
+        pagamentos_mp.Pagamentos.definir_gateway(_StripeSimulada)
+        print("💳 Pagamentos simulados: sem chave da Stripe, nada é cobrado nem transferido.")
 
     if pasta_landing:
         app.mount("/", StaticFiles(directory=pasta_landing, html=True), name="landing")

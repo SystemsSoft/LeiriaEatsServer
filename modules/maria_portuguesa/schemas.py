@@ -1,11 +1,12 @@
 # Arquivo: modules/maria_portuguesa/schemas.py
 import re
+from datetime import date
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 from modules.maria_portuguesa import catalogo
-from modules.maria_portuguesa.models import MpDomesticaDB, premium_ativo
+from modules.maria_portuguesa.models import MpDomesticaDB
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _TELEMOVEL_RE = re.compile(r"^\+?[0-9 ]{9,20}$")
@@ -121,13 +122,55 @@ class FamiliaUpdate(BaseModel):
 
 
 class RetornoRequest(BaseModel):
-    # Página onde a doméstica está, para a Stripe a devolver ao mesmo sítio.
+    # Página onde a pessoa está, para a Stripe a devolver ao mesmo sítio.
     retorno: Optional[str] = Field(default=None, max_length=500)
 
 
-class ConfirmarPremiumRequest(BaseModel):
+class ConfirmarPagamentoRequest(BaseModel):
     # Id da sessão de pagamento da Stripe (cs_...), tal como voltou no endereço.
     sessao: str = Field(min_length=8, max_length=255)
+
+
+# Limites de um acordo: abaixo do mínimo as taxas da Stripe comem o pagamento; o
+# máximo trava enganos (um zero a mais) e limita o que fica retido de uma vez.
+VALOR_MINIMO_CENTIMOS = 500
+VALOR_MAXIMO_CENTIMOS = 500_000
+
+
+class AcordoRequest(BaseModel):
+    """Proposta de uma família a uma doméstica."""
+    domestica: str = Field(min_length=1, max_length=32)
+    descricao: str = Field(max_length=1000)
+    data_servico: date
+    valor_centimos: int = Field(ge=VALOR_MINIMO_CENTIMOS, le=VALOR_MAXIMO_CENTIMOS)
+    # Telemóvel ou outro contacto para a doméstica combinar os pormenores. Opcional:
+    # sem ele, a conta da família não é mostrada a ninguém.
+    contacto: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("contacto")
+    @classmethod
+    def _contacto(cls, v: Optional[str]) -> Optional[str]:
+        return _limpar(v)
+
+    @field_validator("descricao")
+    @classmethod
+    def _descricao(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 5:
+            raise ValueError("Descreva o serviço combinado.")
+        return v
+
+
+class ProblemaRequest(BaseModel):
+    motivo: str = Field(max_length=1000)
+
+    @field_validator("motivo")
+    @classmethod
+    def _motivo(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 5:
+            raise ValueError("Conte-nos o que aconteceu.")
+        return v
 
 
 class PerfilUpdate(BaseModel):
@@ -249,8 +292,8 @@ def perfil_publico(d: MpDomesticaDB) -> dict:
         "tem_referencias": bool(d.tem_referencias),
         "telemovel": d.telemovel.strip() if tem_contacto(d) else None,
         "contacto_disponivel": tem_contacto(d),
-        # Assinatura Premium ativa: o perfil sobe nas pesquisas e leva o selo.
-        "destaque": premium_ativo(d),
+        # Pode ser contratada (e paga) pela plataforma.
+        "aceita_pagamentos": bool(d.recebimentos_ativos),
     }
 
 
@@ -278,10 +321,8 @@ def perfil_privado(d: MpDomesticaDB) -> dict:
         "mostrar_contacto": bool(d.mostrar_contacto),
         "publicado": bool(d.publicado),
         "em_falta": campos_em_falta(d),
-        "premium_ate": d.premium_ate.isoformat() + "Z" if premium_ativo(d) else None,
-        "premium_renova": bool(d.premium_renova) and premium_ativo(d),
-        # A Stripe não conseguiu cobrar e está a tentar de novo: o destaque acaba no
-        # fim do período pago se o cartão não for atualizado.
-        "premium_em_atraso": premium_ativo(d) and d.premium_estado == "past_due",
+        # Conta de recebimentos na Stripe: por_ativar (nunca começou), pendente (começou
+        # mas a Stripe ainda não confirmou tudo) ou ativa.
+        "recebimentos": "ativa" if d.recebimentos_ativos else ("pendente" if d.stripe_conta_id else "por_ativar"),
     })
     return dados

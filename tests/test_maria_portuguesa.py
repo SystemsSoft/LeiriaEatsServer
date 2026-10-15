@@ -15,7 +15,6 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test-key-nao-usada")
@@ -37,8 +36,9 @@ from modules.maria_portuguesa.database import Base, get_db
 from modules.maria_portuguesa.firebase_auth import ContaFirebase, TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz, configuracao_live
 from modules.maria_portuguesa import pagamentos as pagamentos_mp
-from modules.maria_portuguesa.models import MpDomesticaDB, MpFamiliaDB, MpFavoritoDB, MpSessaoDB
-from modules.maria_portuguesa.pagamentos import Assinatura, ErroPagamento, Pagamentos
+from modules.maria_portuguesa import acordos as acordos_mp
+from modules.maria_portuguesa.models import MpAcordoDB, MpDomesticaDB, MpFamiliaDB, MpFavoritoDB, MpSessaoDB
+from modules.maria_portuguesa.pagamentos import ErroPagamento, PagamentoCheckout, Pagamentos
 from modules.maria_portuguesa.routes import get_fabrica_db
 from modules.maria_portuguesa.search_service import BuscaService
 from modules.maria_portuguesa.security import gerar_hash_senha, verificar_senha
@@ -103,23 +103,24 @@ def _publicar(cliente: TestClient, email: str, nome: str, **perfil) -> str:
 
 def teste_banco_cria_tabelas_e_e_idempotente():
     from sqlalchemy import inspect
-    tabelas = ["domesticas", "familias", "favoritos", "sessoes", "sessoes_familias"]
+    tabelas = ["acordos", "domesticas", "familias", "favoritos", "sessoes", "sessoes_familias"]
     assert banco_mp.criar_banco_e_tabelas() == tabelas
     assert banco_mp.criar_banco_e_tabelas() == tabelas   # segunda vez não falha
 
     colunas = {c["name"] for c in inspect(banco_mp.engine).get_columns("domesticas")}
     assert {"gid", "email", "senha_hash", "firebase_uid", "servicos", "embedding", "publicado",
-            "premium_ate", "premium_renova", "stripe_cliente_id", "stripe_assinatura_id"} <= colunas
+            "stripe_conta_id", "recebimentos_ativos"} <= colunas
+    assert not {"premium_ate", "stripe_assinatura_id"} & colunas   # o Premium já não existe
     print("OK  - banco: cria as tabelas do módulo, e pode correr várias vezes")
 
 
 def teste_banco_acrescenta_colunas_novas_a_tabela_antiga():
     from sqlalchemy import inspect, text
     banco_mp.criar_banco_e_tabelas()
-    novas = {"firebase_uid", "premium_ate", "premium_renova", "stripe_cliente_id", "stripe_assinatura_id"}
-    # Simula uma instalação anterior ao Firebase e ao Premium: a tabela existe sem estas colunas.
+    novas = {"firebase_uid", "stripe_conta_id", "recebimentos_ativos"}
+    # Simula uma instalação anterior ao Firebase e aos pagamentos: a tabela existe sem estas colunas.
     with banco_mp.engine.begin() as ligacao:
-        for indice in ("ix_domesticas_firebase_uid", "ix_domesticas_stripe_assinatura_id"):
+        for indice in ("ix_domesticas_firebase_uid", "ix_domesticas_stripe_conta_id"):
             ligacao.execute(text(f"DROP INDEX {indice}"))
         for coluna in novas:
             ligacao.execute(text(f"ALTER TABLE domesticas DROP COLUMN {coluna}"))
@@ -136,7 +137,8 @@ def teste_banco_acrescenta_colunas_novas_a_tabela_antiga():
 
 def teste_banco_e_separado_do_leiria_eats():
     from core.database import Base as BaseLeiriaEats
-    assert set(Base.metadata.tables) == {"domesticas", "familias", "favoritos", "sessoes", "sessoes_familias"}
+    assert set(Base.metadata.tables) == {"acordos", "domesticas", "familias", "favoritos", "sessoes",
+                                         "sessoes_familias"}
     assert not set(Base.metadata.tables) & set(BaseLeiriaEats.metadata.tables)
     print("OK  - banco: as tabelas do módulo não se misturam com as do Leiria Eats")
 
@@ -324,420 +326,9 @@ def teste_contacto_so_aparece_se_registado_e_autorizado():
     print("OK  - contacto: aparece de graça, só se estiver registado e autorizado")
 
 
-class _StripeFalsa:
-    """Faz de Stripe: abre sessões de pagamento e deixa o teste dá-las como pagas."""
-
-    def __init__(self):
-        self.sessoes: dict[str, Optional[Assinatura]] = {}
-        self.pedidos: list[dict] = []
-
-    def criar(self, *, gid: str, email: str, cliente, retorno: str) -> str:
-        sessao_id = f"cs_test_{len(self.sessoes) + 1:04d}"
-        self.sessoes[sessao_id] = None
-        self.pedidos.append({"gid": gid, "email": email, "cliente": cliente, "retorno": retorno})
-        return f"https://checkout.stripe.test/{sessao_id}"
-
-    def consultar(self, sessao_id: str) -> Optional[Assinatura]:
-        if sessao_id not in self.sessoes:
-            raise ErroPagamento("sessão desconhecida")
-        return self.sessoes[sessao_id]
-
-    def pagar(self, sessao_id: str, gid: str, dias: int = 30) -> None:
-        self.sessoes[sessao_id] = Assinatura(
-            id="sub_1", cliente="cus_1", estado="active", gid=gid, ativa=True,
-            valida_ate=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=dias), cancela_no_fim=False,
-        )
-
-    @staticmethod
-    def portal(*, cliente: str, retorno: str) -> str:
-        return f"https://billing.stripe.test/{cliente}"
-
-
 def _entrar(cliente: TestClient, email: str) -> dict:
     r = cliente.post("/maria-portuguesa/domesticas/login", json={"email": email, "senha": "segredo-de-teste"})
     return {"Authorization": f"Bearer {r.json()['token']}"}
-
-
-def teste_premium_assinatura_ativa_o_destaque():
-    cliente, Sessao = _novo_cliente()
-    rascunho = _registar(cliente, "bia@exemplo.pt", "Bia")
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    ana = _entrar(cliente, "ana@exemplo.pt")
-    checkout, confirmar, gerir = (f"/maria-portuguesa/domesticas/eu/premium/{acao}"
-                                  for acao in ("checkout", "confirmar", "gerir"))
-    stripe_falsa = _StripeFalsa()
-    Pagamentos.definir_gateway(stripe_falsa.criar, stripe_falsa.consultar, stripe_falsa.portal)
-    try:
-        assert cliente.get("/maria-portuguesa/catalogo").json()["preco_premium_centimos"] == 390
-        assert cliente.post(checkout, json={}).status_code == 401
-        # Um rascunho ninguém o vê: não se vende destaque para ele.
-        assert cliente.post(checkout, json={"retorno": "http://localhost:8092/"}, headers=rascunho).status_code == 409
-        # Ainda sem assinatura não há nada para gerir.
-        assert cliente.post(gerir, json={"retorno": "http://localhost:8092/"}, headers=ana).status_code == 409
-
-        r = cliente.post(checkout, json={"retorno": "http://localhost:8092/?x=1#/domestica"}, headers=ana)
-        assert r.status_code == 200, r.text
-        assert stripe_falsa.pedidos == [{"gid": gid, "email": "ana@exemplo.pt", "cliente": None,
-                                         "retorno": "http://localhost:8092/"}]
-        sessao_id = r.json()["url"].rsplit("/", 1)[-1]
-
-        # Voltar sem ter pago, ou com uma sessão de outra pessoa, não ativa nada.
-        assert cliente.post(confirmar, json={"sessao": sessao_id}, headers=ana).status_code == 404
-        stripe_falsa.pagar(sessao_id, gid="outro-gid")
-        assert cliente.post(confirmar, json={"sessao": sessao_id}, headers=ana).status_code == 404
-        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"] is False
-
-        stripe_falsa.pagar(sessao_id, gid=gid)
-        r = cliente.post(confirmar, json={"sessao": sessao_id}, headers=ana)
-        assert r.status_code == 200, r.text
-        assert r.json()["premium_ate"] and r.json()["premium_renova"] is True and r.json()["destaque"] is True
-        publico = cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
-        assert publico["destaque"] is True
-        assert "premium_ate" not in publico and "stripe_cliente_id" not in publico
-
-        # Já ativo: não abre outro pagamento; e passa a poder gerir a assinatura.
-        assert cliente.post(checkout, json={}, headers=ana).status_code == 409
-        r = cliente.post(gerir, json={"retorno": "http://localhost:8092/"}, headers=ana)
-        assert r.json()["url"] == "https://billing.stripe.test/cus_1"
-        with Sessao() as db:
-            ana_db = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one()
-            assert (ana_db.stripe_cliente_id, ana_db.stripe_assinatura_id) == ("cus_1", "sub_1")
-            # Período pago terminado (sem renovação registada): o destaque desaparece sozinho.
-            ana_db.premium_ate = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
-            db.commit()
-        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"] is False
-        # Quem volta a assinar reutiliza o cliente da Stripe.
-        cliente.post(checkout, json={"retorno": "http://localhost:8092/"}, headers=ana)
-        assert stripe_falsa.pedidos[-1]["cliente"] == "cus_1"
-    finally:
-        Pagamentos.definir_gateway()
-    print("OK  - Premium: assinatura paga ativa o destaque, que acaba com o período pago")
-
-
-def teste_premium_cliente_de_outro_modo_da_stripe():
-    """Um cliente guardado em modo de teste não existe com a chave live: o pagamento
-    começa um cliente novo em vez de falhar, e o portal esquece o cliente antigo."""
-    import stripe
-    from modules.maria_portuguesa.pagamentos import ClienteInexistente
-    cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    ana = _entrar(cliente, "ana@exemplo.pt")
-    with Sessao() as db:
-        db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).update({"stripe_cliente_id": "cus_teste"})
-        db.commit()
-
-    pedidos = []
-
-    def _criar_sessao(**params):
-        pedidos.append(params)
-        if params.get("customer") == "cus_teste":
-            raise stripe.InvalidRequestError("No such customer: 'cus_teste'", param="customer", code="resource_missing")
-        return {"url": "https://checkout.stripe.test/cs_novo"}
-
-    original_chave, original_criar = pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.checkout.Session.create
-    pagamentos_mp.MP_STRIPE_SECRET_KEY = "rk_test_falsa"
-    stripe.checkout.Session.create = lambda **params: _criar_sessao(**{k: v for k, v in params.items() if k != "api_key"})
-    try:
-        r = cliente.post("/maria-portuguesa/domesticas/eu/premium/checkout",
-                         json={"retorno": "http://localhost:8092/"}, headers=ana)
-        assert r.status_code == 200 and r.json()["url"].endswith("cs_novo"), r.text
-        assert [p.get("customer") for p in pedidos] == ["cus_teste", None]
-        assert pedidos[1]["customer_email"] == "ana@exemplo.pt"
-
-        def _portal(*, cliente, retorno):
-            raise ClienteInexistente("No such customer")
-        Pagamentos.definir_gateway(portal=_portal)
-        r = cliente.post("/maria-portuguesa/domesticas/eu/premium/gerir",
-                         json={"retorno": "http://localhost:8092/"}, headers=ana)
-        assert r.status_code == 409, r.text
-        with Sessao() as db:
-            assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one().stripe_cliente_id is None
-    finally:
-        pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.checkout.Session.create = original_chave, original_criar
-        Pagamentos.definir_gateway()
-    print("OK  - Premium: cliente da Stripe de outro modo (teste/live) não bloqueia o pagamento")
-
-
-def teste_apagar_conta_com_assinatura_que_ja_nao_existe_na_stripe():
-    """Uma assinatura criada em modo de teste não existe com a chave live: não pode
-    cobrar nada, por isso não impede a doméstica de apagar a conta."""
-    import stripe
-    cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    with Sessao() as db:
-        db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).update({"stripe_assinatura_id": "sub_de_teste"})
-        db.commit()
-    canceladas = []
-
-    def _obter(assinatura_id, **_):
-        raise stripe.InvalidRequestError(f"No such subscription: '{assinatura_id}'", param="id", code="resource_missing")
-
-    original = (pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.Subscription.retrieve, stripe.Subscription.cancel)
-    pagamentos_mp.MP_STRIPE_SECRET_KEY = "rk_test_falsa"
-    stripe.Subscription.retrieve = _obter
-    stripe.Subscription.cancel = lambda assinatura_id, **_: canceladas.append(assinatura_id)
-    try:
-        assert cliente.delete("/maria-portuguesa/domesticas/eu",
-                              headers=_entrar(cliente, "ana@exemplo.pt")).status_code == 204
-        assert canceladas == []
-        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").status_code == 404
-    finally:
-        pagamentos_mp.MP_STRIPE_SECRET_KEY, stripe.Subscription.retrieve, stripe.Subscription.cancel = original
-    print("OK  - apagar conta não fica bloqueado por uma assinatura que não existe nesta conta Stripe")
-
-
-def teste_premium_sem_stripe_configurada():
-    cliente, _ = _novo_cliente()
-    _publicar(cliente, "ana@exemplo.pt", "Ana")
-    ana = _entrar(cliente, "ana@exemplo.pt")
-    chave = pagamentos_mp.MP_STRIPE_SECRET_KEY
-    pagamentos_mp.MP_STRIPE_SECRET_KEY = ""
-    try:
-        r = cliente.post("/maria-portuguesa/domesticas/eu/premium/checkout",
-                         json={"retorno": "http://localhost:8092/"}, headers=ana)
-        assert r.status_code == 503 and "pagamentos" in r.json()["detail"].lower()
-    finally:
-        pagamentos_mp.MP_STRIPE_SECRET_KEY = chave
-    print("OK  - Premium: sem chave da Stripe responde com aviso legível, sem cobrar")
-
-
-class _AssinaturasNaStripe:
-    """O estado «atual» de cada assinatura, tal como a Stripe o devolveria."""
-
-    def __init__(self):
-        self.estado: dict[str, Assinatura] = {}
-        self.consultas: list[str] = []
-        self.canceladas: list[str] = []
-        self.em_baixo = False
-
-    def definir(self, gid: str, estado: str = "active", dias: int = 30, cancela_no_fim: bool = False,
-                assinatura_id: str = "sub_9") -> None:
-        valida_ate = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=dias)
-        self.estado[assinatura_id] = Assinatura(
-            id=assinatura_id, cliente="cus_9", estado=estado, gid=gid,
-            ativa=estado in ("active", "trialing", "past_due") and dias > 0,
-            valida_ate=valida_ate, cancela_no_fim=cancela_no_fim,
-        )
-
-    def consultar(self, assinatura_id: str) -> Assinatura:
-        self.consultas.append(assinatura_id)
-        if self.em_baixo:
-            raise ErroPagamento("Stripe em baixo")
-        return self.estado[assinatura_id]
-
-    def cancelar(self, assinatura_id: str) -> None:
-        if self.em_baixo:
-            raise ErroPagamento("Stripe em baixo")
-        self.canceladas.append(assinatura_id)
-
-
-def _aviso_da_stripe(cliente: TestClient, tipo: str, gid: str, assinar_com: str = "whsec_teste", **campos):
-    """Envia ao webhook um aviso da Stripe assinado como ela o assinaria."""
-    import hmac
-    import time
-    corpo = json.dumps({"id": "evt_1", "object": "event", "type": tipo, "data": {"object": {
-        "object": "subscription", "id": "sub_9", "customer": "cus_9", "status": "active",
-        "cancel_at_period_end": False, "metadata": {"modulo": "maria_portuguesa", "gid": gid},
-        "items": {"object": "list", "data": [{"current_period_end": int(time.time()) + 30 * 86400}]},
-        **campos,
-    }}})
-    carimbo = int(time.time())
-    assinatura_http = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
-    return cliente.post("/maria-portuguesa/stripe/webhook", content=corpo,
-                        headers={"Stripe-Signature": f"t={carimbo},v1={assinatura_http}"})
-
-
-def _com_stripe_falsa():
-    stripe = _AssinaturasNaStripe()
-    segredo = pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET
-    pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = "whsec_teste"
-    Pagamentos.definir_gateway(assinatura=stripe.consultar, cancelar=stripe.cancelar)
-
-    def _repor():
-        pagamentos_mp.MP_STRIPE_WEBHOOK_SECRET = segredo
-        Pagamentos.definir_gateway()
-    return stripe, _repor
-
-
-def teste_webhook_mantem_o_premium_em_dia():
-    cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    stripe, repor = _com_stripe_falsa()
-
-    def destaque() -> bool:
-        return cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"]
-
-    try:
-        assert _aviso_da_stripe(cliente, "customer.subscription.created", gid, assinar_com="whsec_outro").status_code == 400
-        # Assinaturas de outros produtos da mesma conta Stripe são ignoradas (nem se pergunta por elas).
-        assert _aviso_da_stripe(cliente, "customer.subscription.created", gid, id="sub_x",
-                                metadata={"pedido": "leiria-eats"}).status_code == 200
-        assert _aviso_da_stripe(cliente, "invoice.paid", gid).status_code == 200
-        assert stripe.consultas == [] and destaque() is False
-
-        stripe.definir(gid)
-        assert _aviso_da_stripe(cliente, "customer.subscription.created", gid).status_code == 200
-        assert destaque() is True and stripe.consultas == ["sub_9"]
-        with Sessao() as db:
-            ana = db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one()
-            assert (ana.stripe_assinatura_id, ana.premium_estado, ana.premium_renova) == ("sub_9", "active", True)
-
-        # Cancelou: o destaque fica até ao fim do período, mas já não renova.
-        stripe.definir(gid, cancela_no_fim=True)
-        _aviso_da_stripe(cliente, "customer.subscription.updated", gid)
-        assert destaque() is True
-        with Sessao() as db:
-            assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).one().premium_renova is False
-
-        # Fim da assinatura: o destaque acaba logo.
-        stripe.definir(gid, estado="canceled", dias=0)
-        _aviso_da_stripe(cliente, "customer.subscription.deleted", gid, status="canceled")
-        assert destaque() is False
-
-        # Sem conseguir perguntar à Stripe, o aviso é recusado para ela o voltar a entregar.
-        stripe.em_baixo = True
-        assert _aviso_da_stripe(cliente, "customer.subscription.updated", gid).status_code == 502
-    finally:
-        repor()
-    print("OK  - Premium: os avisos da Stripe ativam, mantêm e terminam o destaque")
-
-
-def teste_webhook_fora_de_ordem_nao_reativa_o_destaque():
-    cliente, _ = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    stripe, repor = _com_stripe_falsa()
-    try:
-        stripe.definir(gid)
-        _aviso_da_stripe(cliente, "customer.subscription.created", gid)
-        stripe.definir(gid, estado="canceled", dias=0)
-        _aviso_da_stripe(cliente, "customer.subscription.deleted", gid, status="canceled")
-        # Um "updated" antigo, ainda com a assinatura ativa no corpo, chega depois do fim.
-        assert _aviso_da_stripe(cliente, "customer.subscription.updated", gid, status="active").status_code == 200
-        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"] is False
-    finally:
-        repor()
-    print("OK  - Premium: um aviso antigo que chega fora de ordem não reativa o destaque")
-
-
-def teste_pagamento_em_atraso_e_avisado_a_domestica():
-    cliente, _ = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    ana = _entrar(cliente, "ana@exemplo.pt")
-    stripe, repor = _com_stripe_falsa()
-    try:
-        stripe.definir(gid)
-        _aviso_da_stripe(cliente, "customer.subscription.created", gid)
-        assert cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()["premium_em_atraso"] is False
-
-        # A renovação falhou e a Stripe está a tentar de novo: o destaque continua até ao
-        # fim do período pago, mas a doméstica é avisada para atualizar o cartão.
-        stripe.definir(gid, estado="past_due", dias=3)
-        _aviso_da_stripe(cliente, "customer.subscription.updated", gid, status="past_due")
-        eu = cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()
-        assert eu["premium_em_atraso"] is True and eu["destaque"] is True
-        assert "premium_em_atraso" not in cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()
-
-        # A Stripe desistiu de cobrar: acaba o destaque e o aviso.
-        stripe.definir(gid, estado="unpaid", dias=3)
-        _aviso_da_stripe(cliente, "customer.subscription.updated", gid, status="unpaid")
-        eu = cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()
-        assert eu["destaque"] is False and eu["premium_em_atraso"] is False
-    finally:
-        repor()
-    print("OK  - Premium: pagamento em atraso aparece à doméstica; se a Stripe desistir, acaba o destaque")
-
-
-def teste_apagar_conta_cancela_a_assinatura():
-    cliente, Sessao = _novo_cliente()
-    gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    sem_premium = _publicar(cliente, "bia@exemplo.pt", "Bia")
-    stripe, repor = _com_stripe_falsa()
-    try:
-        stripe.definir(gid)
-        _aviso_da_stripe(cliente, "customer.subscription.created", gid)
-
-        # Com a Stripe em baixo a conta não é apagada: a assinatura continuaria a cobrar.
-        stripe.em_baixo = True
-        r = cliente.delete("/maria-portuguesa/domesticas/eu", headers=_entrar(cliente, "ana@exemplo.pt"))
-        assert r.status_code == 503 and "Premium" in r.json()["detail"]
-        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").status_code == 200
-
-        stripe.em_baixo = False
-        assert cliente.delete("/maria-portuguesa/domesticas/eu",
-                              headers=_entrar(cliente, "ana@exemplo.pt")).status_code == 204
-        assert stripe.canceladas == ["sub_9"]
-        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").status_code == 404
-
-        # Quem nunca assinou apaga a conta sem passar pela Stripe.
-        assert cliente.delete("/maria-portuguesa/domesticas/eu",
-                              headers=_entrar(cliente, "bia@exemplo.pt")).status_code == 204
-        assert stripe.canceladas == ["sub_9"]
-        with Sessao() as db:
-            assert db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == sem_premium).first() is None
-    finally:
-        repor()
-    print("OK  - apagar conta cancela antes a assinatura Premium, e não apaga se não conseguir")
-
-
-def teste_sincronizacao_diaria_corrige_avisos_perdidos():
-    from modules.maria_portuguesa.assinaturas import sincronizar_assinaturas
-    cliente, Sessao = _novo_cliente()
-    renovou = _publicar(cliente, "ana@exemplo.pt", "Ana")
-    cancelou = _publicar(cliente, "bia@exemplo.pt", "Bia")
-    terminada = _publicar(cliente, "carla@exemplo.pt", "Carla")
-    _publicar(cliente, "dina@exemplo.pt", "Dina")                     # nunca assinou
-    stripe, repor = _com_stripe_falsa()
-    ontem = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
-    try:
-        with Sessao() as db:
-            for gid, assinatura_id, estado, ate in ((renovou, "sub_a", "active", ontem),
-                                                    (cancelou, "sub_b", "active", ontem + timedelta(days=20)),
-                                                    (terminada, "sub_c", "canceled", None)):
-                db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == gid).update({
-                    "stripe_assinatura_id": assinatura_id, "premium_estado": estado, "premium_ate": ate})
-            db.commit()
-        # Na Stripe: a Ana renovou (o aviso perdeu-se), a Bia cancelou entretanto.
-        stripe.definir(renovou, assinatura_id="sub_a")
-        stripe.definir(cancelou, estado="canceled", dias=0, assinatura_id="sub_b")
-
-        with Sessao() as db:
-            assert sincronizar_assinaturas(db) == {"verificadas": 2, "alteradas": 2, "falhadas": 0}
-        assert sorted(stripe.consultas) == ["sub_a", "sub_b"]          # a terminada não é consultada
-        destaques = {gid: cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["destaque"]
-                     for gid in (renovou, cancelou)}
-        assert destaques == {renovou: True, cancelou: False}
-
-        # Com a Stripe em baixo nada se perde: fica para o dia seguinte.
-        stripe.em_baixo = True
-        with Sessao() as db:
-            assert sincronizar_assinaturas(db)["falhadas"] == 1
-        assert cliente.get(f"/maria-portuguesa/domesticas/{renovou}").json()["destaque"] is True
-    finally:
-        repor()
-    print("OK  - Premium: a sincronização diária corrige renovações e cancelamentos que não chegaram")
-
-
-def teste_sincronizacao_arranca_uma_so_vez():
-    from modules.maria_portuguesa import assinaturas
-    arranques = []
-
-    async def _falsa(fabrica_db):
-        arranques.append(fabrica_db)
-        await asyncio.sleep(3600)
-
-    original = assinaturas.sincronizar_todos_os_dias
-    assinaturas.sincronizar_todos_os_dias = _falsa
-    try:
-        app = FastAPI()
-        app.include_router(maria_portuguesa.router)
-        # O FastAPI corre o arranque do router duas vezes; a tarefa só pode existir uma.
-        with TestClient(app):
-            pass
-        assert len(arranques) == 1
-    finally:
-        assinaturas.sincronizar_todos_os_dias = original
-        assinaturas._tarefa = None
-    print("OK  - Premium: a sincronização diária arranca uma só vez por processo")
 
 
 def _entrar_familia(cliente: TestClient, uid: str, email: str, **registo) -> dict:
@@ -849,6 +440,368 @@ def teste_apagar_conta():
     print("OK  - apagar conta remove perfil e sessões")
 
 
+# ── Marketplace: recebimentos, acordos e pagamentos ──────────────────────────
+
+class _StripeFalsa:
+    """Faz de Stripe Connect: contas, páginas de pagamento e transferências em memória."""
+
+    def __init__(self):
+        self.contas: dict[str, bool] = {}          # conta → pronta para receber
+        self.sessoes: dict[str, list] = {}         # sessão → [acordo, pago]
+        self.transferencias: list[dict] = []
+        self.em_baixo = False
+
+    def _verificar(self):
+        if self.em_baixo:
+            raise ErroPagamento("Não foi possível falar com o serviço de pagamentos.")
+
+    def criar_conta(self, *, gid: str, email: str) -> str:
+        self._verificar()
+        conta = f"acct_{len(self.contas) + 1}"
+        self.contas[conta] = False
+        return conta
+
+    def link_de_ativacao(self, *, conta: str, retorno: str) -> str:
+        return f"https://connect.stripe.test/{conta}?volta={retorno}"
+
+    def conta_pronta(self, conta: str) -> bool:
+        self._verificar()
+        return self.contas[conta]
+
+    def link_do_painel(self, conta: str) -> str:
+        return f"https://painel.stripe.test/{conta}"
+
+    def criar_checkout(self, *, acordo, valor_centimos, nome, descricao, email, retorno):
+        self._verificar()
+        sessao = f"cs_test_{len(self.sessoes) + 1:04d}"
+        self.sessoes[sessao] = [acordo, False]
+        return sessao, f"https://checkout.stripe.test/{sessao}"
+
+    def consultar_checkout(self, sessao: str) -> PagamentoCheckout:
+        if sessao not in self.sessoes:
+            raise ErroPagamento("sessão desconhecida")
+        acordo, pago = self.sessoes[sessao]
+        return PagamentoCheckout(sessao=sessao, acordo=acordo, pago=pago,
+                                 pagamento_id=f"pi_{sessao}" if pago else None,
+                                 cobranca_id=f"ch_{sessao}" if pago else None)
+
+    def transferir(self, *, conta, valor_centimos, acordo, cobranca) -> str:
+        self._verificar()
+        self.transferencias.append({"conta": conta, "valor": valor_centimos, "acordo": acordo, "cobranca": cobranca})
+        return f"tr_{len(self.transferencias)}"
+
+
+def _com_stripe_falsa() -> _StripeFalsa:
+    stripe = _StripeFalsa()
+    Pagamentos.definir_gateway(stripe)
+    return stripe
+
+
+_ACORDOS_FAMILIA = "/maria-portuguesa/familias/eu/acordos"
+# Página para onde a Stripe devolve a pessoa (desenvolvimento local: sempre aceite).
+_RETORNO = {"retorno": "http://localhost:8092/"}
+
+
+def _domestica_que_recebe(cliente: TestClient, stripe: _StripeFalsa, email: str, nome: str) -> tuple[str, dict]:
+    """Doméstica publicada e com os recebimentos ativos na Stripe."""
+    gid = _publicar(cliente, email, nome)
+    cabecalhos = _entrar(cliente, email)
+    r = cliente.post("/maria-portuguesa/domesticas/eu/recebimentos/ativar", json=_RETORNO, headers=cabecalhos)
+    assert r.status_code == 200, r.text
+    stripe.contas[max(stripe.contas)] = True
+    assert cliente.get("/maria-portuguesa/domesticas/eu", headers=cabecalhos).json()["recebimentos"] == "ativa"
+    return gid, cabecalhos
+
+
+def _propor(cliente: TestClient, familia: dict, domestica: str, dias: int = 3, valor: int = 4000, **extra):
+    return cliente.post(_ACORDOS_FAMILIA, headers=familia, json={
+        "domestica": domestica, "descricao": "Limpeza geral da casa, 4 horas.",
+        "data_servico": (datetime.now(timezone.utc).date() + timedelta(days=dias)).isoformat(),
+        "valor_centimos": valor, **extra,
+    })
+
+
+def _acordo_pago(cliente: TestClient, stripe: _StripeFalsa, familia: dict, domestica_gid: str,
+                 domestica: dict, dias: int = 3) -> str:
+    acordo = _propor(cliente, familia, domestica_gid, dias=dias).json()["gid"]
+    assert cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{acordo}/aceitar", headers=domestica).status_code == 200
+    r = cliente.post(f"{_ACORDOS_FAMILIA}/{acordo}/pagar", headers=familia, json={"retorno": "http://localhost:8092/"})
+    sessao = r.json()["url"].rsplit("/", 1)[-1]
+    stripe.sessoes[sessao][1] = True
+    assert cliente.post(f"{_ACORDOS_FAMILIA}/confirmar", headers=familia, json={"sessao": sessao}).status_code == 200
+    return acordo
+
+
+def teste_recebimentos_da_domestica():
+    cliente, Sessao = _novo_cliente()
+    stripe = _com_stripe_falsa()
+    try:
+        gid = _publicar(cliente, "ana@exemplo.pt", "Ana")
+        ana = _entrar(cliente, "ana@exemplo.pt")
+        ativar = "/maria-portuguesa/domesticas/eu/recebimentos/ativar"
+        painel = "/maria-portuguesa/domesticas/eu/recebimentos/painel"
+        eu = cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()
+        assert eu["recebimentos"] == "por_ativar" and "premium_ate" not in eu and "destaque" not in eu
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["aceita_pagamentos"] is False
+        assert cliente.post(painel, headers=ana).status_code == 409
+
+        r = cliente.post(ativar, json={"retorno": "http://localhost:8092/?x=1"}, headers=ana)
+        assert r.status_code == 200 and r.json()["url"] == "https://connect.stripe.test/acct_1?volta=http://localhost:8092/"
+        # Voltar a meio da ativação continua na mesma conta.
+        cliente.post(ativar, json=_RETORNO, headers=ana)
+        assert list(stripe.contas) == ["acct_1"]
+        assert cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()["recebimentos"] == "pendente"
+
+        # A Stripe confirmou a identidade e o IBAN: ao abrir o editor fica ativa.
+        stripe.contas["acct_1"] = True
+        assert cliente.get("/maria-portuguesa/domesticas/eu", headers=ana).json()["recebimentos"] == "ativa"
+        assert cliente.get(f"/maria-portuguesa/domesticas/{gid}").json()["aceita_pagamentos"] is True
+        assert cliente.post(painel, headers=ana).json()["url"] == "https://painel.stripe.test/acct_1"
+        assert cliente.get("/maria-portuguesa/catalogo").json()["comissao_percent"] == 10
+    finally:
+        Pagamentos.definir_gateway()
+    print("OK  - recebimentos: a doméstica ativa a conta Connect e passa a aceitar pagamentos")
+
+
+def teste_acordo_proposto_aceite_pago_e_libertado():
+    cliente, Sessao = _novo_cliente()
+    stripe = _com_stripe_falsa()
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        ana_gid, ana = _domestica_que_recebe(cliente, stripe, "ana@exemplo.pt", "Ana")
+        bia_gid = _publicar(cliente, "bia@exemplo.pt", "Bia")      # sem recebimentos
+        bia = _entrar(cliente, "bia@exemplo.pt")
+        familia = _entrar_familia(cliente, "f1", "maria@exemplo.pt", nome="Maria", consentimento_rgpd=True)
+
+        # Propostas que não podem ser.
+        assert _propor(cliente, {}, ana_gid).status_code == 401
+        assert _propor(cliente, familia, bia_gid).status_code == 409
+        assert _propor(cliente, familia, ana_gid, dias=-1).status_code == 422
+        assert _propor(cliente, familia, ana_gid, valor=100).status_code == 422
+
+        r = _propor(cliente, familia, ana_gid, valor=4000, contacto=" 913 000 000 ")
+        assert r.status_code == 201, r.text
+        acordo = r.json()
+        assert acordo["estado"] == "proposto" and acordo["domestica"]["nome"] == "Ana"
+        gid = acordo["gid"]
+        rota = f"{_ACORDOS_FAMILIA}/{gid}"
+
+        # A doméstica vê quanto recebe, e da família só o que ela partilhou.
+        vistos = cliente.get("/maria-portuguesa/domesticas/eu/acordos", headers=ana).json()
+        assert vistos[0]["comissao_centimos"] == 400 and vistos[0]["a_receber_centimos"] == 3600
+        assert vistos[0]["familia"] == {"nome": "Maria", "distrito": None, "concelho": None, "contacto": "913 000 000"}
+        assert "email" not in json.dumps(vistos)
+
+        # Ainda por aceitar: não se paga; outra doméstica não responde por ela.
+        assert cliente.post(f"{rota}/pagar", headers=familia, json=_RETORNO).status_code == 409
+        assert cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{gid}/aceitar", headers=bia).status_code == 404
+        r = cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{gid}/aceitar", headers=ana)
+        assert r.json()["estado"] == "aceite"
+        assert cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{gid}/recusar", headers=ana).status_code == 409
+
+        r = cliente.post(f"{rota}/pagar", headers=familia, json={"retorno": "http://localhost:8092/#/familia"})
+        assert r.status_code == 200, r.text
+        sessao = r.json()["url"].rsplit("/", 1)[-1]
+        confirmar = f"{_ACORDOS_FAMILIA}/confirmar"
+        assert cliente.post(confirmar, headers=familia, json={"sessao": sessao}).status_code == 402
+        assert cliente.post(f"{rota}/libertar", headers=familia).status_code == 409   # nada retido
+
+        stripe.sessoes[sessao][1] = True
+        r = cliente.post(confirmar, headers=familia, json={"sessao": sessao})
+        assert r.status_code == 200 and r.json()["estado"] == "pago"
+        data = datetime.now(timezone.utc).date() + timedelta(days=3)
+        assert r.json()["libertar_em"] == (data + timedelta(days=7)).isoformat()
+        # Já pago: nem outra página de pagamento, nem cancelar, nem apagar a conta.
+        assert cliente.post(f"{rota}/pagar", headers=familia, json=_RETORNO).status_code == 409
+        assert cliente.post(f"{rota}/cancelar", headers=familia).status_code == 409
+        assert cliente.delete("/maria-portuguesa/familias/eu", headers=familia).status_code == 409
+        assert cliente.delete("/maria-portuguesa/domesticas/eu", headers=ana).status_code == 409
+        # Outra família não mexe neste acordo.
+        outra = _entrar_familia(cliente, "f2", "rui@exemplo.pt", nome="Rui", consentimento_rgpd=True)
+        assert cliente.post(f"{_ACORDOS_FAMILIA}/{gid}/libertar", headers=outra).status_code == 404
+        assert cliente.post(confirmar, headers=outra, json={"sessao": sessao}).status_code == 404
+
+        r = cliente.post(f"{rota}/libertar", headers=familia)
+        assert r.status_code == 200 and r.json()["estado"] == "libertado"
+        assert r.json()["libertado_automaticamente"] is False
+        assert stripe.transferencias == [{"conta": "acct_1", "valor": 3600, "acordo": gid, "cobranca": f"ch_{sessao}"}]
+        assert cliente.post(f"{rota}/libertar", headers=familia).status_code == 409   # não transfere duas vezes
+
+        # Libertado, as contas já se podem apagar; o registo do acordo fica.
+        assert cliente.delete("/maria-portuguesa/familias/eu", headers=familia).status_code == 204
+        assert cliente.delete("/maria-portuguesa/domesticas/eu", headers=ana).status_code == 204
+        with Sessao() as db:
+            registo = db.query(MpAcordoDB).filter(MpAcordoDB.gid == gid).one()
+            assert (registo.estado, registo.familia_id, registo.domestica_id) == ("libertado", None, None)
+    finally:
+        Pagamentos.definir_gateway()
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - acordo: proposto, aceite, pago (retido) e libertado para a doméstica, menos a comissão")
+
+
+def teste_acordo_recusado_cancelado_e_pagina_ja_paga():
+    cliente, Sessao = _novo_cliente()
+    stripe = _com_stripe_falsa()
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        ana_gid, ana = _domestica_que_recebe(cliente, stripe, "ana@exemplo.pt", "Ana")
+        familia = _entrar_familia(cliente, "f1", "maria@exemplo.pt", nome="Maria", consentimento_rgpd=True)
+
+        recusado = _propor(cliente, familia, ana_gid).json()["gid"]
+        r = cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{recusado}/recusar", headers=ana)
+        assert r.json()["estado"] == "recusado"
+        assert cliente.post(f"{_ACORDOS_FAMILIA}/{recusado}/pagar", headers=familia, json=_RETORNO).status_code == 409
+
+        cancelado = _propor(cliente, familia, ana_gid).json()["gid"]
+        assert cliente.post(f"{_ACORDOS_FAMILIA}/{cancelado}/cancelar", headers=familia).json()["estado"] == "cancelado"
+        assert cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{cancelado}/aceitar", headers=ana).status_code == 409
+
+        # Pagou numa página e voltou a carregar em «Pagar» antes de o aviso chegar: não cobra outra vez.
+        aceite = _propor(cliente, familia, ana_gid).json()["gid"]
+        cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{aceite}/aceitar", headers=ana)
+        r = cliente.post(f"{_ACORDOS_FAMILIA}/{aceite}/pagar", headers=familia, json=_RETORNO)
+        stripe.sessoes[r.json()["url"].rsplit("/", 1)[-1]][1] = True
+        r = cliente.post(f"{_ACORDOS_FAMILIA}/{aceite}/pagar", headers=familia, json=_RETORNO)
+        assert r.status_code == 409 and "já está pago" in r.json()["detail"]
+        assert len(stripe.sessoes) == 1
+
+        estados = {a["gid"]: a["estado"] for a in cliente.get(_ACORDOS_FAMILIA, headers=familia).json()}
+        assert estados == {recusado: "recusado", cancelado: "cancelado", aceite: "pago"}
+    finally:
+        Pagamentos.definir_gateway()
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - acordo: recusar e cancelar fecham-no; uma página já paga não volta a cobrar")
+
+
+def teste_libertacao_automatica_e_problema_reportado():
+    cliente, Sessao = _novo_cliente()
+    stripe = _com_stripe_falsa()
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        ana_gid, ana = _domestica_que_recebe(cliente, stripe, "ana@exemplo.pt", "Ana")
+        familia = _entrar_familia(cliente, "f1", "maria@exemplo.pt", nome="Maria", consentimento_rgpd=True)
+        calado = _acordo_pago(cliente, stripe, familia, ana_gid, ana, dias=1)
+        problema = _acordo_pago(cliente, stripe, familia, ana_gid, ana, dias=1)
+        mais_tarde = _acordo_pago(cliente, stripe, familia, ana_gid, ana, dias=20)
+
+        assert cliente.post(f"{_ACORDOS_FAMILIA}/{problema}/problema", headers=familia,
+                            json={"motivo": "ok"}).status_code == 422
+        r = cliente.post(f"{_ACORDOS_FAMILIA}/{problema}/problema", headers=familia,
+                         json={"motivo": "A profissional não apareceu."})
+        assert r.json()["estado"] == "em_disputa" and r.json()["libertar_em"] is None
+
+        hoje = datetime.now(timezone.utc).date()
+        with Sessao() as db:
+            # Antes do prazo nada segue; depois, só o que não tem problema reportado.
+            assert acordos_mp.libertar_vencidos(db, hoje + timedelta(days=7))["vencidos"] == 0
+            resultado = acordos_mp.libertar_vencidos(db, hoje + timedelta(days=8))
+            assert resultado == {"vencidos": 1, "libertados": 1, "falhados": 0}
+            # Com a Stripe em baixo falha sem perder nada, e tenta de novo depois.
+            stripe.em_baixo = True
+            assert acordos_mp.libertar_vencidos(db, hoje + timedelta(days=40))["falhados"] == 1
+            stripe.em_baixo = False
+            assert acordos_mp.libertar_vencidos(db, hoje + timedelta(days=40))["libertados"] == 1
+
+        estados = {a["gid"]: a for a in cliente.get(_ACORDOS_FAMILIA, headers=familia).json()}
+        assert estados[calado]["estado"] == "libertado" and estados[calado]["libertado_automaticamente"] is True
+        assert estados[problema]["estado"] == "em_disputa"
+        assert estados[mais_tarde]["estado"] == "libertado"
+        # Em disputa, a família ainda pode decidir libertar.
+        assert cliente.post(f"{_ACORDOS_FAMILIA}/{problema}/libertar", headers=familia).json()["estado"] == "libertado"
+        assert [t["acordo"] for t in stripe.transferencias] == [calado, mais_tarde, problema]
+    finally:
+        Pagamentos.definir_gateway()
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - libertação: segue sozinha passado o prazo, exceto se a família reportou um problema")
+
+
+def _aviso_da_stripe(cliente: TestClient, tipo: str, objeto: dict, assinar_com: str = "whsec_teste"):
+    """Envia ao webhook um aviso da Stripe assinado como ela o assinaria."""
+    import hmac
+    import time
+    corpo = json.dumps({"id": "evt_1", "object": "event", "type": tipo, "data": {"object": objeto}})
+    carimbo = int(time.time())
+    assinatura_http = hmac.new(assinar_com.encode(), f"{carimbo}.{corpo}".encode(), hashlib.sha256).hexdigest()
+    return cliente.post("/maria-portuguesa/stripe/webhook", content=corpo,
+                        headers={"Stripe-Signature": f"t={carimbo},v1={assinatura_http}"})
+
+
+def teste_webhook_regista_pagamento_reembolso_e_conta():
+    cliente, Sessao = _novo_cliente()
+    stripe = _com_stripe_falsa()
+    segredos = pagamentos_mp.MP_STRIPE_WEBHOOK_SECRETS
+    # Dois endpoints na Stripe (conta e Connect), cada um com o seu segredo.
+    pagamentos_mp.MP_STRIPE_WEBHOOK_SECRETS = ["whsec_conta", "whsec_connect"]
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        ana_gid, ana = _domestica_que_recebe(cliente, stripe, "ana@exemplo.pt", "Ana")
+        familia = _entrar_familia(cliente, "f1", "maria@exemplo.pt", nome="Maria", consentimento_rgpd=True)
+        gid = _propor(cliente, familia, ana_gid).json()["gid"]
+        cliente.post(f"/maria-portuguesa/domesticas/eu/acordos/{gid}/aceitar", headers=ana)
+        sessao = cliente.post(f"{_ACORDOS_FAMILIA}/{gid}/pagar", headers=familia,
+                              json=_RETORNO).json()["url"].rsplit("/", 1)[-1]
+        checkout = {"object": "checkout.session", "id": sessao, "mode": "payment",
+                    "metadata": {"modulo": "maria_portuguesa", "acordo": gid}}
+
+        assert _aviso_da_stripe(cliente, "checkout.session.completed", checkout, "whsec_falso").status_code == 400
+        # A família fechou a página antes de voltar: o aviso regista o pagamento.
+        stripe.sessoes[sessao][1] = True
+        assert _aviso_da_stripe(cliente, "checkout.session.completed", checkout, "whsec_conta").status_code == 200
+        # De outro produto da mesma conta Stripe: ignorado.
+        alheio = {**checkout, "id": "cs_outro", "metadata": {"modulo": "leiria_eats"}}
+        assert _aviso_da_stripe(cliente, "checkout.session.completed", alheio, "whsec_conta").status_code == 200
+        assert cliente.get(_ACORDOS_FAMILIA, headers=familia).json()[0]["estado"] == "pago"
+
+        # Reembolso parcial fica para a equipa; total desfaz o acordo.
+        cobranca = {"object": "charge", "id": "ch_1", "payment_intent": f"pi_{sessao}", "amount": 4000}
+        _aviso_da_stripe(cliente, "charge.refunded", {**cobranca, "amount_refunded": 1000}, "whsec_conta")
+        assert cliente.get(_ACORDOS_FAMILIA, headers=familia).json()[0]["estado"] == "pago"
+        _aviso_da_stripe(cliente, "charge.refunded", {**cobranca, "amount_refunded": 4000}, "whsec_conta")
+        assert cliente.get(_ACORDOS_FAMILIA, headers=familia).json()[0]["estado"] == "reembolsado"
+
+        # A Stripe restringiu a conta (aviso do endpoint Connect): deixa de aceitar pagamentos.
+        stripe.contas["acct_1"] = False
+        assert _aviso_da_stripe(cliente, "account.updated", {"object": "account", "id": "acct_1"},
+                                "whsec_connect").status_code == 200
+        assert cliente.get(f"/maria-portuguesa/domesticas/{ana_gid}").json()["aceita_pagamentos"] is False
+    finally:
+        pagamentos_mp.MP_STRIPE_WEBHOOK_SECRETS = segredos
+        Pagamentos.definir_gateway()
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - webhook: regista pagamentos, reembolsos e mudanças na conta da doméstica")
+
+
+def teste_pagamentos_sem_stripe_configurada():
+    cliente, _ = _novo_cliente()
+    chave = pagamentos_mp.MP_STRIPE_SECRET_KEY
+    pagamentos_mp.MP_STRIPE_SECRET_KEY = ""
+    try:
+        _publicar(cliente, "ana@exemplo.pt", "Ana")
+        ana = _entrar(cliente, "ana@exemplo.pt")
+        r = cliente.post("/maria-portuguesa/domesticas/eu/recebimentos/ativar", json=_RETORNO, headers=ana)
+        assert r.status_code == 503 and "não estão disponíveis" in r.json()["detail"]
+    finally:
+        pagamentos_mp.MP_STRIPE_SECRET_KEY = chave
+    print("OK  - pagamentos: sem chave da Stripe responde com aviso legível")
+
+
+def teste_apagar_conta_fecha_propostas_pendentes():
+    cliente, Sessao = _novo_cliente()
+    stripe = _com_stripe_falsa()
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        ana_gid, ana = _domestica_que_recebe(cliente, stripe, "ana@exemplo.pt", "Ana")
+        familia = _entrar_familia(cliente, "f1", "maria@exemplo.pt", nome="Maria", consentimento_rgpd=True)
+        gid = _propor(cliente, familia, ana_gid).json()["gid"]
+        assert cliente.delete("/maria-portuguesa/domesticas/eu", headers=ana).status_code == 204
+        acordo = cliente.get(_ACORDOS_FAMILIA, headers=familia).json()[0]
+        assert (acordo["gid"], acordo["estado"], acordo["domestica"]) == (gid, "cancelado", None)
+    finally:
+        Pagamentos.definir_gateway()
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - apagar a conta cancela as propostas que ainda não foram pagas")
+
+
 # ── Busca ────────────────────────────────────────────────────────────────────
 
 def _busca(cliente: TestClient, **pedido) -> dict:
@@ -870,32 +823,6 @@ def teste_busca_ordena_por_afinidade():
     assert resultado["resultados"][0]["gid"] == idosos
     assert resultado["resultados"][0]["afinidade"] > resultado["resultados"][1]["afinidade"]
     print("OK  - busca ordena por afinidade semântica e ignora rascunhos")
-
-
-def teste_busca_poe_premium_em_destaque():
-    cliente, Sessao = _novo_cliente()
-    sobre = "Faço limpeza de casas com cuidado e pontualidade."
-    antiga = _publicar(cliente, "a@exemplo.pt", "Ana", sobre=sobre)
-    premium = _publicar(cliente, "b@exemplo.pt", "Beatriz", sobre=sobre)
-    recente = _publicar(cliente, "c@exemplo.pt", "Carla", sobre=sobre)
-    idosos = _publicar(cliente, "d@exemplo.pt", "Dora", servicos=["idosos"],
-                       sobre="Acompanho idosos com paciência, ajudo nas refeições e na medicação.")
-    with Sessao() as db:
-        db.query(MpDomesticaDB).filter(MpDomesticaDB.gid == premium).update(
-            {"premium_ate": datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=30)})
-        db.commit()
-
-    # Pedidos iguais para todas: quem está em destaque aparece primeiro.
-    resultado = _busca(cliente, consulta="limpeza de casas com cuidado")
-    assert resultado["resultados"][0]["gid"] == premium and resultado["resultados"][0]["destaque"] is True
-    assert {p["gid"] for p in resultado["resultados"][1:3]} == {antiga, recente}
-    # Mas o destaque não passa à frente de quem corresponde muito melhor ao pedido.
-    resultado = _busca(cliente, consulta="alguém com paciência para acompanhar idosos")
-    assert resultado["resultados"][0]["gid"] == idosos
-    # Sem pedido, a listagem também começa pelos perfis em destaque.
-    listagem = cliente.get("/maria-portuguesa/domesticas").json()["resultados"]
-    assert listagem[0]["gid"] == premium
-    print("OK  - busca: perfis Premium sobem, sem passar à frente de quem corresponde muito melhor")
 
 
 def teste_busca_por_localidade():

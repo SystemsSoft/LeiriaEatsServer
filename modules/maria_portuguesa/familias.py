@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from modules.maria_portuguesa import acordos
 from modules.maria_portuguesa.database import get_db
 from modules.maria_portuguesa.firebase_auth import TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.models import MpDomesticaDB, MpFamiliaDB, MpFavoritoDB
@@ -96,7 +97,14 @@ def atualizar_a_minha_conta(
 @router.delete("/eu", status_code=204)
 def apagar_a_minha_conta(familia: MpFamiliaDB = Depends(familia_atual), db: Session = Depends(get_db)):
     """Direito ao apagamento (RGPD, art.º 17.º): remove a conta, as sessões e as
-    domésticas guardadas."""
+    domésticas guardadas. Os acordos ficam (são registos de pagamentos), sem ligação
+    à conta. Com dinheiro retido não se apaga: falta decidir se segue ou volta."""
+    if acordos.tem_pagamentos_retidos(familia.acordos):
+        raise HTTPException(
+            status_code=409,
+            detail="Tem pagamentos retidos por libertar. Liberte-os (ou reporte um problema) antes de apagar a conta.",
+        )
+    acordos.fechar_pendentes(familia.acordos)
     print(f"🗑️ [MariaPortuguesa] Conta de família apagada a pedido da própria: {familia.gid}")
     db.delete(familia)
     db.commit()
