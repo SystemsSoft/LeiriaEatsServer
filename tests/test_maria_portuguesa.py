@@ -37,7 +37,7 @@ from modules.maria_portuguesa.database import Base, get_db
 from modules.maria_portuguesa.firebase_auth import ContaFirebase, TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz, configuracao_live
 from modules.maria_portuguesa import pagamentos as pagamentos_mp
-from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
+from modules.maria_portuguesa.models import MpDomesticaDB, MpFamiliaDB, MpFavoritoDB, MpSessaoDB
 from modules.maria_portuguesa.pagamentos import Assinatura, ErroPagamento, Pagamentos
 from modules.maria_portuguesa.routes import get_fabrica_db
 from modules.maria_portuguesa.search_service import BuscaService
@@ -103,7 +103,7 @@ def _publicar(cliente: TestClient, email: str, nome: str, **perfil) -> str:
 
 def teste_banco_cria_tabelas_e_e_idempotente():
     from sqlalchemy import inspect
-    tabelas = ["domesticas", "sessoes"]
+    tabelas = ["domesticas", "familias", "favoritos", "sessoes", "sessoes_familias"]
     assert banco_mp.criar_banco_e_tabelas() == tabelas
     assert banco_mp.criar_banco_e_tabelas() == tabelas   # segunda vez não falha
 
@@ -136,7 +136,7 @@ def teste_banco_acrescenta_colunas_novas_a_tabela_antiga():
 
 def teste_banco_e_separado_do_leiria_eats():
     from core.database import Base as BaseLeiriaEats
-    assert set(Base.metadata.tables) == {"domesticas", "sessoes"}
+    assert set(Base.metadata.tables) == {"domesticas", "familias", "favoritos", "sessoes", "sessoes_familias"}
     assert not set(Base.metadata.tables) & set(BaseLeiriaEats.metadata.tables)
     print("OK  - banco: as tabelas do módulo não se misturam com as do Leiria Eats")
 
@@ -738,6 +738,104 @@ def teste_sincronizacao_arranca_uma_so_vez():
         assinaturas.sincronizar_todos_os_dias = original
         assinaturas._tarefa = None
     print("OK  - Premium: a sincronização diária arranca uma só vez por processo")
+
+
+def _entrar_familia(cliente: TestClient, uid: str, email: str, **registo) -> dict:
+    """Entra como família com um token de teste («uid|email|verificado»)."""
+    r = cliente.post("/maria-portuguesa/familias/firebase", json={"id_token": f"{uid}|{email}|sim", **registo})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def teste_familia_cria_conta_e_entra():
+    cliente, Sessao = _novo_cliente()
+    rota = "/maria-portuguesa/familias/firebase"
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        assert cliente.post(rota, json={"id_token": "lixo"}).status_code == 401
+        # Sem conta: entrar não cria nada; criar exige nome e consentimento.
+        assert cliente.post(rota, json={"id_token": "f1|maria@exemplo.pt|nao"}).status_code == 404
+        assert cliente.post(rota, json={"id_token": "f1|maria@exemplo.pt|nao", "nome": "Maria"}).status_code == 422
+
+        r = cliente.post(rota, json={"id_token": "f1|maria@exemplo.pt|nao", "nome": " Maria Silva ",
+                                     "consentimento_rgpd": True})
+        assert r.status_code == 200 and r.json()["criada"] is True
+        assert r.json()["familia"] == {"gid": r.json()["familia"]["gid"], "nome": "Maria Silva",
+                                       "email": "maria@exemplo.pt", "distrito": None, "concelho": None,
+                                       "favoritos": []}
+        familia = {"Authorization": f"Bearer {r.json()['token']}"}
+
+        # Voltar a entrar dá a mesma conta.
+        r2 = cliente.post(rota, json={"id_token": "f1|maria@exemplo.pt|nao"})
+        assert r2.json()["criada"] is False and r2.json()["familia"]["gid"] == r.json()["familia"]["gid"]
+
+        # Nome e zona; o distrito aceita-se sem acentos e fica como no catálogo.
+        r = cliente.put("/maria-portuguesa/familias/eu", headers=familia,
+                        json={"distrito": "setubal", "concelho": " Almada "})
+        assert r.status_code == 200 and (r.json()["distrito"], r.json()["concelho"]) == ("Setúbal", "Almada")
+        assert cliente.put("/maria-portuguesa/familias/eu", headers=familia, json={"distrito": "Atlântida"}).status_code == 422
+        assert cliente.put("/maria-portuguesa/familias/eu", headers=familia, json={"nome": ""}).status_code == 422
+
+        # A sessão da família não abre o perfil de doméstica, e vice-versa.
+        assert cliente.get("/maria-portuguesa/domesticas/eu", headers=familia).status_code == 401
+        domestica = _registar(cliente, "ana@exemplo.pt")
+        assert cliente.get("/maria-portuguesa/familias/eu", headers=domestica).status_code == 401
+
+        assert cliente.post("/maria-portuguesa/familias/sair", headers=familia).status_code == 204
+        assert cliente.get("/maria-portuguesa/familias/eu", headers=familia).status_code == 401
+    finally:
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - família: cria conta com nome e consentimento, entra e escolhe a zona")
+
+
+def teste_familia_guarda_domesticas():
+    cliente, Sessao = _novo_cliente()
+    ana = _publicar(cliente, "ana@exemplo.pt", "Ana", telemovel="912 345 678", mostrar_contacto=True)
+    bia = _publicar(cliente, "bia@exemplo.pt", "Bia")
+    rascunho = _registar(cliente, "carla@exemplo.pt", "Carla")
+    carla = cliente.get("/maria-portuguesa/domesticas/eu", headers=rascunho).json()["gid"]
+    VerificadorFirebase.definir_verificador(_verificador_falso)
+    try:
+        familia = _entrar_familia(cliente, "f1", "maria@exemplo.pt", nome="Maria", consentimento_rgpd=True)
+        favoritos = "/maria-portuguesa/familias/eu/favoritos/{}"
+
+        assert cliente.put(favoritos.format(ana), headers=familia).status_code == 204
+        assert cliente.put(favoritos.format(ana), headers=familia).status_code == 204      # guardar duas vezes
+        assert cliente.put(favoritos.format(bia), headers=familia).status_code == 204
+        assert cliente.put(favoritos.format(carla), headers=familia).status_code == 404    # rascunho
+        assert cliente.put(favoritos.format("nao-existe"), headers=familia).status_code == 404
+        assert cliente.put(favoritos.format(ana)).status_code == 401
+
+        guardadas = cliente.get("/maria-portuguesa/familias/eu", headers=familia).json()["favoritos"]
+        assert sorted(p["nome"] for p in guardadas) == ["Ana", "Bia"]
+        ana_guardada = next(p for p in guardadas if p["nome"] == "Ana")
+        assert ana_guardada["telemovel"] == "912 345 678" and "email" not in ana_guardada
+
+        # Outra família tem a sua própria lista.
+        outra = _entrar_familia(cliente, "f2", "joao@exemplo.pt", nome="João", consentimento_rgpd=True)
+        assert cliente.get("/maria-portuguesa/familias/eu", headers=outra).json()["favoritos"] == []
+
+        assert cliente.delete(favoritos.format(bia), headers=familia).status_code == 204
+        assert cliente.delete(favoritos.format(bia), headers=familia).status_code == 204   # já não estava
+        assert [p["nome"] for p in cliente.get("/maria-portuguesa/familias/eu", headers=familia).json()["favoritos"]] == ["Ana"]
+
+        # A doméstica despublica o perfil: deixa de aparecer na lista; apaga a conta: sai de vez.
+        ana_cab = _entrar(cliente, "ana@exemplo.pt")
+        cliente.put("/maria-portuguesa/domesticas/eu", json={"publicado": False}, headers=ana_cab)
+        assert cliente.get("/maria-portuguesa/familias/eu", headers=familia).json()["favoritos"] == []
+        assert cliente.delete("/maria-portuguesa/domesticas/eu", headers=ana_cab).status_code == 204
+        with Sessao() as db:
+            assert db.query(MpFavoritoDB).count() == 0
+
+        # Apagar a conta da família apaga tudo o que era dela.
+        cliente.put(favoritos.format(bia), headers=familia)
+        assert cliente.delete("/maria-portuguesa/familias/eu", headers=familia).status_code == 204
+        assert cliente.get("/maria-portuguesa/familias/eu", headers=familia).status_code == 401
+        with Sessao() as db:
+            assert db.query(MpFavoritoDB).count() == 0 and db.query(MpFamiliaDB).count() == 1   # só a do João
+    finally:
+        VerificadorFirebase.definir_verificador(None)
+    print("OK  - família: guarda e retira domésticas; só vê as publicadas; apagar a conta apaga a lista")
 
 
 def teste_apagar_conta():

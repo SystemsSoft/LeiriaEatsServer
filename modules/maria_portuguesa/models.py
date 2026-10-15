@@ -2,7 +2,9 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text
+from sqlalchemy import (
+    Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from modules.maria_portuguesa.database import Base
@@ -89,6 +91,8 @@ class MpDomesticaDB(Base):
     atualizado_em = Column(DateTime, nullable=False, default=_agora, onupdate=_agora)
 
     sessoes = relationship("MpSessaoDB", back_populates="domestica", cascade="all, delete-orphan")
+    # Quando a conta é apagada, sai também das listas de quem a tinha guardado.
+    guardada_por = relationship("MpFavoritoDB", back_populates="domestica", cascade="all, delete-orphan")
 
 
 class MpSessaoDB(Base):
@@ -105,3 +109,54 @@ class MpSessaoDB(Base):
     domestica = relationship("MpDomesticaDB", back_populates="sessoes")
 
 
+
+
+class MpFamiliaDB(Base):
+    """Conta de quem procura uma doméstica. Só guarda o essencial: quem é, onde
+    procura e as domésticas que guardou. Entra pelo Firebase Authentication."""
+    __tablename__ = "familias"
+
+    id = Column(Integer, primary_key=True)
+    gid = Column(String(32), unique=True, nullable=False, index=True, default=_novo_gid)
+    firebase_uid = Column(String(128), unique=True, nullable=False, index=True)
+    email = Column(String(255), nullable=False)
+    consentimento_rgpd_em = Column(DateTime, nullable=False, default=_agora)
+
+    nome = Column(String(120), nullable=False)
+    # Zona onde procura ajuda: serve de ponto de partida às pesquisas.
+    distrito = Column(String(60), nullable=True)
+    concelho = Column(String(80), nullable=True)
+
+    criado_em = Column(DateTime, nullable=False, default=_agora)
+    atualizado_em = Column(DateTime, nullable=False, default=_agora, onupdate=_agora)
+
+    sessoes = relationship("MpSessaoFamiliaDB", back_populates="familia", cascade="all, delete-orphan")
+    favoritos = relationship("MpFavoritoDB", back_populates="familia", cascade="all, delete-orphan",
+                             order_by="MpFavoritoDB.criado_em.desc()")
+
+
+class MpSessaoFamiliaDB(Base):
+    """Sessão de login de uma família. Como nas das domésticas, só o SHA-256 do token."""
+    __tablename__ = "sessoes_familias"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    familia_id = Column(Integer, ForeignKey("familias.id", ondelete="CASCADE"), nullable=False, index=True)
+    expira_em = Column(DateTime, nullable=False)
+    criado_em = Column(DateTime, nullable=False, default=_agora)
+
+    familia = relationship("MpFamiliaDB", back_populates="sessoes")
+
+
+class MpFavoritoDB(Base):
+    """Doméstica que uma família guardou para contactar mais tarde."""
+    __tablename__ = "favoritos"
+    __table_args__ = (UniqueConstraint("familia_id", "domestica_id", name="uq_favoritos_familia_domestica"),)
+
+    id = Column(Integer, primary_key=True)
+    familia_id = Column(Integer, ForeignKey("familias.id", ondelete="CASCADE"), nullable=False, index=True)
+    domestica_id = Column(Integer, ForeignKey("domesticas.id", ondelete="CASCADE"), nullable=False, index=True)
+    criado_em = Column(DateTime, nullable=False, default=_agora)
+
+    familia = relationship("MpFamiliaDB", back_populates="favoritos")
+    domestica = relationship("MpDomesticaDB", back_populates="guardada_por")

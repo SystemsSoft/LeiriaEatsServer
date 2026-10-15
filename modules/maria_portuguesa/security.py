@@ -13,7 +13,7 @@ from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from modules.maria_portuguesa.database import get_db
-from modules.maria_portuguesa.models import MpDomesticaDB, MpSessaoDB
+from modules.maria_portuguesa.models import MpDomesticaDB, MpFamiliaDB, MpSessaoDB, MpSessaoFamiliaDB
 
 VALIDADE_SESSAO = timedelta(days=30)
 
@@ -88,3 +88,31 @@ def domestica_atual(
     if sessao is None or sessao.expira_em < _agora():
         raise HTTPException(status_code=401, detail="Sessão expirada. Inicie sessão novamente.")
     return sessao.domestica
+
+
+# ── Famílias ─────────────────────────────────────────────────────────────────
+
+def criar_sessao_familia(db: Session, familia: MpFamiliaDB) -> str:
+    token = secrets.token_urlsafe(32)
+    db.add(MpSessaoFamiliaDB(
+        token_hash=_hash_token(token),
+        familia_id=familia.id,
+        expira_em=_agora() + VALIDADE_SESSAO,
+    ))
+    db.commit()
+    return token
+
+
+def encerrar_sessao_familia(db: Session, token: str) -> None:
+    db.query(MpSessaoFamiliaDB).filter(MpSessaoFamiliaDB.token_hash == _hash_token(token)).delete()
+    db.commit()
+
+
+def familia_atual(
+        token: str = Depends(token_atual),
+        db: Session = Depends(get_db),
+) -> MpFamiliaDB:
+    sessao = db.query(MpSessaoFamiliaDB).filter(MpSessaoFamiliaDB.token_hash == _hash_token(token)).first()
+    if sessao is None or sessao.expira_em < _agora():
+        raise HTTPException(status_code=401, detail="Sessão expirada. Inicie sessão novamente.")
+    return sessao.familia

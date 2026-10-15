@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Requ
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from modules.maria_portuguesa import assinaturas, catalogo
+from modules.maria_portuguesa import assinaturas, catalogo, familias
 from modules.maria_portuguesa.database import SessionLocal, get_db
 from modules.maria_portuguesa.firebase_auth import TokenFirebaseInvalido, VerificadorFirebase
 from modules.maria_portuguesa.live_service import AssistenteVoz
@@ -360,6 +360,10 @@ def procurar(pedido: BuscaRequest, db: Session = Depends(get_db)):
         preco_max=pedido.preco_max,
         limite=pedido.limite,
     )
+
+
+# Conta de quem procura (familias.py), debaixo do mesmo /maria-portuguesa.
+router.include_router(familias.router)
 
 
 @router.websocket("/voz")

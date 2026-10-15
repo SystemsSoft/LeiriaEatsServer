@@ -18,6 +18,17 @@ def _limpar(valor: Optional[str]) -> Optional[str]:
     return valor or None
 
 
+def _distrito_canonico(valor: Optional[str]) -> Optional[str]:
+    """Nome do distrito como está no catálogo; aceita-o escrito com ou sem acentos."""
+    valor = _limpar(valor)
+    if valor is None:
+        return None
+    canonico = catalogo.resolver_distrito(valor)
+    if canonico is None:
+        raise ValueError("Distrito desconhecido.")
+    return canonico
+
+
 def _validar_lista(valores: Optional[list[str]], permitidos, campo: str) -> Optional[list[str]]:
     if valores is None:
         return None
@@ -84,6 +95,31 @@ class EntrarFirebaseRequest(BaseModel):
         return v
 
 
+class FamiliaUpdate(BaseModel):
+    """Atualização parcial da conta da família."""
+    nome: Optional[str] = Field(default=None, max_length=120)
+    distrito: Optional[str] = None
+    concelho: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("nome")
+    @classmethod
+    def _nome(cls, v: Optional[str]) -> Optional[str]:
+        v = _limpar(v)
+        if v is not None and len(v) < 2:
+            raise ValueError("Indique o seu nome.")
+        return v
+
+    @field_validator("distrito")
+    @classmethod
+    def _distrito(cls, v: Optional[str]) -> Optional[str]:
+        return _distrito_canonico(v)
+
+    @field_validator("concelho")
+    @classmethod
+    def _concelho(cls, v: Optional[str]) -> Optional[str]:
+        return _limpar(v)
+
+
 class RetornoRequest(BaseModel):
     # Página onde a doméstica está, para a Stripe a devolver ao mesmo sítio.
     retorno: Optional[str] = Field(default=None, max_length=500)
@@ -131,13 +167,7 @@ class PerfilUpdate(BaseModel):
     @field_validator("distrito")
     @classmethod
     def _distrito(cls, v: Optional[str]) -> Optional[str]:
-        v = _limpar(v)
-        if v is None:
-            return None
-        canonico = catalogo.resolver_distrito(v)
-        if canonico is None:
-            raise ValueError("Distrito desconhecido.")
-        return canonico
+        return _distrito_canonico(v)
 
     @field_validator("servicos")
     @classmethod
