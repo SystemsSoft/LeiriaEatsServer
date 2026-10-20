@@ -51,6 +51,23 @@ class ErroPagamento(Exception):
     """A Stripe recusou a operação; a mensagem pode ser mostrada à pessoa."""
 
 
+class ConnectPorConfigurar(ErroPagamento):
+    """A conta Stripe da plataforma ainda não pode criar contas de domésticas: falta
+    ativar o Connect ou concluir o perfil da plataforma no painel da Stripe. A
+    doméstica não o pode resolver; quem trata é a equipa."""
+
+    def __init__(self):
+        super().__init__(
+            "Os recebimentos pela Maria Portuguesa ainda não estão disponíveis: estamos a concluir "
+            "a configuração dos pagamentos com a Stripe. Tente de novo mais tarde."
+        )
+
+
+# Como a Stripe diz que o Connect da plataforma não está pronto (não há código de
+# erro próprio, só a mensagem).
+_SINAIS_CONNECT_POR_CONFIGURAR = ("platform profile", "signed up for connect")
+
+
 class AvisoInvalido(Exception):
     """Um pedido ao webhook que não vem da Stripe (assinatura HTTP errada)."""
 
@@ -250,6 +267,10 @@ class _GatewayStripe:
             return funcao(*args, api_key=chave, **kwargs)
         except stripe.StripeError as e:
             print(f"⚠️ [MariaPortuguesa] Erro da Stripe: {e}")
+            if any(sinal in str(e).lower() for sinal in _SINAIS_CONNECT_POR_CONFIGURAR):
+                print("⚠️ [MariaPortuguesa] O Connect não está pronto na conta Stripe: conclua o perfil da "
+                      "plataforma em https://dashboard.stripe.com/connect/accounts/overview")
+                raise ConnectPorConfigurar()
             raise ErroPagamento("Não foi possível falar com o serviço de pagamentos. Tente de novo dentro de instantes.")
 
     @classmethod

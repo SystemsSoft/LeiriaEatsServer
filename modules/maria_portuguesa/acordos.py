@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from modules.maria_portuguesa.database import get_db
 from modules.maria_portuguesa.models import EstadoAcordo, MpAcordoDB, MpDomesticaDB, MpFamiliaDB
 from modules.maria_portuguesa.pagamentos import (
-    DIAS_LIBERTACAO, ErroPagamento, PagamentoCheckout, Pagamentos, PagamentosIndisponiveis, comissao,
+    DIAS_LIBERTACAO, ConnectPorConfigurar, ErroPagamento, PagamentoCheckout, Pagamentos, PagamentosIndisponiveis, comissao,
     url_de_retorno,
 )
 from modules.maria_portuguesa.schemas import (
@@ -43,6 +43,9 @@ def erro_de_pagamento(e: Exception) -> HTTPException:
     if isinstance(e, PagamentosIndisponiveis):
         print(f"⚠️ [MariaPortuguesa] Pagamentos por configurar: {e}")
         return HTTPException(status_code=503, detail=_PAGAMENTOS_EM_BAIXO)
+    if isinstance(e, ConnectPorConfigurar):
+        # Não é falha passageira: só passa quando a equipa concluir a configuração.
+        return HTTPException(status_code=503, detail=str(e))
     return HTTPException(status_code=502, detail=str(e))
 
 

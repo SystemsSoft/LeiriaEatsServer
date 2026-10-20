@@ -785,6 +785,37 @@ def teste_pagamentos_sem_stripe_configurada():
     print("OK  - pagamentos: sem chave da Stripe responde com aviso legível")
 
 
+def teste_connect_por_configurar_explica_a_domestica():
+    import stripe
+    cliente, _ = _novo_cliente()
+    chave = pagamentos_mp.MP_STRIPE_SECRET_KEY
+    pagamentos_mp.MP_STRIPE_SECRET_KEY = "sk_test_falsa"
+    recusa = stripe.InvalidRequestError(
+        "You must complete your platform profile to use Connect and create live connected accounts.", None,
+    )
+
+    def _criar_recusado(**_):
+        raise recusa
+
+    original = stripe.Account.create
+    stripe.Account.create = _criar_recusado
+    try:
+        _publicar(cliente, "ana@exemplo.pt", "Ana")
+        ana = _entrar(cliente, "ana@exemplo.pt")
+        r = cliente.post("/maria-portuguesa/domesticas/eu/recebimentos/ativar", json=_RETORNO, headers=ana)
+        assert r.status_code == 503, r.text
+        assert "ainda não estão disponíveis" in r.json()["detail"]
+        assert "platform profile" not in r.json()["detail"]   # nada em inglês nem técnico
+        # Outros erros da Stripe continuam com a mensagem geral.
+        stripe.Account.create = lambda **_: (_ for _ in ()).throw(stripe.APIConnectionError("rede em baixo"))
+        r = cliente.post("/maria-portuguesa/domesticas/eu/recebimentos/ativar", json=_RETORNO, headers=ana)
+        assert r.status_code == 502 and "Não foi possível falar" in r.json()["detail"]
+    finally:
+        stripe.Account.create = original
+        pagamentos_mp.MP_STRIPE_SECRET_KEY = chave
+    print("OK  - Connect por configurar: a doméstica percebe que é a plataforma, não o perfil dela")
+
+
 def teste_apagar_conta_fecha_propostas_pendentes():
     cliente, Sessao = _novo_cliente()
     stripe = _com_stripe_falsa()
