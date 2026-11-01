@@ -190,7 +190,7 @@ def _ponte_com(sessoes, chaves=("k1", "k2", "k3"), idle_timeout=None):
     cliente = SimpleNamespace(aio=SimpleNamespace(live=live))
     original = (ponte.genai, ponte.settings, ponte.IDLE_TIMEOUT_SECONDS)
     ponte.genai = SimpleNamespace(Client=lambda **kw: cliente)
-    ponte.settings = SimpleNamespace(GEMINI_API_KEYS=list(chaves))
+    ponte.settings = SimpleNamespace(GEMINI_API_KEYS_KOMA=list(chaves))
     if idle_timeout is not None:
         ponte.IDLE_TIMEOUT_SECONDS = idle_timeout
     try:
@@ -383,7 +383,7 @@ async def teste_prompt_de_voz_manda_uma_pergunta_por_vez():
     cliente = SimpleNamespace(aio=SimpleNamespace(live=live))
     original = (ponte.genai, ponte.settings)
     ponte.genai = SimpleNamespace(Client=lambda **kw: cliente)
-    ponte.settings = SimpleNamespace(GEMINI_API_KEYS=["k1"])
+    ponte.settings = SimpleNamespace(GEMINI_API_KEYS_KOMA=["k1"])
     try:
         tarefa = await _iniciar(_nova_ponte(), ws)
         await _esperar(lambda: "config" in capturado)

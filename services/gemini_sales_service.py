@@ -168,7 +168,8 @@ class GeminiSalesAgent:
     def ordem_base_das_chaves(n: int) -> List[int]:
         """Ordem de tentativa (índices de settings.GEMINI_API_KEYS, cuja ÚLTIMA é a paga): 1ª gratuita,
         2ª gratuita, PAGA em terceiro, e as demais gratuitas só como reserva no fim. Usada pelo chat de
-        texto e pela ligação de voz (mesma ordem nos dois). Com ≤ 3 chaves fica a ordem natural."""
+        texto e pela ligação de voz (mesma ordem nos dois). Com ≤ 3 chaves fica a ordem natural.
+        Hoje o Koma só recebe a chave paga (settings.GEMINI_API_KEYS_KOMA), então n == 1 → [0]."""
         if n <= 3:
             return list(range(n))
         return [0, 1, n - 1] + list(range(2, n - 1))
@@ -343,10 +344,11 @@ class GeminiSalesAgent:
             return
 
         try:
-            print(f"🤖 [Gemini] Configurando API ({len(settings.GEMINI_API_KEYS)} chaves detectadas)...")
+            # Só a chave paga (settings.GEMINI_API_KEYS_KOMA) — chat, TTS e as chamadas sem stream.
+            print(f"🤖 [Gemini] Configurando API ({len(settings.GEMINI_API_KEYS_KOMA)} chave(s) do Koma)...")
 
             cls._clients = []
-            for key in settings.GEMINI_API_KEYS:
+            for key in settings.GEMINI_API_KEYS_KOMA:
                 client = genai.Client(api_key=key)
                 cls._clients.append(client)
             

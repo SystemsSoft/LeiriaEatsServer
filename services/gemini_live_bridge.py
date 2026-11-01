@@ -12,9 +12,9 @@ arquivo) — não repetir esses testes sem necessidade:
 - A chave PAGA do Koma estava SEM acesso à Live API (erro 1008 "Your project has been
   denied access", testado de 3 formas) — era bloqueio do projeto no Google, não do código:
   em 24/09/2026 o acesso foi liberado e ela passou a funcionar (Live, texto e TTS). Por isso
-  ela é a última da fila de failover: as gratuitas primeiro, a paga como rede de segurança.
-  As 4 chaves GRATUITAS têm acesso confirmado. `settings.GEMINI_API_KEYS` já lista
-  as gratuitas antes da paga, então o failover abaixo já tenta na ordem certa.
+  ela era a última da fila de failover, depois das 4 gratuitas. Desde 01/11/2026 a ligação
+  usa SÓ a paga (`settings.GEMINI_API_KEYS_KOMA`): as gratuitas davam 503/timeout com
+  frequência e cada tentativa atrasava o início da conversa.
 - O modelo "gemini-2.5-flash-native-audio-latest" (o mesmo que a Megan usa) só
   "pensa" em chamar a ferramenta (campo `thought`) mas não emite a function-call de
   verdade neste projeto — carrinho nunca mudava de fato.
@@ -540,9 +540,9 @@ class GeminiLiveBridge:
         self._client_ws = client_ws
         self.found_products = self._montar_pool_produtos()
 
-        chaves = list(settings.GEMINI_API_KEYS)
-        # Mesma ordem do chat de texto: 1ª e 2ª gratuitas, PAGA em terceiro, demais gratuitas no fim
-        # (a paga é sempre a ÚLTIMA de settings.GEMINI_API_KEYS). O índice original vai no log.
+        chaves = list(settings.GEMINI_API_KEYS_KOMA)
+        # Mesmas chaves e ordem do chat de texto (hoje só a paga — ver GEMINI_API_KEYS_KOMA em
+        # core/config.py). O índice original vai no log.
         ordem = GeminiSalesAgent.ordem_base_das_chaves(len(chaves))
         ultimo_erro = None
         try:
