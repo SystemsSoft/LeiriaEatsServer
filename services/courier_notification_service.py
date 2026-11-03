@@ -253,6 +253,39 @@ def _try_offer_route(db, master_order_gid: str, subs: list[SubOrderDB], now: dat
         logger.warning(f"⚠️ send_route_offer falhou para a rota {route.gid}: {exc}")
 
 
+def is_sub_order_cancelled(sub: SubOrderDB | None) -> bool:
+    # Mesma razão de _ACTIVE_STATUSES_LOWER: as várias pontas não escrevem sempre a mesma grafia.
+    return sub is not None and (sub.status or "").lower() == "cancelado"
+
+
+def close_cancelled_routes(db, routes: list[DeliveryRouteDB] | None = None) -> bool:
+    """
+    Rota ativa cujo pedido (ou todos os sub-pedidos dela) foi cancelado passa a CANCELLED.
+    Sem isto o estafeta continuava "ocupado" (_busy_driver_gids_subquery) e a ver uma rota
+    fantasma no app. Corre no worker e em GET /drivers/routes, em vez de em cada um dos
+    caminhos de cancelamento (cliente, restaurante, reconciliação de pagamento).
+    Um cancelamento parcial não fecha a rota: a paragem cancelada só deixa de contar.
+    """
+    if routes is None:
+        routes = db.query(DeliveryRouteDB).filter(DeliveryRouteDB.status.in_(ACTIVE_ROUTE_STATUSES)).all()
+
+    closed_any = False
+    for route in routes:
+        if route.status not in ACTIVE_ROUTE_STATUSES:
+            continue
+        master = route.master_order
+        subs = [stop.sub_order for stop in route.stops]
+        master_cancelled = master is not None and (master.status or "").lower() == "cancelado"
+        if master_cancelled or (subs and all(is_sub_order_cancelled(s) for s in subs)):
+            route.status = "CANCELLED"
+            closed_any = True
+            logger.info(f"🚫 Rota {route.gid} cancelada — pedido cancelado, estafeta libertado.")
+
+    if closed_any:
+        db.commit()
+    return closed_any
+
+
 def _expire_pending_routes(db, now: datetime) -> None:
     offered = db.query(DeliveryRouteDB).filter(DeliveryRouteDB.status == "OFFERED").all()
     expired_any = False
@@ -296,6 +329,7 @@ def _check_and_notify() -> None:
     db = SessionLocal()
     try:
         _expire_pending_routes(db, now)
+        close_cancelled_routes(db)
 
         grouped = _eligible_subs_grouped_by_master(db)
         for master_order_gid, subs in grouped.items():

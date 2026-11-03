@@ -14,7 +14,11 @@ from ulid import ULID
 from core import config
 from core.database import get_db
 from core.sql_models import DriverDB, OrderDB, RestaurantDB, SubOrderDB, DeliveryRouteDB, RouteStopDB
-from services.courier_notification_service import clear_dispatch_state
+from services.courier_notification_service import (
+    clear_dispatch_state,
+    close_cancelled_routes,
+    is_sub_order_cancelled,
+)
 from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
@@ -23,6 +27,7 @@ from schemas.driver import (
     DriverFcmTokenUpdate,
     UpdateDriverProfileRequest,
     DriverProfileResponse,
+    RouteCompleteRequest,
 )
 
 router = APIRouter(prefix="/drivers", tags=["Estafetas"])
@@ -34,11 +39,10 @@ def _hash_password(plain: str) -> str:
 def _verify_password(plain: str, hashed: str) -> bool:
     return _hash_password(plain) == hashed
 
-def _get_driver_or_404(driver_id: int, db: Session) -> DriverDB:
-    driver = db.query(DriverDB).filter(DriverDB.id == driver_id).first()
-    if not driver:
-        raise HTTPException(status_code=404, detail="Estafeta não encontrado.")
-    return driver
+def _get_driver_or_404(driver_id: str, db: Session) -> DriverDB:
+    """`driver_id` é o gid devolvido no login (o app KomaPartner só conhece o gid);
+    o id numérico continua aceite por compatibilidade."""
+    return _get_driver_by_gid_or_404(str(driver_id), db)
 
 def _haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -222,7 +226,7 @@ def update_driver_profile(gid: str, payload: UpdateDriverProfileRequest, db: Ses
 
 
 @router.get("/orders", response_model=List[dict])
-def get_available_orders(driver_id: int, db: Session = Depends(get_db)):
+def get_available_orders(driver_id: str, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
     # Agora buscamos em SubOrderDB, identificando o estafeta pelo gid
     sub_orders = db.query(SubOrderDB).join(OrderDB).filter(
@@ -250,7 +254,7 @@ def get_available_orders(driver_id: int, db: Session = Depends(get_db)):
     return result
 
 @router.post("/{sub_order_id}/accept")
-def accept_order(sub_order_id: int, driver_id: int, db: Session = Depends(get_db)):
+def accept_order(sub_order_id: int, driver_id: str, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
     sub = db.query(SubOrderDB).filter(SubOrderDB.id == sub_order_id, SubOrderDB.driver_gid == driver.gid).first()
     if not sub: raise HTTPException(status_code=404, detail="Sub-pedido não encontrado ou não atribuído.")
@@ -259,7 +263,7 @@ def accept_order(sub_order_id: int, driver_id: int, db: Session = Depends(get_db
     return {"message": "Aceite."}
 
 @router.post("/{sub_order_id}/reject")
-def reject_order(sub_order_id: int, driver_id: int, db: Session = Depends(get_db)):
+def reject_order(sub_order_id: int, driver_id: str, db: Session = Depends(get_db)):
     """
     PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 0.3 — endpoint que não existia: o app do
     estafeta (KomaPartner) chamava POST /drivers/{id}/orders/{id}/reject, que devolvia
@@ -329,8 +333,17 @@ def _get_route_stop_or_404(route: DeliveryRouteDB, sub_order_id: int, db: Sessio
     return stop
 
 
+def _ensure_stop_not_cancelled(stop: RouteStopDB) -> None:
+    if is_sub_order_cancelled(stop.sub_order):
+        raise HTTPException(status_code=409, detail="Este pedido foi cancelado — não precisa de o recolher.")
+
+
+def _normalize_code(code: Optional[str]) -> str:
+    return "".join((code or "").split()).upper()
+
+
 @router.get("/routes", response_model=List[dict])
-def get_driver_routes(driver_id: int, db: Session = Depends(get_db)):
+def get_driver_routes(driver_id: str, db: Session = Depends(get_db)):
     """GET /drivers/routes?driver_id={id} — rotas ativas (OFFERED/ACCEPTED/IN_PROGRESS)
     atribuídas a este estafeta, com as paragens já sequenciadas pelo RouteSequencer."""
     driver = _get_driver_or_404(driver_id, db)
@@ -341,6 +354,8 @@ def get_driver_routes(driver_id: int, db: Session = Depends(get_db)):
         .order_by(DeliveryRouteDB.id.desc())
         .all()
     )
+    if close_cancelled_routes(db, routes):
+        routes = [r for r in routes if r.status != "CANCELLED"]
     result = []
     for route in routes:
         master = route.master_order
@@ -353,8 +368,11 @@ def get_driver_routes(driver_id: int, db: Session = Depends(get_db)):
                 "restaurant_name": sub.restaurant_name if sub else None,
                 "restaurant_latitude": sub.restaurant_latitude if sub else None,
                 "restaurant_longitude": sub.restaurant_longitude if sub else None,
+                "status": sub.status if sub else None,
                 "ready_at_estimated": stop.ready_at_estimated,
-                "ready_at_confirmed": stop.ready_at_confirmed,
+                # stop.ready_at_confirmed é a cópia do momento da oferta; o "Pedido pronto"
+                # carregado depois só fica em sub.ready_at (POST /orders/{id}/ready).
+                "ready_at_confirmed": stop.ready_at_confirmed or (sub.ready_at if sub else None),
                 "arrived_at": stop.arrived_at,
                 "picked_up_at": stop.picked_up_at,
             })
@@ -367,14 +385,15 @@ def get_driver_routes(driver_id: int, db: Session = Depends(get_db)):
             "delivery_longitude": master.delivery_longitude if master else None,
             "delivery_address": master.delivery_address if master else None,
             "customer_name": master.customer_name if master else None,
-            "tracking_code": master.tracking_code if master else None,
+            # tracking_code fica de fora de propósito: é o código que o cliente mostra ao
+            # estafeta para provar a entrega (ver complete_route).
             "stops": stops,
         })
     return result
 
 
 @router.post("/routes/{route_gid}/accept")
-def accept_route(route_gid: str, driver_id: int, db: Session = Depends(get_db)):
+def accept_route(route_gid: str, driver_id: str, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
     route = _get_driver_route_or_404(route_gid, driver, db)
     if route.status != "OFFERED":
@@ -390,7 +409,7 @@ def accept_route(route_gid: str, driver_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/routes/{route_gid}/reject")
-def reject_route(route_gid: str, driver_id: int, db: Session = Depends(get_db)):
+def reject_route(route_gid: str, driver_id: str, db: Session = Depends(get_db)):
     """
     Devolve os sub-pedidos da rota a "Em preparo" para o worker de despacho os
     reconsiderar no próximo ciclo — não há mais estado em memória a limpar aqui (Fase 3,
@@ -410,10 +429,11 @@ def reject_route(route_gid: str, driver_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/routes/{route_gid}/stops/{sub_order_id}/arrived")
-def mark_stop_arrived(route_gid: str, sub_order_id: int, driver_id: int, db: Session = Depends(get_db)):
+def mark_stop_arrived(route_gid: str, sub_order_id: int, driver_id: str, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
     route = _get_driver_route_or_404(route_gid, driver, db)
     stop = _get_route_stop_or_404(route, sub_order_id, db)
+    _ensure_stop_not_cancelled(stop)
 
     stop.arrived_at = datetime.now(timezone.utc)
     db.commit()
@@ -421,10 +441,11 @@ def mark_stop_arrived(route_gid: str, sub_order_id: int, driver_id: int, db: Ses
 
 
 @router.post("/routes/{route_gid}/stops/{sub_order_id}/picked-up")
-def mark_stop_picked_up(route_gid: str, sub_order_id: int, driver_id: int, db: Session = Depends(get_db)):
+def mark_stop_picked_up(route_gid: str, sub_order_id: int, driver_id: str, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
     route = _get_driver_route_or_404(route_gid, driver, db)
     stop = _get_route_stop_or_404(route, sub_order_id, db)
+    _ensure_stop_not_cancelled(stop)
 
     stop.picked_up_at = datetime.now(timezone.utc)
     if stop.sub_order:
@@ -436,19 +457,39 @@ def mark_stop_picked_up(route_gid: str, sub_order_id: int, driver_id: int, db: S
 
 
 @router.post("/routes/{route_gid}/complete")
-def complete_route(route_gid: str, driver_id: int, db: Session = Depends(get_db)):
+def complete_route(
+    route_gid: str,
+    driver_id: str,
+    payload: Optional[RouteCompleteRequest] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Conclui a entrega. Exige o código que o cliente mostra no app Koma (tracking_code do
+    pedido); pedidos antigos sem código gravado não o exigem. Paragens canceladas ficam
+    como estão — não podem passar a "Entregue".
+    """
     driver = _get_driver_or_404(driver_id, db)
     route = _get_driver_route_or_404(route_gid, driver, db)
+    close_cancelled_routes(db, [route])
+    if route.status not in ("ACCEPTED", "IN_PROGRESS"):
+        raise HTTPException(status_code=409, detail=f"Rota não pode ser concluída (status atual: {route.status}).")
+
+    active_stops = [s for s in route.stops if s.sub_order and not is_sub_order_cancelled(s.sub_order)]
+    if any(s.picked_up_at is None for s in active_stops):
+        raise HTTPException(status_code=409, detail="Ainda há recolhas por fazer nesta rota.")
+
+    master = route.master_order
+    expected_code = _normalize_code(master.tracking_code if master else None)
+    if expected_code and _normalize_code(payload.code if payload else None) != expected_code:
+        raise HTTPException(status_code=400, detail="Código de entrega inválido. Peça ao cliente o código do pedido.")
 
     now = datetime.now(timezone.utc)
     route.status = "COMPLETED"
     route.completed_at = now
-    for stop in route.stops:
-        if stop.sub_order:
-            stop.sub_order.status = "Entregue"
+    for stop in active_stops:
+        stop.sub_order.status = "Entregue"
 
-    master = route.master_order
-    if master and all(s.status == "Entregue" for s in master.sub_orders):
+    if master and all(s.status == "Entregue" or is_sub_order_cancelled(s) for s in master.sub_orders):
         master.status = "Entregue"
 
     db.commit()
@@ -456,7 +497,7 @@ def complete_route(route_gid: str, driver_id: int, db: Session = Depends(get_db)
 
 
 @router.post("/location")
-def update_location(driver_id: int, payload: DriverLocationUpdate, db: Session = Depends(get_db)):
+def update_location(driver_id: str, payload: DriverLocationUpdate, db: Session = Depends(get_db)):
     driver = _get_driver_or_404(driver_id, db)
     driver.latitude = payload.latitude
     driver.longitude = payload.longitude
@@ -466,7 +507,7 @@ def update_location(driver_id: int, payload: DriverLocationUpdate, db: Session =
 
 
 @router.post("/{driver_id}/fcm-token")
-def update_fcm_token(driver_id: int, payload: DriverFcmTokenUpdate, db: Session = Depends(get_db)):
+def update_fcm_token(driver_id: str, payload: DriverFcmTokenUpdate, db: Session = Depends(get_db)):
     """
     PLANO_RECOLHA_MULTI_RESTAURANTE.md, Fase 5 — registra/atualiza o token FCM do
     dispositivo do estafeta, chamado pelo app após o login e sempre que o token for

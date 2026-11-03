@@ -61,6 +61,15 @@ class DriverFcmTokenUpdate(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────
+# Conclusão da entrega — código que o cliente mostra ao estafeta
+# (app Koma: "Apresente este código ao estafeta", QR do tracking_code)
+# ──────────────────────────────────────────────────────────────
+
+class RouteCompleteRequest(BaseModel):
+    code: Optional[str] = None
+
+
+# ──────────────────────────────────────────────────────────────
 # Auth
 # ──────────────────────────────────────────────────────────────
 
