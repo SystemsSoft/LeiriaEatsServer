@@ -1,12 +1,14 @@
 # Arquivo: api/routes/drivers.py
 import hashlib
+import hmac
 import math
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from starlette import status
 from ulid import ULID
@@ -19,6 +21,7 @@ from services.courier_notification_service import (
     close_cancelled_routes,
     is_sub_order_cancelled,
 )
+from services.driver_payout_service import pay_driver_for_route
 from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
@@ -33,11 +36,28 @@ from schemas.driver import (
 router = APIRouter(prefix="/drivers", tags=["Estafetas"])
 stripe.api_key = config.settings.STRIPE_API_KEY
 
+# PBKDF2 com salt por estafeta (só stdlib). Formato: pbkdf2_sha256$<iterações>$<salt>$<hash>.
+# Contas antigas guardavam sha256(plain) sem salt — continuam a entrar e são convertidas
+# no primeiro login (_needs_rehash).
+_PBKDF2_ITERATIONS = 310_000
+
+
 def _hash_password(plain: str) -> str:
-    return hashlib.sha256(plain.encode()).hexdigest()
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", plain.encode(), salt.encode(), _PBKDF2_ITERATIONS).hex()
+    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt}${digest}"
+
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    return _hash_password(plain) == hashed
+    if hashed and hashed.startswith("pbkdf2_sha256$"):
+        _, iterations, salt, digest = hashed.split("$", 3)
+        candidate = hashlib.pbkdf2_hmac("sha256", plain.encode(), salt.encode(), int(iterations)).hex()
+        return hmac.compare_digest(candidate, digest)
+    return hmac.compare_digest(hashlib.sha256(plain.encode()).hexdigest(), hashed or "")
+
+
+def _needs_rehash(hashed: str) -> bool:
+    return not (hashed or "").startswith(f"pbkdf2_sha256${_PBKDF2_ITERATIONS}$")
 
 def _get_driver_or_404(driver_id: str, db: Session) -> DriverDB:
     """`driver_id` é o gid devolvido no login (o app KomaPartner só conhece o gid);
@@ -57,16 +77,22 @@ def _calculate_delivery_fee(total_distance_km):
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_driver(payload: DriverRegisterRequest, db: Session = Depends(get_db)):
-    existing = db.query(DriverDB).filter(DriverDB.login == payload.login).first()
+    login = payload.login.strip()
+    if not login or len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Login obrigatório e palavra-passe com pelo menos 6 caracteres.")
+    existing = db.query(DriverDB).filter(DriverDB.login == login).first()
     if existing: raise HTTPException(status_code=400, detail="Login já existe.")
-    driver = DriverDB(gid=str(ULID()), login=payload.login, password=_hash_password(payload.password), status="PENDING")
+    driver = DriverDB(gid=str(ULID()), login=login, password=_hash_password(payload.password), status="PENDING")
+    # O app do estafeta envia os dados pessoais/veículo já no registo (antes eram ignorados).
+    _apply_profile(driver, payload.personal_info, payload.vehicle_info)
     db.add(driver)
     db.commit()
     db.refresh(driver)
     return {
         "gid": driver.gid,
+        "name": driver.name,
         "status": driver.status,
-        "profile_complete": False,
+        "profile_complete": bool(driver.name and driver.vehicle_type),
         "message": "Registado. Complete o onboarding Stripe.",
     }
 
@@ -76,6 +102,9 @@ def login_driver(payload: DriverLoginRequest, db: Session = Depends(get_db)):
     driver = db.query(DriverDB).filter(DriverDB.login == payload.login).first()
     if not driver or not _verify_password(payload.password, driver.password):
         raise HTTPException(status_code=401, detail="Login ou senha inválidos.")
+    if _needs_rehash(driver.password):
+        driver.password = _hash_password(payload.password)
+        db.commit()
 
     return DriverLoginResponse(
         authenticated=True,
@@ -103,7 +132,7 @@ def _stripe_account_for(driver: DriverDB) -> str:
     if driver.stripe_account_id:
         return driver.stripe_account_id
 
-    stripe_email = driver.login if "@" in driver.login else f"{driver.login}@leiriaeats.com"
+    stripe_email = driver.email or (driver.login if "@" in driver.login else f"{driver.login}@leiriaeats.com")
     account = stripe.Account.create(
         type="express",
         country="PT",
@@ -118,6 +147,68 @@ def _stripe_account_for(driver: DriverDB) -> str:
     return driver.stripe_account_id
 
 
+def _apply_profile(driver: DriverDB, personal_info, vehicle_info) -> None:
+    if personal_info:
+        for field in ("name", "phone", "email", "address", "city", "postal_code"):
+            value = getattr(personal_info, field)
+            if value is not None:
+                setattr(driver, field, value)
+
+    if vehicle_info:
+        field_map = {"type": "vehicle_type", "plate": "vehicle_plate", "model": "vehicle_model", "color": "vehicle_color"}
+        for src, dst in field_map.items():
+            value = getattr(vehicle_info, src)
+            if value is not None:
+                setattr(driver, dst, value)
+
+
+def _onboarding_link(driver: DriverDB) -> str:
+    account_link = stripe.AccountLink.create(
+        account=driver.stripe_account_id,
+        refresh_url=f"https://api.leiriaeats.com/drivers/{driver.gid}/stripe-onboarding-refresh",
+        return_url=f"https://api.leiriaeats.com/drivers/{driver.gid}/stripe-onboarding-success",
+        type="account_onboarding",
+    )
+    return account_link.url
+
+
+def _sync_stripe_onboarding(driver: DriverDB, db: Session) -> dict:
+    """Lê a conta na Stripe e ativa o estafeta quando o onboarding estiver completo."""
+    account = stripe.Account.retrieve(driver.stripe_account_id)
+    details_submitted = getattr(account, "details_submitted", False)
+    charges_enabled = getattr(account, "charges_enabled", False)
+    payouts_enabled = getattr(account, "payouts_enabled", False)
+    is_complete = bool(details_submitted and charges_enabled and payouts_enabled)
+
+    driver.stripe_onboarding_completed = is_complete
+    if is_complete and driver.status != "ACTIVE":
+        driver.status = "ACTIVE"
+    db.commit()
+    return {
+        "onboarding_completed": is_complete,
+        "charges_enabled": charges_enabled,
+        "payouts_enabled": payouts_enabled,
+        "status": driver.status,
+    }
+
+
+def _partner_page(title: str, message: str) -> HTMLResponse:
+    """Página simples (identidade Koma) mostrada no browser ao voltar da Stripe."""
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="pt"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title} - Koma Partner</title>
+<style>
+  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;
+         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+         background:linear-gradient(180deg,#0F3D2E 0%,#207659 100%); }}
+  .card {{ background:#fff; border-radius:20px; padding:40px 28px; max-width:420px; width:100%; text-align:center; }}
+  h1 {{ color:#111827; font-size:22px; margin:0 0 12px; }}
+  p {{ color:#6B7280; font-size:16px; line-height:1.5; margin:0; }}
+  .hint {{ color:#1A7A5E; font-weight:700; margin-top:24px; }}
+</style></head>
+<body><div class="card"><h1>{title}</h1><p>{message}</p><p class="hint">Já pode fechar esta página e voltar ao app Koma Partner.</p></div></body></html>""")
+
+
 @router.post("/{gid}/stripe-onboarding")
 def create_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
     """
@@ -129,14 +220,8 @@ def create_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
         _stripe_account_for(driver)
         db.commit()
 
-        account_link = stripe.AccountLink.create(
-            account=driver.stripe_account_id,
-            refresh_url=f"https://api.leiriaeats.com/drivers/{driver.gid}/stripe-onboarding-refresh",
-            return_url=f"https://api.leiriaeats.com/drivers/{driver.gid}/stripe-onboarding-success",
-            type="account_onboarding",
-        )
         return {
-            "onboarding_url": account_link.url,
+            "onboarding_url": _onboarding_link(driver),
             "stripe_account_id": driver.stripe_account_id,
         }
     except HTTPException:
@@ -156,26 +241,41 @@ def complete_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Estafeta não tem conta Stripe.")
 
     try:
-        account = stripe.Account.retrieve(driver.stripe_account_id)
-        details_submitted = getattr(account, "details_submitted", False)
-        charges_enabled = getattr(account, "charges_enabled", False)
-        payouts_enabled = getattr(account, "payouts_enabled", False)
-        is_complete = details_submitted and charges_enabled and payouts_enabled
-
-        driver.stripe_onboarding_completed = is_complete
-        if is_complete and driver.status != "ACTIVE":
-            driver.status = "ACTIVE"
-        db.commit()
-
-        return {
-            "onboarding_completed": is_complete,
-            "charges_enabled": charges_enabled,
-            "payouts_enabled": payouts_enabled,
-        }
+        return _sync_stripe_onboarding(driver, db)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{gid}/stripe-onboarding-success", response_class=HTMLResponse)
+def driver_stripe_onboarding_success(gid: str, db: Session = Depends(get_db)):
+    """return_url do AccountLink: o estafeta cai aqui no browser ao terminar na Stripe.
+    Sincroniza já o estado, para o app ver a conta ativa no próximo poll."""
+    driver = _get_driver_by_gid_or_404(gid, db)
+    try:
+        result = _sync_stripe_onboarding(driver, db) if driver.stripe_account_id else {"onboarding_completed": False}
+    except Exception:
+        result = {"onboarding_completed": False}
+    if result["onboarding_completed"]:
+        return _partner_page("Pagamentos configurados", "A sua conta está ativa. Já pode ficar disponível e receber entregas.")
+    return _partner_page(
+        "Quase lá",
+        "A Stripe ainda está a validar os seus dados. No app, toque em \"Já concluí\" daqui a pouco "
+        "ou volte a abrir a configuração de pagamentos.",
+    )
+
+
+@router.get("/{gid}/stripe-onboarding-refresh")
+def driver_stripe_onboarding_refresh(gid: str, db: Session = Depends(get_db)):
+    """refresh_url do AccountLink: o link expirou ou foi reaberto — gera um novo e redireciona."""
+    driver = _get_driver_by_gid_or_404(gid, db)
+    if not driver.stripe_account_id:
+        return _partner_page("Link expirado", "Volte ao app e toque em \"Configurar pagamentos\".")
+    try:
+        return RedirectResponse(_onboarding_link(driver))
+    except Exception:
+        return _partner_page("Link expirado", "Volte ao app e toque em \"Configurar pagamentos\".")
 
 
 @router.post("/{gid}/stripe-dashboard")
@@ -206,20 +306,7 @@ def update_driver_profile(gid: str, payload: UpdateDriverProfileRequest, db: Ses
     Guarda os dados pessoais/veículo do estafeta (PASSO 3 do registo).
     """
     driver = _get_driver_by_gid_or_404(gid, db)
-
-    if payload.personal_info:
-        for field in ("name", "phone", "email", "address", "city", "postal_code"):
-            value = getattr(payload.personal_info, field)
-            if value is not None:
-                setattr(driver, field, value)
-
-    if payload.vehicle_info:
-        field_map = {"type": "vehicle_type", "plate": "vehicle_plate", "model": "vehicle_model", "color": "vehicle_color"}
-        for src, dst in field_map.items():
-            value = getattr(payload.vehicle_info, src)
-            if value is not None:
-                setattr(driver, dst, value)
-
+    _apply_profile(driver, payload.personal_info, payload.vehicle_info)
     db.commit()
     db.refresh(driver)
     return driver
@@ -493,6 +580,10 @@ def complete_route(
         master.status = "Entregue"
 
     db.commit()
+
+    # Melhor esforço: a entrega já está registada; se o pagamento falhar fica pendente e o
+    # worker de despacho volta a tentar (services/driver_payout_service.py).
+    pay_driver_for_route(db, route)
     return {"message": "Entrega concluída.", "route_gid": route_gid}
 
 
@@ -518,3 +609,9 @@ def update_fcm_token(driver_id: str, payload: DriverFcmTokenUpdate, db: Session 
     driver.fcm_token = payload.token
     db.commit()
     return {"status": "ok"}
+
+
+@router.get("/{gid}", response_model=DriverProfileResponse)
+def get_driver_profile(gid: str, db: Session = Depends(get_db)):
+    """GET /drivers/{gid} — o app usa para saber se a conta já ficou ativa."""
+    return _get_driver_by_gid_or_404(gid, db)
