@@ -4,4 +4,3 @@ __pycache__/
 *.py[cod]
 .venv/
 .idea/
-conectaai/uploads/

@@ -17,7 +17,6 @@ import os
 from api.routes import product_routes, search_routes, chat_routes, order_routes, auth_routes, upload_routes, \
     company_routes
 from api.routes import drivers as driver_routes
-from modules import maria_portuguesa
 from services.courier_notification_service import courier_notification_worker
 
 # Cria as tabelas se não existirem
@@ -82,19 +81,10 @@ app.include_router(auth_routes.router)
 app.include_router(upload_routes.router)
 app.include_router(company_routes.router)
 app.include_router(driver_routes.router)   # /drivers/*
-app.include_router(maria_portuguesa.router)  # /maria-portuguesa/*
 
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Iniciando Koma AI Server...")
-
-    # Maria Portuguesa: banco e tabelas próprios, criados se ainda não existirem.
-    # Uma falha aqui não pode impedir o Leiria Eats de arrancar.
-    try:
-        tabelas_mp = maria_portuguesa.criar_banco_e_tabelas()
-        print(f"✅ [MariaPortuguesa] Banco pronto. Tabelas: {', '.join(tabelas_mp)}")
-    except Exception as e:
-        print(f"⚠️ [MariaPortuguesa] Não foi possível preparar o banco: {e}")
 
     # Inicializar modelos de IA (E5 + Gemini)
     print("\n" + "="*50)

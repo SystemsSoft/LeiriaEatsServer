@@ -22,8 +22,7 @@ class Settings:
     GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
     # Chaves usadas pelo Koma (chat de texto, TTS e ligação de voz): só a PAGA, que é sempre a
     # ÚLTIMA de GEMINI_API_KEY. As gratuitas davam 503/timeout com frequência e cada tentativa
-    # somava até 10s ao turno antes de chegar à paga (medido no EC2 em 01/11/2026). As gratuitas
-    # continuam em GEMINI_API_KEYS para o Maria Portuguesa, que as lê de lá.
+    # somava até 10s ao turno antes de chegar à paga (medido no EC2 em 01/11/2026).
     GEMINI_API_KEYS_KOMA: list[str] = GEMINI_API_KEYS[-1:]
 
     # Redis Config

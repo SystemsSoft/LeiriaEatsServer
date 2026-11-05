@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
-# Atualiza na nuvem APENAS o Koma AI (backend Leiria Eats + static/, incluindo a
-# Política de Privacidade em /privacy/).
+# Atualiza na nuvem o Koma AI (backend Leiria Eats + static/, incluindo a
+# Política de Privacidade em /privacy/) e reinicia o leiria-eats.service.
 #
-# Não envia nem altera os módulos ConectaAI (conectaai/) e Maria Portuguesa
-# (modules/maria_portuguesa/ e os scripts/testes/migração dele): o que estiver
-# no servidor para esses módulos fica exatamente como está. Também nunca
-# reinicia o conectaai.service.
-#
-# Atenção: o Maria Portuguesa corre dentro do mesmo processo do Koma
-# (leiria-eats.service), por isso o reinício no fim deixa ambos alguns
-# segundos indisponíveis. Antes de reiniciar, o código do Koma é validado no
-# servidor; se não compilar, o serviço NÃO é reiniciado e continua a correr a
-# versão anterior que tem em memória.
+# Antes de reiniciar, o código é validado no servidor; se não compilar, o
+# serviço NÃO é reiniciado e continua a correr a versão anterior que tem em
+# memória.
 #
 # Uso:
 #   ./deploy_komaai.sh             envia o Koma AI e reinicia o leiria-eats.service
@@ -34,7 +27,7 @@ DRY_RUN=false
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
-    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Opção desconhecida: $arg (use --help)" >&2; exit 2 ;;
   esac
 done
@@ -63,12 +56,6 @@ sincronizar() {
     --exclude='*.pem' \
     --exclude='.DS_Store' \
     --exclude='/deploy*.sh' \
-    --exclude='/conectaai/' \
-    --exclude='/tests/test_conectaai_*' \
-    --exclude='/modules/maria_portuguesa/' \
-    --exclude='/scripts/maria_portuguesa_*' \
-    --exclude='/tests/test_maria_portuguesa.py' \
-    --exclude='/migration_maria_portuguesa.sql' \
     -e "$RSYNC_SSH" \
     "$PROJECT_DIR/" "$DESTINO:$REMOTE_DIR/"
 }
