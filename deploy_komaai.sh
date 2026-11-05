@@ -104,8 +104,9 @@ responde() {
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl is-active --quiet "$SERVICE_NAME"
 
-# Arranque lento: carrega o E5-large (~90 s numa instância de 2 GB com swap).
-for _ in {1..90}; do
+# Arranque lento: carrega o E5-large (~90 s) e, com E5_INT8=true, ainda o quantiza e calcula
+# os embeddings por restaurante (~3 min 40 s numa instância de 2 GB). Espera até 6 min.
+for _ in {1..180}; do
   if responde /openapi.json; then
     if responde /privacy/; then
       echo "Deploy concluído: $SERVICE_NAME responde em /openapi.json e a Política de Privacidade em /privacy/."

@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from sentence_transformers import SentenceTransformer, util
 
+from core.config import settings
 from core.sql_models import RestaurantHourDB
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import SearchResponse, Restaurant, Product
@@ -35,6 +36,8 @@ class AIService:
     # SQLAlchemy depois da reindexação, então o relacionamento .restaurant não pode ser
     # acessado depois — precisa ser pré-computado aqui, no momento da indexação.
     _restaurant_surprise_box_window_by_product_id: dict = {}
+    # {restaurant_id: (textos, modelo, embeddings)} — ver _embeddings_do_restaurante
+    _embeddings_por_restaurante: dict = {}
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -57,8 +60,26 @@ class AIService:
     @classmethod
     def get_model(cls):
         if cls._model is None:
-            cls._model = SentenceTransformer('intfloat/multilingual-e5-large')
+            if settings.E5_INT8:
+                cls._model = cls._carregar_e5_int8()
+            else:
+                cls._model = SentenceTransformer('intfloat/multilingual-e5-large')
         return cls._model
+
+    @staticmethod
+    def _carregar_e5_int8():
+        """E5 com as camadas Linear quantizadas para int8 (ver E5_INT8 em core/config.py).
+
+        Sempre em CPU: a quantização dinâmica do PyTorch não corre em GPU (MPS/CUDA).
+        Motor qnnpack mesmo em x86: o fbgemm/x86 calcula as ativações com 7 bits
+        (reduce_range) e, no servidor, isso pôs produtos de texto curto ("Queijo") em 1º
+        lugar para "curry", "suchi", "sobremesa"... (05/11/2026). O qnnpack usa 8 bits e
+        foi o motor validado na comparação com o modelo float32."""
+        modelo = SentenceTransformer('intfloat/multilingual-e5-large', device="cpu")
+        torch.backends.quantized.engine = "qnnpack"
+        torch.ao.quantization.quantize_dynamic(modelo, {torch.nn.Linear}, dtype=torch.qint8, inplace=True)
+        print(f"✅ E5 quantizado (int8, motor {torch.backends.quantized.engine})")
+        return modelo
 
     @classmethod
     def _detect_intent(cls, user_query: str, scope: Optional[str] = "auto") -> str:
@@ -237,20 +258,10 @@ class AIService:
         if not target_restaurant or not target_restaurant.products:
             return None
 
-        # Criar embeddings dos produtos deste restaurante
-        product_texts = []
-        products = []
-        for p in target_restaurant.products:
-            text = f"passage: {p.name} {p.description if p.description else ''}"
-            product_texts.append(text)
-            products.append(p)
-
-        if not product_texts:
-            return None
+        products, product_embeddings = cls._embeddings_do_restaurante(target_restaurant, model)
 
         # Fazer embedding da query
         query_embedding = model.encode(f"query: {product_query}", convert_to_tensor=True)
-        product_embeddings = model.encode(product_texts, convert_to_tensor=True)
 
         # Calcular similaridades
         scores = util.cos_sim(query_embedding, product_embeddings)[0]
@@ -264,6 +275,22 @@ class AIService:
             return products[best_idx]
 
         return None
+
+    @classmethod
+    def _embeddings_do_restaurante(cls, restaurant, model):
+        """Embeddings dos produtos de um restaurante para _search_product_in_restaurant.
+
+        Antes eram recalculados a cada pedido de vários produtos ("pizza e refrigerante"):
+        um restaurante de 13 produtos custava 8-14 s com o E5 int8 e bloqueava o worker
+        único (medido em 05/11/2026). Agora ficam guardados por restaurante, com o mesmo
+        texto de antes; se o texto de algum produto mudar, o restaurante é recalculado."""
+        products = list(restaurant.products)
+        textos = tuple(f"passage: {p.name} {p.description if p.description else ''}" for p in products)
+        guardado = cls._embeddings_por_restaurante.get(restaurant.id)
+        if guardado is None or guardado[0] != textos or guardado[1] is not model:
+            guardado = (textos, model, model.encode(list(textos), convert_to_tensor=True))
+            cls._embeddings_por_restaurante[restaurant.id] = guardado
+        return products, guardado[2]
 
     @classmethod
     def _process_multiple_products_search(cls, products_list: list, db: Session, model) -> SearchResponse:
@@ -426,6 +453,13 @@ class AIService:
             return
         cls._data_cache = data
         cls._index_data(data)
+        # Já calcula os embeddings por restaurante, para o 1º pedido de vários produtos
+        # depois de um arranque não pagar esse custo.
+        cls._embeddings_por_restaurante = {}
+        model = cls.get_model()
+        for restaurant in data:
+            if restaurant.products:
+                cls._embeddings_do_restaurante(restaurant, model)
 
     @classmethod
     def reindex_single_product(cls, product_id: int, db: Session):

@@ -32,6 +32,14 @@ class Settings:
     REDIS_DB: int = int(os.getenv("REDIS_DB", 0))
     USE_REDIS: bool = os.getenv("USE_REDIS", "false").lower() == "true"
 
+    # E5 quantizado (int8 dinâmico nas camadas Linear): o modelo passa de ~2,1 GB para ~1,3 GB
+    # (a tabela de vocabulário, ~1 GB, fica em float32 mas cada pesquisa só lê poucas linhas),
+    # o que o faz caber numa instância de 2 GB sem ir para a swap. Comparado com o float32 em
+    # 86 pesquisas reais (05/11/2026): nenhuma pontuação cruzou os limiares 0.45/0.60/0.65 e o
+    # 1º resultado foi o mesmo em 82% — as trocas foram entre produtos quase empatados.
+    # false volta ao modelo original sem novo deploy (basta reiniciar o serviço).
+    E5_INT8: bool = os.getenv("E5_INT8", "false").lower() == "true"
+
     # Limite de restaurantes distintos por pedido (PLANO_LIMITE_RESTAURANTES.md).
     # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.
     MAX_RESTAURANTES_POR_PEDIDO: int = int(os.getenv("MAX_RESTAURANTES_POR_PEDIDO", 3))
