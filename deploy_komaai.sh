@@ -52,6 +52,7 @@ sincronizar() {
     --exclude='.idea/' \
     --exclude='.artifacts/' \
     --exclude='/.claude/' \
+    --exclude='/e5_service/' \
     --exclude='__pycache__/' \
     --exclude='*.py[cod]' \
     --exclude='*.pem' \

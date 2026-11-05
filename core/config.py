@@ -40,6 +40,13 @@ class Settings:
     # false volta ao modelo original sem novo deploy (basta reiniciar o serviço).
     E5_INT8: bool = os.getenv("E5_INT8", "false").lower() == "true"
 
+    # Serviço de embeddings E5 numa instância dedicada (e5_service/, deploy_e5.sh), pela rede
+    # privada da Lightsail — ex.: http://172.26.38.59:8090. Definido, a API não carrega o modelo
+    # (e E5_INT8 deixa de contar): fica leve e reinicia em segundos. Vazio, volta ao E5 local.
+    E5_SERVICE_URL: str = os.getenv("E5_SERVICE_URL", "").strip()
+    E5_SERVICE_TOKEN: str = os.getenv("E5_SERVICE_TOKEN", "")
+    E5_SERVICE_TIMEOUT: float = float(os.getenv("E5_SERVICE_TIMEOUT", 60))
+
     # Limite de restaurantes distintos por pedido (PLANO_LIMITE_RESTAURANTES.md).
     # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.
     MAX_RESTAURANTES_POR_PEDIDO: int = int(os.getenv("MAX_RESTAURANTES_POR_PEDIDO", 3))

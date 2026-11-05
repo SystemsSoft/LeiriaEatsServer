@@ -5,12 +5,14 @@ from sentence_transformers import SentenceTransformer, util
 
 from core.config import settings
 from core.sql_models import RestaurantHourDB
+from services.e5_remoto import E5Indisponivel, E5Remoto
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import SearchResponse, Restaurant, Product
 from sqlalchemy.orm import Session
 from typing import Optional
 import torch
 import re
+import time
 
 
 
@@ -38,6 +40,7 @@ class AIService:
     _restaurant_surprise_box_window_by_product_id: dict = {}
     # {restaurant_id: (textos, modelo, embeddings)} — ver _embeddings_do_restaurante
     _embeddings_por_restaurante: dict = {}
+    _ultima_tentativa_indice: float = 0.0  # time.monotonic() da última reindexação tentada em process_search
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -60,7 +63,11 @@ class AIService:
     @classmethod
     def get_model(cls):
         if cls._model is None:
-            if settings.E5_INT8:
+            if settings.E5_SERVICE_URL:
+                cls._model = E5Remoto(settings.E5_SERVICE_URL, settings.E5_SERVICE_TOKEN,
+                                      settings.E5_SERVICE_TIMEOUT)
+                print(f"✅ E5 remoto: {settings.E5_SERVICE_URL}")
+            elif settings.E5_INT8:
                 cls._model = cls._carregar_e5_int8()
             else:
                 cls._model = SentenceTransformer('intfloat/multilingual-e5-large')
@@ -738,6 +745,40 @@ class AIService:
     @classmethod
     def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto",
                        limite_por_plano: Optional[int] = None) -> SearchResponse:
+        try:
+            # Índice vazio porque o serviço de E5 estava em baixo no arranque: tenta de novo, mas
+            # no máximo uma vez por minuto — tentar a cada pesquisa enchia o serviço de
+            # reindexações e cada pesquisa esperava o timeout inteiro (05/11/2026).
+            if (cls._data_cache and cls._embeddings_products is None
+                    and time.monotonic() - cls._ultima_tentativa_indice > 60):
+                cls._ultima_tentativa_indice = time.monotonic()
+                cls._index_data(cls._data_cache)
+            if cls._data_cache and cls._embeddings_products is None:
+                return cls._busca_so_lexical(user_query)
+            return cls._process_search(user_query, db, scope, limite_por_plano)
+        except E5Indisponivel as e:
+            print(f"⚠️ [E5] Serviço de embeddings indisponível ({e}) — pesquisa só por palavras-chave")
+            return cls._busca_so_lexical(user_query)
+
+    @classmethod
+    def _busca_so_lexical(cls, user_query: str) -> SearchResponse:
+        """Plano B quando o serviço de E5 não responde: só o sinal léxico da busca híbrida
+        (_score_lexical), sobre os produtos já em memória. Pior que a busca normal para
+        pesquisas por intenção ("algo leve"), mas acerta nomes de prato em vez de falhar."""
+        query_normalizada = cls._normalizar_texto_busca(user_query)
+        produtos = [p for r in (cls._data_cache or []) for p in (r.products or [])]
+        pontuados = [(cls._score_lexical(query_normalizada, p), p) for p in produtos]
+        encontrados = [p for s, p in sorted(pontuados, key=lambda x: x[0], reverse=True) if s > 0][:6]
+        if not encontrados:
+            return SearchResponse(reply="Não encontrei pratos relevantes para essa busca.",
+                                  intent="no_match", restaurantResults=[], productResults=[])
+        produtos_info = ", ".join(f"{p.name} (R$ {p.price:.2f})" for p in encontrados)
+        return SearchResponse(reply=f"Encontrei {len(encontrados)} opções: {produtos_info}.",
+                              intent="product_search", restaurantResults=[], productResults=encontrados)
+
+    @classmethod
+    def _process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto",
+                        limite_por_plano: Optional[int] = None) -> SearchResponse:
         if cls._data_cache is None:
             cls.reload_data(db)
 
