@@ -8,8 +8,9 @@ from botocore.exceptions import NoCredentialsError
 
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-BUCKET_NAME = os.getenv("AWS_S3_BUCKET", "koma-repo")
-REGION_NAME = os.getenv("AWS_REGION", "us-east-2")
+BUCKET_NAME = os.getenv("AWS_S3_BUCKET", "leiria-eats-bucket")
+# Variável própria do bucket: o AWS_REGION genérico do .env apontava para o bucket antigo (us-east-2).
+REGION_NAME = os.getenv("AWS_S3_REGION", "eu-south-2")
 
 
 def nome_unico_de_arquivo(filename: str) -> str:
@@ -52,7 +53,8 @@ def upload_file_to_s3(file_obj, filename: str, folder: str = "Restaurants") -> s
         )
         # -------------------------------------
 
-        url = f"https://{BUCKET_NAME}.s3.amazonaws.com/{key}"
+        # Endpoint regional: buckets em regiões recentes (eu-south-2) não respondem no global s3.amazonaws.com.
+        url = f"https://{BUCKET_NAME}.s3.{REGION_NAME}.amazonaws.com/{key}"
         return url
 
     except NoCredentialsError:

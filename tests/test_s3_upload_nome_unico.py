@@ -47,7 +47,7 @@ def teste_mesmo_nome_de_arquivo_gera_chaves_diferentes():
 
 def teste_url_devolvida_aponta_para_a_chave_gravada():
     url, (bucket, key, _) = _enviar("logo.png", folder="Cardapio")
-    assert url == f"https://{bucket}.s3.amazonaws.com/{key}" and key.startswith("Cardapio/"), (url, key)
+    assert url == f"https://{bucket}.s3.{s3.REGION_NAME}.amazonaws.com/{key}" and key.startswith("Cardapio/"), (url, key)
     print("OK  - a URL devolvida corresponde à chave gravada (pasta respeitada)")
 
 
