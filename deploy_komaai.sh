@@ -51,6 +51,7 @@ sincronizar() {
     --exclude='.git/' \
     --exclude='.idea/' \
     --exclude='.artifacts/' \
+    --exclude='/.claude/' \
     --exclude='__pycache__/' \
     --exclude='*.py[cod]' \
     --exclude='*.pem' \

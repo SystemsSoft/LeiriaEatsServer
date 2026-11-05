@@ -23,6 +23,7 @@ sync_output="$(rsync --archive --compress --itemize-changes \
   --exclude='.venv/' \
   --exclude='.git/' \
   --exclude='.idea/' \
+  --exclude='/.claude/' \
   --exclude='__pycache__/' \
   --exclude='*.py[cod]' \
   --exclude='*.pem' \
