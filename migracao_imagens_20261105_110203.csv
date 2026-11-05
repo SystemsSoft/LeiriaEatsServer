@@ -1,0 +1,150 @@
+tabela,coluna,id,url_antiga,url_nova
+restaurants,image_url,6,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+restaurants,image_url,7,https://koma-repo.s3.amazonaws.com/Restaurants/8c9ebe95d374-images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/8c9ebe95d374-images.jpeg
+restaurants,image_url,8,https://koma-repo.s3.amazonaws.com/Restaurants/logo.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/logo.jpeg
+restaurants,image_url,12,https://koma-repo.s3.amazonaws.com/Restaurants/logo-japa.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/logo-japa.jpeg
+restaurants,image_url,113,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+restaurants,image_url,144,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+products,image_url,1,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg
+products,image_url,2,https://koma-repo.s3.amazonaws.com/Cardapio/som-tum-comida-tailandesa.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/som-tum-comida-tailandesa.webp
+products,image_url,3,https://koma-repo.s3.amazonaws.com/Cardapio/panaeng-curry.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/panaeng-curry.webp
+products,image_url,4,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg
+products,image_url,5,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg
+products,image_url,6,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+products,image_url,7,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+products,image_url,8,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163207.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163207.jpg
+products,image_url,9,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg
+products,image_url,10,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163905.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163905.jpg
+products,image_url,11,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807164211.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807164211.jpg
+products,image_url,12,https://koma-repo.s3.amazonaws.com/Cardapio/8b1af93f2e199a1308632ee34abc0bb9552.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/8b1af93f2e199a1308632ee34abc0bb9552.png
+products,image_url,13,https://koma-repo.s3.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png
+products,image_url,14,https://koma-repo.s3.amazonaws.com/Cardapio/b2061b2089f05f3262d961fd55514b3a263.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/b2061b2089f05f3262d961fd55514b3a263.png
+products,image_url,15,https://koma-repo.s3.amazonaws.com/Cardapio/somtam-tailandia.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/somtam-tailandia.jpg
+products,image_url,16,https://koma-repo.s3.amazonaws.com/Cardapio/site_Combo_King_Jr.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/site_Combo_King_Jr.png
+products,image_url,17,https://koma-repo.s3.amazonaws.com/Cardapio/Okonomiyaki.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/Okonomiyaki.webp
+products,image_url,18,https://koma-repo.s3.amazonaws.com/Cardapio/soba.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/soba.webp
+products,image_url,19,https://koma-repo.s3.amazonaws.com/Cardapio/Ichigodaifuku.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/Ichigodaifuku.webp
+products,image_url,20,https://koma-repo.s3.amazonaws.com/Cardapio/Miso-Butter-Roasted-Chicken_EXPS_RC20_250383_07_14_E_2b.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/Miso-Butter-Roasted-Chicken_EXPS_RC20_250383_07_14_E_2b.jpg
+products,image_url,21,https://koma-repo.s3.amazonaws.com/Cardapio/Poke Philadelphia.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/Poke Philadelphia.webp
+products,image_url,22,https://koma-repo.s3.amazonaws.com/Cardapio/5d32583544c80.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/5d32583544c80.webp
+products,image_url,23,https://koma-repo.s3.amazonaws.com/Cardapio/surpresa.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/surpresa.jpeg
+products,image_url,1016,https://koma-repo.s3.amazonaws.com/Cardapio/download.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download.jpeg
+products,image_url,1017,https://koma-repo.s3.amazonaws.com/Cardapio/images.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/images.webp
+products,image_url,1018,https://koma-repo.s3.amazonaws.com/Cardapio/images (1).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/images (1).webp
+products,image_url,1019,https://koma-repo.s3.amazonaws.com/Cardapio/images (2).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/images (2).webp
+products,image_url,1020,https://koma-repo.s3.amazonaws.com/Cardapio/download (1).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (1).webp
+products,image_url,1021,https://koma-repo.s3.amazonaws.com/Cardapio/download (2).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (2).webp
+products,image_url,1022,https://koma-repo.s3.amazonaws.com/Cardapio/download (3).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (3).webp
+products,image_url,1023,https://koma-repo.s3.amazonaws.com/Cardapio/download (4).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (4).webp
+products,image_url,1024,https://koma-repo.s3.amazonaws.com/Cardapio/download (5).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (5).webp
+products,image_url,1025,https://koma-repo.s3.amazonaws.com/Cardapio/download (6).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (6).webp
+products,image_url,1026,https://koma-repo.s3.amazonaws.com/Cardapio/download (7).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (7).webp
+products,image_url,1027,https://koma-repo.s3.amazonaws.com/Cardapio/download (8).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (8).webp
+products,image_url,1028,https://koma-repo.s3.amazonaws.com/Cardapio/download (9).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (9).webp
+products,image_url,1029,https://koma-repo.s3.amazonaws.com/Cardapio/download (10).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (10).webp
+products,image_url,1030,https://koma-repo.s3.amazonaws.com/Cardapio/6235181d-2fda-40d8-897b-21b47005fce3.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/6235181d-2fda-40d8-897b-21b47005fce3.webp
+products,image_url,1031,https://koma-repo.s3.amazonaws.com/Cardapio/be5659ed-7880-4b35-94db-e2e2bc1e63a8.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/be5659ed-7880-4b35-94db-e2e2bc1e63a8.webp
+products,image_url,1032,https://koma-repo.s3.amazonaws.com/Cardapio/a247b9d2-82a4-4e78-a6bb-8745650018be.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/a247b9d2-82a4-4e78-a6bb-8745650018be.webp
+products,image_url,1033,https://koma-repo.s3.amazonaws.com/Cardapio/bfd6358b-0e6c-4cc5-935d-8ad6d319a6c0.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/bfd6358b-0e6c-4cc5-935d-8ad6d319a6c0.webp
+products,image_url,1034,https://koma-repo.s3.amazonaws.com/Cardapio/5edd57e2-5923-47e8-932b-3835516c1d36.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/5edd57e2-5923-47e8-932b-3835516c1d36.webp
+sub_orders,restaurant_image_url,73,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,74,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,75,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,76,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,77,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+sub_orders,restaurant_image_url,78,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,79,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,89,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,90,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,91,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,92,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,93,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,94,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,95,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,96,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,97,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+sub_orders,restaurant_image_url,98,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,99,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+sub_orders,restaurant_image_url,100,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,101,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,102,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,103,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,104,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,105,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,106,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,107,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,108,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,109,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,110,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+sub_orders,restaurant_image_url,111,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,112,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+sub_orders,restaurant_image_url,113,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,114,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,115,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,116,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,117,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,118,https://koma-repo.s3.amazonaws.com/Restaurants/images.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.png
+sub_orders,restaurant_image_url,119,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,120,https://koma-repo.s3.amazonaws.com/Restaurants/8c9ebe95d374-images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/8c9ebe95d374-images.jpeg
+sub_orders,restaurant_image_url,121,https://koma-repo.s3.amazonaws.com/Restaurants/logo-japa.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/logo-japa.jpeg
+sub_orders,restaurant_image_url,122,https://koma-repo.s3.amazonaws.com/Restaurants/8c9ebe95d374-images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/8c9ebe95d374-images.jpeg
+sub_orders,restaurant_image_url,123,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,124,https://koma-repo.s3.amazonaws.com/Restaurants/images.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/images.jpeg
+sub_orders,restaurant_image_url,125,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,126,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,127,https://koma-repo.s3.amazonaws.com/Restaurants/pizza logo 1.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/pizza logo 1.jpg
+sub_orders,restaurant_image_url,128,https://koma-repo.s3.amazonaws.com/Restaurants/logo.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/logo.jpeg
+sub_orders,restaurant_image_url,129,https://koma-repo.s3.amazonaws.com/Restaurants/logo.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/logo.jpeg
+sub_orders,restaurant_image_url,130,https://koma-repo.s3.amazonaws.com/Restaurants/logo.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Restaurants/logo.jpeg
+order_items,image_url,81,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg
+order_items,image_url,82,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg
+order_items,image_url,83,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,84,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,85,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163905.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163905.jpg
+order_items,image_url,86,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg
+order_items,image_url,87,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,88,https://koma-repo.s3.amazonaws.com/Cardapio/site_Combo_King_Jr.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/site_Combo_King_Jr.png
+order_items,image_url,89,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg
+order_items,image_url,90,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,91,https://koma-repo.s3.amazonaws.com/Cardapio/surpresa.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/surpresa.jpeg
+order_items,image_url,92,https://koma-repo.s3.amazonaws.com/Cardapio/surpresa.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/surpresa.jpeg
+order_items,image_url,93,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg
+order_items,image_url,94,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,95,https://koma-repo.s3.amazonaws.com/Cardapio/surpresa.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/surpresa.jpeg
+order_items,image_url,96,https://koma-repo.s3.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png
+order_items,image_url,97,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg
+order_items,image_url,98,https://koma-repo.s3.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png
+order_items,image_url,99,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg
+order_items,image_url,100,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,101,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162438.jpg
+order_items,image_url,102,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,103,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,104,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,105,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,106,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,107,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260731111434.jpg
+order_items,image_url,108,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,109,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,110,https://koma-repo.s3.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png
+order_items,image_url,111,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,112,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163905.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163905.jpg
+order_items,image_url,113,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg
+order_items,image_url,114,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg
+order_items,image_url,115,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,116,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg
+order_items,image_url,117,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163057.jpg
+order_items,image_url,118,https://koma-repo.s3.amazonaws.com/Cardapio/download.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download.jpeg
+order_items,image_url,119,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162702.jpg
+order_items,image_url,120,https://koma-repo.s3.amazonaws.com/Cardapio/images.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/images.webp
+order_items,image_url,121,https://koma-repo.s3.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/ae621b2fa9074f54a2711f3d2c4d3cf38 (1).png
+order_items,image_url,122,https://koma-repo.s3.amazonaws.com/Cardapio/5d32583544c80.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/5d32583544c80.webp
+order_items,image_url,123,https://koma-repo.s3.amazonaws.com/Cardapio/8b1af93f2e199a1308632ee34abc0bb9552.png,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/8b1af93f2e199a1308632ee34abc0bb9552.png
+order_items,image_url,124,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg
+order_items,image_url,125,https://koma-repo.s3.amazonaws.com/Cardapio/download (8).webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download (8).webp
+order_items,image_url,126,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807162941.jpg
+order_items,image_url,127,https://koma-repo.s3.amazonaws.com/Cardapio/be5659ed-7880-4b35-94db-e2e2bc1e63a8.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/be5659ed-7880-4b35-94db-e2e2bc1e63a8.webp
+order_items,image_url,128,https://koma-repo.s3.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/iScreen Shoter - Google Chrome - 260807163315.jpg
+order_items,image_url,129,https://koma-repo.s3.amazonaws.com/Cardapio/download.jpeg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/download.jpeg
+order_items,image_url,130,https://koma-repo.s3.amazonaws.com/Cardapio/somtam-tailandia.jpg,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/somtam-tailandia.jpg
+order_items,image_url,131,https://koma-repo.s3.amazonaws.com/Cardapio/panaeng-curry.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/panaeng-curry.webp
+order_items,image_url,132,https://koma-repo.s3.amazonaws.com/Cardapio/som-tum-comida-tailandesa.webp,https://leiria-eats-bucket.s3.eu-south-2.amazonaws.com/Cardapio/som-tum-comida-tailandesa.webp
