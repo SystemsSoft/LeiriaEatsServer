@@ -9,10 +9,11 @@ from sqlalchemy.exc import OperationalError
 from ulid import ULID
 from core.database import SessionLocal
 from core.config import settings
-from core.sql_models import OrderDB, DriverDB, SubOrderDB, DeliveryRouteDB, RouteStopDB
+from core.sql_models import OrderDB, DriverDB, SubOrderDB, DeliveryRouteDB, RouteStopDB, RestaurantDB
 from services.route_sequencer import Point, Stop, sequence_stops, travel_minutes
 from services.transit_tolerance_service import tolerancia_padrao_por_categoria
 from services import push_notification_service
+from services.driver_payout_service import retry_pending_payouts
 
 logger = logging.getLogger("courier_notification")
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
@@ -110,6 +111,10 @@ def _eligible_subs_grouped_by_master(db) -> dict[str, list[SubOrderDB]]:
         .filter(SubOrderDB.base_time > 0)
         .filter(SubOrderDB.gid.isnot(None))
         .filter(OrderDB.delivery_type != "pickup")
+        # Restaurantes com estafeta próprio entregam eles mesmos (e recebem a taxa de
+        # entrega no repasse) — não são para os estafetas Koma.
+        .outerjoin(RestaurantDB, SubOrderDB.restaurant_gid == RestaurantDB.gid)
+        .filter((RestaurantDB.id.is_(None)) | (RestaurantDB.use_own_delivery.is_(False)))
         .filter(SubOrderDB.master_order_gid.notin_(busy_master_gids))
         .order_by(SubOrderDB.master_order_gid, SubOrderDB.id)
         .all()
@@ -330,6 +335,7 @@ def _check_and_notify() -> None:
     try:
         _expire_pending_routes(db, now)
         close_cancelled_routes(db)
+        retry_pending_payouts(db, now)
 
         grouped = _eligible_subs_grouped_by_master(db)
         for master_order_gid, subs in grouped.items():

@@ -118,6 +118,8 @@ class DriverProfileResponse(BaseModel):
     vehicle_model: Optional[str] = None
     vehicle_color: Optional[str] = None
 
+    stripe_onboarding_completed: bool = False
+
     # localização
     latitude:  Optional[float]    = None
     longitude: Optional[float]    = None
