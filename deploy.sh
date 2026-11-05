@@ -3,9 +3,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSH_KEY="${SSH_KEY:-$PROJECT_DIR/aws-key.pem}"
-# Atualizado para o IP público atual da instância (ver RESUMO_DIAGNOSTICO.md)
-SERVER_HOST="${SERVER_HOST:-13.222.98.95}"
+SSH_KEY="${SSH_KEY:-$PROJECT_DIR/koma-instance-key.pem}"
+# IP estático da instância Lightsail em eu-south-2 (api.leiriaeats.com resolve para ele).
+SERVER_HOST="${SERVER_HOST:-51.48.131.137}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ec2-user/leiria-eats}"
 SERVICE_NAME="${SERVICE_NAME:-leiria-eats.service}"
@@ -25,8 +25,7 @@ sync_output="$(rsync --archive --compress --itemize-changes \
   --exclude='.idea/' \
   --exclude='__pycache__/' \
   --exclude='*.py[cod]' \
-  --exclude='athenna.pem' \
-  --exclude='aws-key.pem' \
+  --exclude='*.pem' \
   --exclude='deploy.sh' \
   -e "$RSYNC_SSH" \
   "$PROJECT_DIR/" "$SERVER_USER@$SERVER_HOST:$REMOTE_DIR/")"
@@ -59,7 +58,7 @@ fi
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl is-active --quiet "$SERVICE_NAME"
 
-for attempt in {1..30}; do
+for attempt in {1..90}; do
   if curl --fail --silent --show-error http://127.0.0.1:8080/openapi.json >/dev/null; then
     echo "Deploy concluído: $SERVICE_NAME está ativo e respondendo em /openapi.json."
     exit 0

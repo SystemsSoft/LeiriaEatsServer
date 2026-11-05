@@ -12,9 +12,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSH_KEY="${SSH_KEY:-$PROJECT_DIR/aws-key.pem}"
-# IP público atual da instância (api.leiriaeats.com resolve para ele).
-SERVER_HOST="${SERVER_HOST:-18.206.45.50}"
+SSH_KEY="${SSH_KEY:-$PROJECT_DIR/koma-instance-key.pem}"
+# IP estático da instância Lightsail em eu-south-2 (api.leiriaeats.com resolve para ele).
+SERVER_HOST="${SERVER_HOST:-51.48.131.137}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ec2-user/leiria-eats}"
 SERVICE_NAME="${SERVICE_NAME:-leiria-eats.service}"
@@ -104,7 +104,8 @@ responde() {
 sudo systemctl restart "$SERVICE_NAME"
 sudo systemctl is-active --quiet "$SERVICE_NAME"
 
-for _ in {1..30}; do
+# Arranque lento: carrega o E5-large (~90 s numa instância de 2 GB com swap).
+for _ in {1..90}; do
   if responde /openapi.json; then
     if responde /privacy/; then
       echo "Deploy concluído: $SERVICE_NAME responde em /openapi.json e a Política de Privacidade em /privacy/."
