@@ -1,3 +1,5 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -18,11 +20,12 @@ SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PO
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     # ── Pool de conexões ────────────────────────────────────────────────────
-    # O MySQL da Lightsail aceita 61 ligações no total. Com 5+10, 50 pedidos simultâneos
-    # esgotavam o pool e falhavam ao fim de 30 s (teste de carga de 06/11/2026); 10+15 deixa
-    # margem para scripts e manutenção. Atenção: cada worker do uvicorn tem o seu pool.
-    pool_size=10,              # conexões permanentes no pool
-    max_overflow=15,           # conexões extras permitidas acima do pool_size
+    # O MySQL da Lightsail aceita 61 ligações no total, e cada worker do uvicorn tem o seu
+    # pool. Com 5+10, 50 pedidos simultâneos esgotavam o pool e falhavam ao fim de 30 s
+    # (teste de carga de 06/11/2026). Por omissão 8+12 = 20 por worker: 2 workers usam 40
+    # e sobra margem para scripts e manutenção. DB_POOL_SIZE/DB_MAX_OVERFLOW no .env.
+    pool_size=int(os.getenv("DB_POOL_SIZE", 8)),         # conexões permanentes no pool
+    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", 12)),  # conexões extras acima do pool_size
     pool_timeout=10,           # segundos para aguardar uma conexão livre (falha rápido num pico)
     # ── Evitar conexões mortas (AWS NAT encerra idle após ~300s) ───────────
     pool_recycle=280,          # recicla conexões ao fim de 280s (abaixo do limite AWS)

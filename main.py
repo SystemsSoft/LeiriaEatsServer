@@ -1,5 +1,6 @@
 # Arquivo: main.py
 import asyncio
+import fcntl
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -112,13 +113,35 @@ async def startup_event():
     finally:
         db.close()
 
-    # Inicia os workers em background
-    asyncio.create_task(courier_notification_worker())
-    
-    from services.payment_reconciliation_service import payment_reconciliation_worker
-    asyncio.create_task(payment_reconciliation_worker())
+    asyncio.create_task(_tarefas_de_fundo_num_so_worker())
 
     print("\n🎉 Servidor pronto para receber requisições!\n")
+
+
+# Com vários workers do uvicorn cada processo corre o startup, e as tarefas de fundo
+# (notificação de estafetas, reconciliação de pagamentos) duplicariam notificações e
+# cancelamentos. Fica com elas só o worker que obtiver esta trava exclusiva de ficheiro;
+# os outros tentam de novo a cada 30 s e assumem se esse processo morrer (o sistema
+# operativo liberta a trava com ele). Serve para vários workers na MESMA máquina.
+_FICHEIRO_TRAVA_TAREFAS = os.getenv("TAREFAS_FUNDO_TRAVA", "/tmp/leiria-eats-tarefas-fundo.lock")
+_trava_tarefas = None  # o ficheiro tem de ficar aberto: a trava vive enquanto ele estiver
+
+
+async def _tarefas_de_fundo_num_so_worker():
+    global _trava_tarefas
+    ficheiro = open(_FICHEIRO_TRAVA_TAREFAS, "w")
+    while True:
+        try:
+            fcntl.flock(ficheiro, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            await asyncio.sleep(30)
+    _trava_tarefas = ficheiro
+    print(f"🟢 [PID {os.getpid()}] Este worker corre as tarefas de fundo (estafetas e reconciliação)", flush=True)
+
+    asyncio.create_task(courier_notification_worker())
+    from services.payment_reconciliation_service import payment_reconciliation_worker
+    asyncio.create_task(payment_reconciliation_worker())
 
 app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

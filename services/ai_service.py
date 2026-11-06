@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer, util
 from core.config import settings
 from core.sql_models import RestaurantHourDB
 from services.e5_remoto import E5Indisponivel, E5Remoto
+from services.session_service import SessionManager
 from repositories.restaurant_repo import RestaurantRepository
 from schemas.models import SearchResponse, Restaurant, Product
 from sqlalchemy.orm import Session
@@ -469,7 +470,7 @@ class AIService:
         return result
 
     @classmethod
-    def reload_data(cls, db: Session):
+    def reload_data(cls, db: Session, propagar: bool = True):
         data = RestaurantRepository.get_all(db)
         if not data:
             cls._data_cache = []
@@ -484,6 +485,56 @@ class AIService:
             return
         cls._data_cache = data
         cls._aquecer_embeddings_por_restaurante(data)
+        if propagar:
+            cls._publicar_alteracao_indice()
+
+    # ── Índice com vários workers do uvicorn ────────────────────────────────────
+    # Cada worker é um processo com o seu índice em memória. Quem altera o índice (produto
+    # criado/editado, restaurante novo, webhook de pagamento) incrementa esta versão no
+    # Redis; os outros, na pesquisa seguinte, veem a versão mudar e recarregam em segundo
+    # plano (com a cache de vetores em disco, só os textos novos vão ao motor de embeddings).
+    _CHAVE_VERSAO_INDICE = "koma:indice:versao"
+    _versao_indice: Optional[int] = None
+
+    @classmethod
+    def _publicar_alteracao_indice(cls):
+        r = SessionManager._get_redis()
+        if r is None:
+            return
+        try:
+            cls._versao_indice = int(r.incr(cls._CHAVE_VERSAO_INDICE))
+        except Exception as e:  # noqa: BLE001 — sem Redis o índice continua a funcionar neste worker
+            print(f"⚠️ [Índice] Não foi possível avisar os outros workers: {e}")
+
+    @classmethod
+    def _sincronizar_com_outros_workers(cls):
+        r = SessionManager._get_redis()
+        if r is None:
+            return
+        try:
+            versao = int(r.get(cls._CHAVE_VERSAO_INDICE) or 0)
+        except Exception:  # noqa: BLE001
+            return
+        if cls._versao_indice is None:
+            cls._versao_indice = versao  # 1ª pesquisa deste worker: o índice do arranque já está atual
+            return
+        if versao == cls._versao_indice:
+            return
+        cls._versao_indice = versao
+        threading.Thread(target=cls._recarregar_por_outro_worker, daemon=True,
+                         name="recarregar-indice").start()
+
+    @classmethod
+    def _recarregar_por_outro_worker(cls):
+        from core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            cls.reload_data(db, propagar=False)
+            print(f"🔄 [Índice] Recarregado: outro worker alterou o catálogo (versão {cls._versao_indice})")
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️ [Índice] Falha ao recarregar após alteração noutro worker: {e}")
+        finally:
+            db.close()
 
     @classmethod
     def _aquecer_embeddings_por_restaurante(cls, data):
@@ -627,6 +678,7 @@ class AIService:
         cls._restaurant_plan_by_product_id = restaurant_plan_by_product_id
         cls._restaurant_surprise_box_window_by_product_id = restaurant_surprise_box_window_by_product_id
         cls._embeddings_products = embeddings_products
+        cls._publicar_alteracao_indice()
 
     @staticmethod
     def _texto_para_indice(p, categoria_restaurante: str) -> str:
@@ -809,6 +861,7 @@ class AIService:
     @classmethod
     def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto",
                        limite_por_plano: Optional[int] = None) -> SearchResponse:
+        cls._sincronizar_com_outros_workers()
         try:
             # Índice vazio porque o serviço de E5 estava em baixo: é reconstruído em segundo
             # plano (_garantir_reindexacao) e, até lá, a pesquisa usa só o sinal léxico.
