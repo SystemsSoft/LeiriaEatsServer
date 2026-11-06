@@ -5,6 +5,9 @@ import os
 import re
 import uuid
 from botocore.exceptions import NoCredentialsError
+from io import BytesIO
+
+from services.imagens import CACHE_IMUTAVEL, chaves_das_versoes, gerar_versoes
 
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -44,14 +47,24 @@ def upload_file_to_s3(file_obj, filename: str, folder: str = "Restaurants") -> s
         # Chave ÚNICA por upload (ver nome_unico_de_arquivo) — nunca sobrescreve a imagem de outro cadastro.
         key = f"{folder}/{nome_unico_de_arquivo(filename)}"
 
-        tipo, _ = mimetypes.guess_type(key)
-        s3_client.upload_fileobj(
-            file_obj,
-            BUCKET_NAME,
-            key,
-            ExtraArgs={'ContentType': tipo if tipo and tipo.startswith("image/") else 'image/jpeg'}
-        )
-        # -------------------------------------
+        # Imagem: guarda a versão grande e a miniatura em WebP (services/imagens.py) e devolve a
+        # URL da grande. O que o Pillow não abrir segue como antes, com o ficheiro original.
+        conteudo = file_obj.read()
+        versoes = gerar_versoes(conteudo)
+        if versoes:
+            for chave, dados in zip(chaves_das_versoes(key), versoes):
+                s3_client.put_object(Bucket=BUCKET_NAME, Key=chave, Body=dados,
+                                     ContentType="image/webp", CacheControl=CACHE_IMUTAVEL)
+            key = chaves_das_versoes(key)[0]
+        else:
+            tipo, _ = mimetypes.guess_type(key)
+            s3_client.upload_fileobj(
+                BytesIO(conteudo),
+                BUCKET_NAME,
+                key,
+                ExtraArgs={'ContentType': tipo if tipo and tipo.startswith("image/") else 'image/jpeg',
+                           'CacheControl': CACHE_IMUTAVEL}
+            )
 
         # Endpoint regional: buckets em regiões recentes (eu-south-2) não respondem no global s3.amazonaws.com.
         url = f"https://{BUCKET_NAME}.s3.{REGION_NAME}.amazonaws.com/{key}"

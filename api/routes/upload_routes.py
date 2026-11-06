@@ -1,5 +1,6 @@
 # Arquivo: api/routes/upload_routes.py
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
+from services.imagens import url_da_miniatura
 from services.s3_service import upload_file_to_s3
 
 router = APIRouter()
@@ -24,4 +25,6 @@ async def upload_image(
     if not image_url:
         raise HTTPException(status_code=500, detail="Falha ao fazer upload da imagem")
 
-    return {"url": image_url}
+    # "url" continua a ser a imagem grande (a que se guarda no produto/restaurante); a miniatura
+    # vai à parte para quem a quiser usar em listas (ver services/imagens.py).
+    return {"url": image_url, "thumbnail_url": url_da_miniatura(image_url)}
