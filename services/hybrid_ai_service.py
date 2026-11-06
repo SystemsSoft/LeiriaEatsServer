@@ -827,7 +827,7 @@ class HybridAIService:
             telemetry.registrar_turno(
                 session_id=session.session_id,
                 restaurant_gid=restaurant_gid,
-                modelo=GeminiSalesAgent._escolher_modelo(context),
+                modelo=context.get("modelo_usado") or GeminiSalesAgent._escolher_modelo(context),
                 ms_e5=ms_e5,
                 ms_pool=ms_pool,
                 ms_ttft=ms_ttft,
@@ -864,7 +864,7 @@ class HybridAIService:
                 telemetry.registrar_turno(
                     session_id=session.session_id,
                     restaurant_gid=restaurant_gid,
-                    modelo=GeminiSalesAgent._escolher_modelo(context) if 'context' in locals() else "desconhecido",
+                    modelo=(context.get("modelo_usado") or GeminiSalesAgent._escolher_modelo(context)) if 'context' in locals() else "desconhecido",
                     ms_e5=ms_e5 if 'ms_e5' in locals() else None,
                     ms_pool=ms_pool if 'ms_pool' in locals() else None,
                     ms_ttft=ms_ttft if 'ms_ttft' in locals() else None,
@@ -1349,7 +1349,7 @@ class HybridAIService:
             telemetry.registrar_turno(
                 session_id=session.session_id,
                 restaurant_gid=restaurant_gid,
-                modelo=GeminiSalesAgent._escolher_modelo(context),
+                modelo=context.get("modelo_usado") or GeminiSalesAgent._escolher_modelo(context),
                 ms_e5=ms_e5,
                 ms_pool=None,
                 ms_ttft=None,

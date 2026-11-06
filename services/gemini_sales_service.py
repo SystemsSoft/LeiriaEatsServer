@@ -587,6 +587,9 @@ REGRAS OBRIGATÓRIAS:
                             # proteção anti-tag do item 1.1) sem alterar o que é entregue
                             # ao cliente turno a turno — o yield por chunk continua igual.
                             full_response = ""
+                            # Modelo que de facto respondeu (pode ser o de reserva, se o escolhido
+                            # falhou) — a telemetria lê-o daqui em vez de recalcular a escolha.
+                            context["modelo_usado"] = mod
                             for texto in stream:
                                 full_response += texto
                                 yield texto
@@ -731,6 +734,7 @@ REGRAS OBRIGATÓRIAS:
                     # Registrar uso e sair do loop se sucesso
                     cls._usage_monitor.record_request()
                     ai_response = cls._clean_response(response.text)
+                    context["modelo_usado"] = modelo
                     break
                 except Exception as e_key:
                     erro_msg = str(e_key)
@@ -819,7 +823,8 @@ REGRAS OBRIGATÓRIAS:
                 try:
                     response = client.models.generate_content(model=modelo, contents=contents, config=config)
                     cls._usage_monitor.record_request()
-                    
+                    context["modelo_usado"] = modelo
+
                     # Se chegamos aqui, sucesso com esta chave. Agora processamos as function calls.
                     # Nota: as chamadas subsequentes (idiv-e-vinda) usarão o mesmo client.
                     for _ in range(3):
