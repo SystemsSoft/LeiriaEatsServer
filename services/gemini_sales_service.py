@@ -255,11 +255,24 @@ class GeminiSalesAgent:
         finally:
             parar.set()
 
-    @staticmethod
-    def _thinking_config(modelo: str):
+    @classmethod
+    def _thinking_config(cls, modelo: str):
         """Os modelos gemini-3.x "pensam" por padrão e esse raciocínio consome os max_output_tokens (250):
-        a resposta sai cortada ou vazia. MINIMAL mantém a resposta completa e rápida (medido: ~1,4s)."""
-        return types.ThinkingConfig(thinking_level="MINIMAL") if modelo.startswith("gemini-3") else None
+        a resposta sai cortada ou vazia. MINIMAL mantém a resposta completa e rápida (medido: ~1,4s).
+
+        O gemini-flash-latest também pensa por padrão, mas recusa MINIMAL (400 INVALID_ARGUMENT) e
+        aceita thinking_budget=0: 1º trecho em ~1,5s em vez de ~3,8s, que passava do _TTFT_LIMITE_S e
+        mandava a resposta para o flash-lite, em português (06/11/2026)."""
+        if modelo.startswith("gemini-3"):
+            return types.ThinkingConfig(thinking_level="MINIMAL")
+        if modelo == cls.MODELO_OUTRO_IDIOMA:
+            return types.ThinkingConfig(thinking_budget=0)
+        return None
+
+    @classmethod
+    def _limite_ttft(cls, modelo: str) -> float:
+        """O modelo de outro idioma é mais lento a começar: mais margem antes de desistir dele."""
+        return 5.0 if modelo == cls.MODELO_OUTRO_IDIOMA else cls._TTFT_LIMITE_S
 
     # Cliente noutro idioma que não o português: o flash-lite, com o contexto todo em português,
     # às vezes voltava ao português a meio da conversa ("and the quatro queijos?", 06/11/2026).
@@ -565,7 +578,7 @@ REGRAS OBRIGATÓRIAS:
                             return
                         try:
                             # Usar generate_content_stream (com limite de espera pelo 1º trecho)
-                            stream = cls._stream_com_limite_ttft(client, mod, prompt, cls._TTFT_LIMITE_S)
+                            stream = cls._stream_com_limite_ttft(client, mod, prompt, cls._limite_ttft(mod))
 
                             # Registrar uso (contamos como 1 req)
                             cls._usage_monitor.record_request()
@@ -711,6 +724,7 @@ REGRAS OBRIGATÓRIAS:
                             top_k=40,
                             max_output_tokens=250,
                             response_modalities=['TEXT'],
+                            thinking_config=cls._thinking_config(modelo),
                             http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
                         )
                     )
@@ -793,6 +807,7 @@ REGRAS OBRIGATÓRIAS:
             top_k=40,
             max_output_tokens=250,
             tools=cls._TOOLS,
+            thinking_config=cls._thinking_config(modelo),
             http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
         )
 

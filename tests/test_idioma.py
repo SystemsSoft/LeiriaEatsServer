@@ -96,6 +96,18 @@ def teste_outro_idioma_usa_o_flash_ate_ao_fim_do_pedido():
     print("OK  - português no flash-lite; outro idioma passa ao flash até a sessão ser limpa no fim do pedido")
 
 
+def teste_flash_de_outro_idioma_sem_pensamento_e_com_mais_margem():
+    """06/11/2026: o gemini-flash-latest demorava ~3,8 s até ao 1º trecho (pensava por padrão),
+    passava do limite de 3 s e a resposta caía no flash-lite, em português."""
+    from services.gemini_sales_service import GeminiSalesAgent as G
+    config = G._thinking_config(G.MODELO_OUTRO_IDIOMA)
+    assert config is not None and config.thinking_budget == 0 and config.thinking_level is None
+    assert G._thinking_config("gemini-3-flash-preview").thinking_level is not None
+    assert G._thinking_config("gemini-flash-lite-latest") is None
+    assert G._limite_ttft(G.MODELO_OUTRO_IDIOMA) > G._limite_ttft("gemini-flash-lite-latest") == G._TTFT_LIMITE_S
+    print("OK  - flash de outro idioma com thinking_budget=0 e 5 s de margem para o 1º trecho")
+
+
 def teste_saudacao_da_chamada_no_idioma_do_telemovel():
     from services.gemini_live_bridge import GeminiLiveBridge
     em_ingles = GeminiLiveBridge.__new__(GeminiLiveBridge)
@@ -114,5 +126,6 @@ if __name__ == "__main__":
     teste_instrucoes_do_chat_seguem_o_idioma_do_cliente()
     teste_prompt_pede_a_resposta_no_idioma_da_mensagem()
     teste_outro_idioma_usa_o_flash_ate_ao_fim_do_pedido()
+    teste_flash_de_outro_idioma_sem_pensamento_e_com_mais_margem()
     teste_saudacao_da_chamada_no_idioma_do_telemovel()
     print("\nTodos os testes de idioma passaram.")
