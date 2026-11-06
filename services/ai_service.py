@@ -68,7 +68,11 @@ class AIService:
     @classmethod
     def get_model(cls):
         if cls._model is None:
-            if settings.E5_SERVICE_URL:
+            if settings.EMBEDDINGS_GEMINI:
+                from services.gemini_embeddings import GeminiEmbeddings
+                cls._model = GeminiEmbeddings(settings.GEMINI_API_KEYS_KOMA[0], settings.E5_CACHE_DIR)
+                print("✅ Embeddings: Gemini (gemini-embedding-001)")
+            elif settings.E5_SERVICE_URL:
                 cls._model = E5Remoto(settings.E5_SERVICE_URL, settings.E5_SERVICE_TOKEN,
                                       settings.E5_SERVICE_TIMEOUT, settings.E5_CACHE_DIR)
                 print(f"✅ E5 remoto: {settings.E5_SERVICE_URL}")
@@ -77,6 +81,13 @@ class AIService:
             else:
                 cls._model = SentenceTransformer('intfloat/multilingual-e5-large')
         return cls._model
+
+    @classmethod
+    def _limiar(cls, limiar_e5: float) -> float:
+        """Limiar fixo de similaridade afinado para o E5, na escala do motor em uso: o Gemini
+        dá pontuações mais baixas (ver GeminiEmbeddings.ajustar_limiar)."""
+        ajustar = getattr(cls.get_model(), "ajustar_limiar", None)
+        return ajustar(limiar_e5) if ajustar else limiar_e5
 
     @staticmethod
     def _carregar_e5_int8():
@@ -283,7 +294,7 @@ class AIService:
         best_score = scores[best_idx].item()
 
         # Retornar apenas se score for suficiente (threshold 0.60 para busca interna)
-        if best_score > 0.60:
+        if best_score > cls._limiar(0.60):
             return products[best_idx]
 
         return None
@@ -344,7 +355,7 @@ class AIService:
         best_idx = scores_prod.argmax().item()
         best_score = scores_prod[best_idx].item()
 
-        if best_score <= 0.65:
+        if best_score <= cls._limiar(0.65):
             return SearchResponse(
                 reply=f"Não encontrei '{first_product_query}' no cardápio.",
                 intent="no_match",
@@ -891,7 +902,7 @@ class AIService:
                 score_name_only = scores_name[i].item()
                 score = (0.7 * score_name_only) + (0.3 * scores_cat[i].item())
 
-                if score > 0.45:
+                if score > cls._limiar(0.45):
                     res_results.append({"obj": res, "score": score})
 
         # --- 3. BUSCA DE PRODUTOS (sempre executada) ---

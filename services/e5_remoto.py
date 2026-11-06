@@ -6,21 +6,20 @@ convert_to_tensor=True) — para o resto da pesquisa (limiares, busca híbrida, 
 por restaurante) não mudar uma linha. AIService.get_model() devolve este cliente
 quando E5_SERVICE_URL está definido no .env, e a API deixa de carregar o modelo.
 
-Os vetores dos produtos ("passage: ...") ficam em cache no disco da API, por modelo:
-num arranque só os produtos novos ou alterados vão ao serviço. Antes, cada arranque
-recalculava o catálogo inteiro e esgotava os créditos de CPU da instância do E5
-(Lightsail "burstable", 05/11/2026).
+Os vetores dos produtos ("passage: ...") ficam em cache no disco da API, por modelo
+(services/cache_vetores.py): num arranque só os produtos novos ou alterados vão ao
+serviço. Antes, cada arranque recalculava o catálogo inteiro e esgotava os créditos de
+CPU da instância do E5 (Lightsail "burstable", 05/11/2026).
 """
-import hashlib
 import json
-import os
-import pickle
 import threading
 import urllib.error
 import urllib.request
 
 import numpy as np
 import torch
+
+from services.cache_vetores import CacheVetores
 
 # O int8 em x86 leva ~0,3 s (texto curto) a ~1,8 s (descrição longa) por texto num lote, e
 # mais quando a instância do E5 fica sem créditos de CPU. Lotes de 4 ficam bem abaixo do
@@ -31,7 +30,7 @@ _PREFIXO_CACHE = "passage: "
 
 
 class E5Indisponivel(RuntimeError):
-    """O serviço de embeddings não respondeu — o AIService cai para a pesquisa só léxica."""
+    """O motor de embeddings não respondeu — o AIService cai para a pesquisa só léxica."""
 
 
 class E5Remoto:
@@ -40,8 +39,7 @@ class E5Remoto:
         self.token = token
         self.timeout = timeout
         self.pasta_cache = pasta_cache
-        self._cache = None  # {sha256(texto): vetor}, carregado no 1º uso
-        self._ficheiro_cache = None
+        self._cache = None  # CacheVetores, aberta no 1º uso (precisa do id do modelo)
         self._trava = threading.Lock()
 
     def _abrir(self, pedido, timeout):
@@ -62,24 +60,12 @@ class E5Remoto:
         except KeyError as e:
             raise E5Indisponivel(str(e)) from e
 
-    def _carregar_cache(self):
+    def _abrir_cache(self):
         """Cache por modelo: o /health do serviço diz qual é, e um modelo novo começa vazio."""
-        if self._cache is not None:
-            return
-        id_modelo = self._abrir(f"{self.url}/health", _TIMEOUT_PESQUISA).get("modelo", "sem-id")
-        self._ficheiro_cache = os.path.join(self.pasta_cache, f"vetores-{id_modelo}.pkl")
-        try:
-            with open(self._ficheiro_cache, "rb") as f:
-                self._cache = pickle.load(f)
-        except (OSError, pickle.UnpicklingError, EOFError):
-            self._cache = {}
-
-    def _gravar_cache(self):
-        os.makedirs(self.pasta_cache, exist_ok=True)
-        temporario = f"{self._ficheiro_cache}.tmp"
-        with open(temporario, "wb") as f:
-            pickle.dump(self._cache, f)
-        os.replace(temporario, self._ficheiro_cache)
+        if self._cache is None:
+            id_modelo = self._abrir(f"{self.url}/health", _TIMEOUT_PESQUISA).get("modelo", "sem-id")
+            self._cache = CacheVetores(self.pasta_cache, id_modelo)
+        return self._cache
 
     def encode(self, sentences, convert_to_tensor: bool = False, **_):
         unico = isinstance(sentences, str)
@@ -91,24 +77,23 @@ class E5Remoto:
         usar_cache = bool(self.pasta_cache) and any(t.startswith(_PREFIXO_CACHE) for t in textos)
         vetores = [None] * len(textos)
         with self._trava:
-            if usar_cache:
-                self._carregar_cache()
-                chaves = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in textos]
-                for i, chave in enumerate(chaves):
-                    if textos[i].startswith(_PREFIXO_CACHE) and chave in self._cache:
-                        vetores[i] = self._cache[chave]
+            cache = self._abrir_cache() if usar_cache else None
+            if cache is not None:
+                for i, t in enumerate(textos):
+                    if t.startswith(_PREFIXO_CACHE):
+                        vetores[i] = cache.get(t)
             em_falta = [i for i, v in enumerate(vetores) if v is None]
-            novos = 0
             for inicio in range(0, len(em_falta), _LOTE):
                 lote = em_falta[inicio:inicio + _LOTE]
+                novos = False
                 for i, vetor in zip(lote, self._pedir([textos[i] for i in lote], timeout)):
                     vetores[i] = np.asarray(vetor, dtype=np.float32)
-                    if usar_cache and textos[i].startswith(_PREFIXO_CACHE):
-                        self._cache[chaves[i]] = vetores[i]
-                        novos += 1
+                    if cache is not None and textos[i].startswith(_PREFIXO_CACHE):
+                        cache.put(textos[i], vetores[i])
+                        novos = True
                 if novos:
                     # Grava a cada lote: se o serviço cair a meio, o que já veio não se perde.
-                    self._gravar_cache()
+                    cache.gravar()
 
         matriz = np.stack(vetores).astype(np.float32)
         if unico:

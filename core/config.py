@@ -46,8 +46,13 @@ class Settings:
     E5_SERVICE_URL: str = os.getenv("E5_SERVICE_URL", "").strip()
     E5_SERVICE_TOKEN: str = os.getenv("E5_SERVICE_TOKEN", "")
     E5_SERVICE_TIMEOUT: float = float(os.getenv("E5_SERVICE_TIMEOUT", 60))
-    # Cache em disco dos vetores dos produtos (ver services/e5_remoto.py). Vazio desliga.
+    # Cache em disco dos vetores dos produtos (ver services/cache_vetores.py). Vazio desliga.
     E5_CACHE_DIR: str = os.getenv("E5_CACHE_DIR", "cache_e5")
+
+    # Embeddings do Gemini (gemini-embedding-001, chave paga do Koma) no lugar do E5 — ver
+    # services/gemini_embeddings.py. Tem prioridade sobre E5_SERVICE_URL e E5_INT8; false volta
+    # ao E5 sem novo deploy (basta reiniciar).
+    EMBEDDINGS_GEMINI: bool = os.getenv("EMBEDDINGS_GEMINI", "false").lower() == "true"
 
     # Limite de restaurantes distintos por pedido (PLANO_LIMITE_RESTAURANTES.md).
     # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.
