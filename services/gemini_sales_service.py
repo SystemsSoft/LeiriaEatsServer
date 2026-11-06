@@ -1031,6 +1031,21 @@ REGRAS OBRIGATÓRIAS:
         # o histórico, os produtos e as instruções em português, só a regra no início não chegava
         # e "do you have hambúrguer?" recebeu resposta em português (06/11/2026). Quem identifica
         # a língua é o próprio Gemini — funciona para qualquer idioma, não só uma lista fixa.
+        #
+        # A app manda mensagens automáticas sempre em português ("Adicionar 1 … ao meu carrinho."
+        # ao tocar num produto, "Pode me dar sugestões…" — AiPrompts.kt): a confirmação saía em
+        # português a meio de uma conversa em inglês. Com o idioma da conversa já identificado
+        # pelo Gemini (session_context["idioma"], ver HybridAIService._registar_idioma), essas
+        # mensagens são respondidas nesse idioma.
+        idioma_conversa = (session_context or {}).get("idioma")
+        nota_mensagem_automatica = (
+            f"\nEXCEÇÃO: o cliente tem conversado no idioma '{idioma_conversa}'. As mensagens "
+            "automáticas da app (ex.: \"Adicionar 1 … ao meu carrinho.\", \"Pode me dar sugestões…\") "
+            f"são sempre escritas em português pela app — se a mensagem acima for uma delas, responda em "
+            f"'{idioma_conversa}' e use [[IDIOMA:{idioma_conversa}]]."
+            if idioma_conversa and idioma_conversa != "pt" else ""
+        )
+
         prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{surprise_box_section}{order_note}
 
 ═══════════════════════════════════════════════════════
@@ -1041,7 +1056,7 @@ Identifique o idioma em que o cliente escreveu a mensagem acima e responda NESSE
 contexto estar em português não muda isso; em português, use PT-PT). Os nomes dos produtos
 ficam como estão no cardápio. Responda considerando TODO o contexto acima. Seja consultivo e natural.
 No FIM da resposta acrescente a etiqueta [[IDIOMA:xx]] com o código ISO 639-1 do idioma da
-mensagem do cliente (ex.: [[IDIOMA:pt]], [[IDIOMA:en]], [[IDIOMA:de]]) — o cliente não a vê."""
+mensagem do cliente (ex.: [[IDIOMA:pt]], [[IDIOMA:en]], [[IDIOMA:de]]) — o cliente não a vê.{nota_mensagem_automatica}"""
 
         return prompt
 

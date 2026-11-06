@@ -108,6 +108,28 @@ def teste_flash_de_outro_idioma_sem_pensamento_e_com_mais_margem():
     print("OK  - flash de outro idioma com thinking_budget=0 e 5 s de margem para o 1º trecho")
 
 
+def teste_mensagem_automatica_da_app_segue_o_idioma_da_conversa():
+    """06/11/2026: ao tocar num produto a app envia 'Adicionar 1 Pizza Margherita ao meu carrinho.'
+    (sempre em português) e a confirmação saía em português numa conversa em inglês."""
+    from services.gemini_sales_service import GeminiSalesAgent as G
+    automatica = "Adicionar 1 Pizza Margherita ao meu carrinho."
+    em_ingles = G._build_prompt(automatica, products=[], context={}, session_context={"idioma": "en"})
+    assert "EXCEÇÃO: o cliente tem conversado no idioma 'en'" in em_ingles
+    assert "responda em 'en'" in em_ingles and "[[IDIOMA:en]]" in em_ingles
+    for sessao in ({"idioma": "pt"}, {}, None):
+        assert "EXCEÇÃO" not in G._build_prompt(automatica, products=[], context={}, session_context=sessao)
+    print("OK  - mensagens automáticas da app (em português) respondidas no idioma da conversa")
+
+
+def teste_chamada_de_voz_trata_mensagens_automaticas_da_app():
+    """Na chamada, tocar no "+" de um cartão envia "Adicionar 2 Pizza X ao meu carrinho." (em
+    português) como se o cliente tivesse dito: a IA deve responder no idioma que ele tem falado."""
+    from services.gemini_live_bridge import INSTRUCAO_CHAMADA_DE_VOZ
+    assert "são sempre em português" in INSTRUCAO_CHAMADA_DE_VOZ
+    assert "responda no idioma em que o cliente tem FALADO" in INSTRUCAO_CHAMADA_DE_VOZ
+    print("OK  - regras da chamada: mensagens automáticas da app não mudam o idioma da conversa")
+
+
 def teste_saudacao_da_chamada_no_idioma_do_telemovel():
     from services.gemini_live_bridge import GeminiLiveBridge
     em_ingles = GeminiLiveBridge.__new__(GeminiLiveBridge)
@@ -127,5 +149,7 @@ if __name__ == "__main__":
     teste_prompt_pede_a_resposta_no_idioma_da_mensagem()
     teste_outro_idioma_usa_o_flash_ate_ao_fim_do_pedido()
     teste_flash_de_outro_idioma_sem_pensamento_e_com_mais_margem()
+    teste_mensagem_automatica_da_app_segue_o_idioma_da_conversa()
+    teste_chamada_de_voz_trata_mensagens_automaticas_da_app()
     teste_saudacao_da_chamada_no_idioma_do_telemovel()
     print("\nTodos os testes de idioma passaram.")

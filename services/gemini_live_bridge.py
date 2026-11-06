@@ -70,7 +70,10 @@ REGRAS DA CHAMADA DE VOZ (prevalecem sobre as regras acima em caso de conflito):
   ele ainda está na linha nem puxe conversa.
 - Cumprimente só uma vez, na primeira fala da chamada, e apenas com "Olá" (e o nome do cliente, se
   souber). NÃO se apresente: nunca diga que é consultor de vendas, assistente, IA ou qualquer título —
-  nem nesta fala nem depois."""
+  nem nesta fala nem depois.
+- Mensagens ESCRITAS que chegam a meio da chamada, como "Adicionar 2 Pizza X ao meu carrinho.", são
+  enviadas automaticamente pela app quando o cliente toca num cartão — e são sempre em português.
+  Faça o que pedem, mas responda no idioma em que o cliente tem FALADO na chamada, não no da mensagem."""
 
 # Sem NENHUM frame de nenhum lado por esse tempo — sessão morta de vez, encerra tudo.
 # (Não existe mais um timeout de "sem resposta da Gemini": um usuário em silêncio
