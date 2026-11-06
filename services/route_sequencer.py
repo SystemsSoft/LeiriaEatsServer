@@ -2,8 +2,8 @@
 """
 PLANO_RECOLHA_MULTI_RESTAURANTE.md, secção 4 — RouteSequencer.
 
-Sequenciamento por enumeração exaustiva. Com o limite de MAX_RESTAURANTES_POR_PEDIDO = 3
-(PLANO_LIMITE_RESTAURANTES.md), o espaço de soluções é 3! = 6 permutações — não é um
+Sequenciamento por enumeração exaustiva. Com o limite de MAX_RESTAURANTES_POR_PEDIDO (2, no máximo 3)
+(PLANO_LIMITE_RESTAURANTES.md), o espaço de soluções é no máximo 3! = 6 permutações — não é um
 problema de TSP, é busca completa e ótima em microssegundos. Não introduzir solver,
 heurística nem API de routing externa (ver secção 10 do plano, "O que NÃO fazer").
 

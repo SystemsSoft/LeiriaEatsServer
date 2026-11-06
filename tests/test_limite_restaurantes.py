@@ -16,6 +16,9 @@ from api.routes.order_routes import _validar_sub_orders
 from services.hybrid_ai_service import HybridAIService
 from services.gemini_sales_service import GeminiSalesAgent
 
+# Limite em vigor (core/config.py, MAX_RESTAURANTES_POR_PEDIDO): os testes seguem a configuração.
+LIMITE = HybridAIService.MAX_RESTAURANTES_POR_PEDIDO
+
 
 # ── Fase 1.1: UserSession.restaurantes_no_carrinho() ────────────────────────
 
@@ -102,6 +105,18 @@ def teste_checkout_rejeita_sub_orders_vazio():
     print("OK  - checkout rejeita sub_orders vazio com mensagem clara")
 
 
+def teste_limite_em_vigor_e_2_restaurantes():
+    """Regra de negócio desde 06/11/2026: no máximo 2 restaurantes diferentes por pedido."""
+    from core.config import settings
+    assert settings.MAX_RESTAURANTES_POR_PEDIDO == LIMITE == 2, settings.MAX_RESTAURANTES_POR_PEDIDO
+    dois = [_SubOrderFake(f"01REST_{i}") for i in range(2)]
+    tres = [_SubOrderFake(f"01REST_{i}") for i in range(3)]
+    assert _validar_sub_orders(dois, settings.MAX_RESTAURANTES_POR_PEDIDO) is None
+    erro = _validar_sub_orders(tres, settings.MAX_RESTAURANTES_POR_PEDIDO)
+    assert erro is not None and "no máximo 2 restaurantes" in erro, erro
+    print("OK  - limite em vigor: checkout aceita 2 restaurantes e recusa o 3º")
+
+
 def teste_checkout_aceita_ate_o_limite():
     sub_orders = [_SubOrderFake(f"01REST_{i}") for i in range(3)]
     erro = _validar_sub_orders(sub_orders, max_restaurantes=3)
@@ -143,31 +158,31 @@ def _sessao_com_n_restaurantes(n):
 
 
 def teste_bloqueio_recusa_restaurante_novo_no_limite():
-    session = _sessao_com_n_restaurantes(3)
+    session = _sessao_com_n_restaurantes(LIMITE)
     bloqueado = HybridAIService._bloqueado_por_limite_restaurantes(session, "01REST_NOVO", delta=1)
     assert bloqueado is True
-    print("OK  - bloqueia adição de restaurante novo quando o limite (3) já foi atingido")
+    print(f"OK  - bloqueia adição de restaurante novo quando o limite ({LIMITE}) já foi atingido")
 
 
 def teste_bloqueio_permite_mais_itens_de_restaurante_ja_escolhido():
-    session = _sessao_com_n_restaurantes(3)
+    session = _sessao_com_n_restaurantes(LIMITE)
     bloqueado = HybridAIService._bloqueado_por_limite_restaurantes(session, "01REST_0", delta=1)
     assert bloqueado is False
     print("OK  - permite adicionar mais itens de um restaurante JÁ no carrinho, mesmo no limite")
 
 
 def teste_bloqueio_permite_remocao_mesmo_no_limite():
-    session = _sessao_com_n_restaurantes(3)
+    session = _sessao_com_n_restaurantes(LIMITE)
     bloqueado = HybridAIService._bloqueado_por_limite_restaurantes(session, "01REST_NOVO", delta=-1)
     assert bloqueado is False
     print("OK  - nunca bloqueia remoção (delta<=0), mesmo com um GID de restaurante novo")
 
 
 def teste_bloqueio_nao_dispara_abaixo_do_limite():
-    session = _sessao_com_n_restaurantes(2)
+    session = _sessao_com_n_restaurantes(LIMITE - 1)
     bloqueado = HybridAIService._bloqueado_por_limite_restaurantes(session, "01REST_NOVO", delta=1)
     assert bloqueado is False
-    print("OK  - não bloqueia 3º restaurante novo quando ainda há espaço (2/3)")
+    print(f"OK  - não bloqueia restaurante novo quando ainda há espaço ({LIMITE - 1}/{LIMITE})")
 
 
 # ── Fase 3.1: HybridAIService._filtrar_pool_por_restaurantes_travados ──────
@@ -179,7 +194,7 @@ class _ProdutoPoolFake:
 
 
 def teste_filtro_pool_nao_filtra_abaixo_do_limite():
-    session = _sessao_com_n_restaurantes(2)
+    session = _sessao_com_n_restaurantes(LIMITE - 1)
     pool = [_ProdutoPoolFake(100, "01REST_OUTRO"), _ProdutoPoolFake(101, "01REST_0")]
     resultado = HybridAIService._filtrar_pool_por_restaurantes_travados(pool, session)
     assert len(resultado) == 2
@@ -187,7 +202,7 @@ def teste_filtro_pool_nao_filtra_abaixo_do_limite():
 
 
 def teste_filtro_pool_restringe_aos_restaurantes_travados():
-    session = _sessao_com_n_restaurantes(3)  # 01REST_0, 01REST_1, 01REST_2
+    session = _sessao_com_n_restaurantes(LIMITE)  # 01REST_0 .. 01REST_{LIMITE-1}
     pool = [
         _ProdutoPoolFake(100, "01REST_0"),   # de um restaurante travado -> fica
         _ProdutoPoolFake(101, "01REST_FORA"),  # de fora -> removido
@@ -202,7 +217,7 @@ def teste_filtro_pool_mantem_item_do_carrinho_mesmo_com_gid_divergente():
     """Mesmo que o restaurant_gid do produto no pool não bata com o do carrinho (dado
     inconsistente), o item continua visível se o ID já está no carrinho — senão o
     cliente ficaria preso com um item que a conversa não consegue mais remover."""
-    session = _sessao_com_n_restaurantes(3)
+    session = _sessao_com_n_restaurantes(LIMITE)
     produto_no_carrinho_com_gid_diferente = _ProdutoPoolFake(0, "01REST_GID_DIVERGENTE")
     pool = [produto_no_carrinho_com_gid_diferente]
     resultado = HybridAIService._filtrar_pool_por_restaurantes_travados(pool, session)
@@ -245,22 +260,22 @@ def teste_prompt_marca_limite_atingido():
 # ── Fase 4.1: ciclo completo de destravamento ───────────────────────────────
 
 def teste_ciclo_completo_destravamento():
-    """O requisito original, ponta a ponta: 3 restaurantes no carrinho -> 4º é
-    recusado -> cliente desiste de um dos 3 -> 4º passa a ser aceito. Tudo isso sem
+    """O requisito original, ponta a ponta: carrinho no limite -> restaurante novo é
+    recusado -> cliente desiste de um deles -> o novo passa a ser aceito. Tudo isso sem
     nenhum código de "liberação" — é consequência direta do estado ser derivado."""
-    session = _sessao_com_n_restaurantes(3)  # 01REST_0, 01REST_1, 01REST_2
+    session = _sessao_com_n_restaurantes(LIMITE)  # 01REST_0 .. 01REST_{LIMITE-1}
 
     # 1. Um 4º restaurante é recusado.
     assert HybridAIService._bloqueado_por_limite_restaurantes(session, "01REST_NOVO", delta=1) is True
 
-    # 2. O pool, nesse momento, também estaria restrito aos 3 atuais.
+    # 2. O pool, nesse momento, também estaria restrito aos restaurantes atuais.
     pool = [_ProdutoPoolFake(200, "01REST_NOVO"), _ProdutoPoolFake(0, "01REST_0")]
     pool_filtrado = HybridAIService._filtrar_pool_por_restaurantes_travados(pool, session)
     assert {p.id for p in pool_filtrado} == {0}
 
-    # 3. Cliente desiste do restaurante 2 (remove o único item de lá).
-    session.remove_from_cart(2)
-    assert len(session.restaurantes_no_carrinho()) == 2
+    # 3. Cliente desiste do último restaurante (remove o único item de lá).
+    session.remove_from_cart(LIMITE - 1)
+    assert len(session.restaurantes_no_carrinho()) == LIMITE - 1
 
     # 4. Agora o restaurante novo é aceito.
     assert HybridAIService._bloqueado_por_limite_restaurantes(session, "01REST_NOVO", delta=1) is False
@@ -268,7 +283,7 @@ def teste_ciclo_completo_destravamento():
     # 5. E o pool volta a mostrar todo mundo.
     pool_filtrado_apos = HybridAIService._filtrar_pool_por_restaurantes_travados(pool, session)
     assert len(pool_filtrado_apos) == 2
-    print("OK  - ciclo completo: 3 restaurantes -> 4º recusado -> remove um -> 4º aceito, sem código de liberação")
+    print(f"OK  - ciclo completo: {LIMITE} restaurantes -> novo recusado -> remove um -> novo aceito, sem código de liberação")
 
 
 # ── Fase 4.2: telemetria ────────────────────────────────────────────────────
@@ -307,6 +322,7 @@ if __name__ == "__main__":
     teste_cart_item_restaurant_name_serializa_e_desserializa()
     teste_cart_item_from_dict_tolera_sessao_antiga_sem_restaurant_name()
     teste_checkout_rejeita_sub_orders_vazio()
+    teste_limite_em_vigor_e_2_restaurantes()
     teste_checkout_aceita_ate_o_limite()
     teste_checkout_rejeita_acima_do_limite()
     teste_checkout_conta_restaurantes_distintos_nao_sub_orders()

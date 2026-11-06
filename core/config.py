@@ -56,7 +56,7 @@ class Settings:
 
     # Limite de restaurantes distintos por pedido (PLANO_LIMITE_RESTAURANTES.md).
     # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.
-    MAX_RESTAURANTES_POR_PEDIDO: int = int(os.getenv("MAX_RESTAURANTES_POR_PEDIDO", 3))
+    MAX_RESTAURANTES_POR_PEDIDO: int = int(os.getenv("MAX_RESTAURANTES_POR_PEDIDO", 2))
 
     # PLANO_PAGAMENTO_2_ETAPAS.md, Fase 6.1 — cinto de segurança do pagamento em 2
     # etapas. Independente do prazo de aceite normal (15 min, PRAZO_ACEITE_MINUTOS em

@@ -395,7 +395,7 @@ REGRAS OBRIGATÓRIAS:
    - NUNCA diga que o valor atual é o "total do pedido", refira-se como "subtotal dos produtos".
 6. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou
    alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela.
-7. Limite de Restaurantes: um pedido pode incluir no máximo 3 restaurantes diferentes.
+7. Limite de Restaurantes: um pedido pode incluir no máximo {MAX_RESTAURANTES} restaurantes diferentes.
    - A secção "RESTAURANTES NO PEDIDO" (quando presente) mostra quantos já estão no carrinho.
    - Ao atingir o limite ("LIMITE ATINGIDO"), ofereça e adicione APENAS produtos desses restaurantes.
    - Se o cliente pedir algo de um restaurante novo nessa situação, explique o limite com
@@ -413,6 +413,8 @@ REGRAS OBRIGATÓRIAS:
      que esse pedido é exclusivo e que o cliente precisa finalizar ou remover o item de Caixa
      Surpresa antes de adicionar qualquer outra coisa.
    - Avise também que a entrega deste pedido é sempre recolha no restaurante, nunca por estafeta."""
+            cls._system_instruction = cls._system_instruction.replace(
+                "{MAX_RESTAURANTES}", str(settings.MAX_RESTAURANTES_POR_PEDIDO))
 
             # F3: variante da system instruction para o modo function calling — mesmas
             # regras de 1 a 3 e 6, mas a regra 4/5 usa as FERRAMENTAS em vez de tags de
@@ -458,7 +460,7 @@ REGRAS OBRIGATÓRIAS:
    sugerir_produtos com os GIDs relevantes para que apareçam como cartão na tela. Não é necessário
    chamar isto para um produto que você já adicionou via adicionar_ao_carrinho.
 7. Seja natural, amigável e conciso (máximo 100 palavras). Nunca escreva preços, calorias ou alérgenos no texto — o cliente já vê essas informações no cartão do produto na tela.
-8. Limite de Restaurantes: um pedido pode incluir no máximo 3 restaurantes diferentes.
+8. Limite de Restaurantes: um pedido pode incluir no máximo {MAX_RESTAURANTES} restaurantes diferentes.
    - A secção "RESTAURANTES NO PEDIDO" (quando presente) mostra quantos já estão no carrinho.
    - Ao atingir o limite ("LIMITE ATINGIDO"), chame adicionar_ao_carrinho e sugerir_produtos
      APENAS com produtos desses restaurantes.
@@ -480,6 +482,8 @@ REGRAS OBRIGATÓRIAS:
     - Avise também que a entrega deste pedido é sempre recolha no restaurante, nunca por estafeta.
     - Se você chamar adicionar_ao_carrinho e o resultado vier com erro=CAIXA_SURPRESA_EXCLUSIVA,
       NÃO afirme ao cliente que adicionou — explique a exclusividade."""
+            cls._system_instruction_fc = cls._system_instruction_fc.replace(
+                "{MAX_RESTAURANTES}", str(settings.MAX_RESTAURANTES_POR_PEDIDO))
 
             cls._is_initialized = True
             print("✅ [Gemini] Modelo configurado com sucesso!")
@@ -965,7 +969,7 @@ REGRAS OBRIGATÓRIAS:
         restaurantes_no_pedido = context.get("restaurantes_no_pedido") or {}
         restaurant_section = ""
         if restaurantes_no_pedido:
-            max_restaurantes = context.get("max_restaurantes_por_pedido", 3)
+            max_restaurantes = context.get("max_restaurantes_por_pedido", settings.MAX_RESTAURANTES_POR_PEDIDO)
             qtd_atual = len(restaurantes_no_pedido)
             nomes = " | ".join(restaurantes_no_pedido.values())
             if qtd_atual >= max_restaurantes:
