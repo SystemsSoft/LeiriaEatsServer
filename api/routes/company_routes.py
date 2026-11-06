@@ -1,4 +1,7 @@
 # Arquivo: api/routes/company_routes.py
+import threading
+import time
+
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
@@ -27,13 +30,29 @@ stripe.api_key = settings.STRIPE_API_KEY
 # 🏢 ROTAS DE GERENCIAMENTO DE EMPRESA
 # ==========================================
 
+# A lista é igual para todos os clientes e a conversão para CompanyResponse faz várias
+# consultas por restaurante com uma ligação do pool presa durante o pedido inteiro: com 50
+# pedidos simultâneos o pool esgotava e os pedidos falhavam (teste de carga de 06/11/2026).
+# Guardada 5 s, um pedido calcula e os outros reutilizam sem tocar na base de dados.
+_TTL_RESTAURANTES = 5.0
+_cache_restaurantes = {"quando": 0.0, "dados": None}
+_trava_restaurantes = threading.Lock()
+
+
 @router.get("/restaurants", response_model=List[CompanyResponse])
 def get_all_restaurants(db: Session = Depends(get_db)):
     """
     Retorna a lista de todos os restaurantes cadastrados no sistema.
     """
-    restaurants = RestaurantRepository.get_all(db)
-    return restaurants
+    if time.monotonic() - _cache_restaurantes["quando"] < _TTL_RESTAURANTES:
+        return _cache_restaurantes["dados"]
+    with _trava_restaurantes:
+        # Quem esperou pela trava reutiliza o que o pedido anterior acabou de calcular.
+        if time.monotonic() - _cache_restaurantes["quando"] < _TTL_RESTAURANTES:
+            return _cache_restaurantes["dados"]
+        dados = [CompanyResponse.model_validate(r) for r in RestaurantRepository.get_all(db)]
+        _cache_restaurantes.update(quando=time.monotonic(), dados=dados)
+        return dados
 
 
 @router.post("/companies", response_model=CompanyResponse, status_code=201)

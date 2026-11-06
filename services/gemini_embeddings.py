@@ -64,26 +64,31 @@ class GeminiEmbeddings:
         unico = isinstance(sentences, str)
         textos = [sentences] if unico else list(sentences)
         vetores = [None] * len(textos)
-        with self._trava:
-            if self._cache is not None:
+        # A trava protege só a cache. A chamada à API fica fora dela: com a trava à volta
+        # de tudo as pesquisas faziam fila (~3,6/s com 32 clientes, medido em 06/11/2026),
+        # quando cada uma é só uma espera de rede de ~0,3 s.
+        if self._cache is not None:
+            with self._trava:
                 for i, t in enumerate(textos):
                     if t.startswith("passage: "):
                         vetores[i] = self._cache.get(t)
-            por_tipo = {}
-            for i, t in enumerate(textos):
-                if vetores[i] is None:
-                    tipo, conteudo = self._tipo(t)
-                    por_tipo.setdefault(tipo, []).append((i, conteudo))
-            novos = False
-            for tipo, itens in por_tipo.items():
-                for inicio in range(0, len(itens), _LOTE):
-                    lote = itens[inicio:inicio + _LOTE]
-                    for (i, _), vetor in zip(lote, self._pedir(tipo, [c for _, c in lote])):
-                        vetores[i] = vetor
-                        if self._cache is not None and textos[i].startswith("passage: "):
-                            self._cache.put(textos[i], vetor)
-                            novos = True
-            if novos:
+        por_tipo = {}
+        for i, t in enumerate(textos):
+            if vetores[i] is None:
+                tipo, conteudo = self._tipo(t)
+                por_tipo.setdefault(tipo, []).append((i, conteudo))
+        novos = []
+        for tipo, itens in por_tipo.items():
+            for inicio in range(0, len(itens), _LOTE):
+                lote = itens[inicio:inicio + _LOTE]
+                for (i, _), vetor in zip(lote, self._pedir(tipo, [c for _, c in lote])):
+                    vetores[i] = vetor
+                    if self._cache is not None and textos[i].startswith("passage: "):
+                        novos.append((textos[i], vetor))
+        if novos:
+            with self._trava:
+                for texto, vetor in novos:
+                    self._cache.put(texto, vetor)
                 self._cache.gravar()
 
         matriz = np.stack(vetores).astype(np.float32)

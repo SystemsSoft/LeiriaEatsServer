@@ -18,9 +18,12 @@ SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PO
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     # ── Pool de conexões ────────────────────────────────────────────────────
-    pool_size=5,               # conexões permanentes no pool
-    max_overflow=10,           # conexões extras permitidas acima do pool_size
-    pool_timeout=30,           # segundos para aguardar uma conexão livre no pool
+    # O MySQL da Lightsail aceita 61 ligações no total. Com 5+10, 50 pedidos simultâneos
+    # esgotavam o pool e falhavam ao fim de 30 s (teste de carga de 06/11/2026); 10+15 deixa
+    # margem para scripts e manutenção. Atenção: cada worker do uvicorn tem o seu pool.
+    pool_size=10,              # conexões permanentes no pool
+    max_overflow=15,           # conexões extras permitidas acima do pool_size
+    pool_timeout=10,           # segundos para aguardar uma conexão livre (falha rápido num pico)
     # ── Evitar conexões mortas (AWS NAT encerra idle após ~300s) ───────────
     pool_recycle=280,          # recicla conexões ao fim de 280s (abaixo do limite AWS)
     pool_pre_ping=True,        # testa a conexão antes de usar (SELECT 1)
