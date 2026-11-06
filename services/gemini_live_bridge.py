@@ -47,6 +47,7 @@ from services.gemini_sales_service import GeminiSalesAgent
 from services.hybrid_ai_service import HybridAIService
 from services.session_service import SessionManager, UserSession
 from services.ai_service import AIService
+from services.idioma import codigo_voz_da_chamada
 
 LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
 LIVE_VOICE = "Aoede"
@@ -115,9 +116,13 @@ class GeminiLiveBridge:
     (SessionManager), compartilhado com o chat por texto pelo mesmo session_id.
     """
 
-    def __init__(self, session_id: str, db: Session, nome_usuario: Optional[str] = None):
+    def __init__(self, session_id: str, db: Session, nome_usuario: Optional[str] = None,
+                 idioma: Optional[str] = None):
         self.session_id = session_id
         self.db = db
+        # Idioma do telemóvel (query param ?idioma=, ex.: "en-US"): define a língua da voz e da
+        # saudação. Ausente ou português = "pt-PT", como antes (ver services/idioma.py).
+        self.codigo_voz = codigo_voz_da_chamada(idioma)
         self.session: UserSession = SessionManager.get_or_create(session_id)
         self.found_products: List[Dict] = []
         self._client_ws: Optional[WebSocket] = None
@@ -280,6 +285,14 @@ class GeminiLiveBridge:
         SessionManager.save(self.session)
         return respostas
 
+    def _instrucao_idioma(self) -> str:
+        """Com o telemóvel noutro idioma, a saudação inicial (antes de o cliente falar) já sai
+        nessa língua; depois vale a regra 1: responder no idioma em que o cliente falar."""
+        if self.codigo_voz == "pt-PT":
+            return ""
+        return (f"\n\nIDIOMA DA CHAMADA: o telemóvel do cliente está em {self.codigo_voz}. "
+                "Cumprimente e fale nesse idioma, a não ser que o cliente fale noutro.\n")
+
     async def _attempt_session(self, client: genai.Client, key_label: str) -> str:
         """Abre UMA sessão Live com uma chave e faz o relay bidirecional até algo
         encerrar a ligação. Retorna 'client_disconnected' ou 'switch_key'.
@@ -298,11 +311,13 @@ class GeminiLiveBridge:
                     prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(voice_name=LIVE_VOICE)
                 ),
                 # Sotaque de Portugal, não do Brasil — mesmo language_code aplicado
-                # no TTS avulso (synthesize_speech, gemini_sales_service.py).
-                language_code="pt-PT",
+                # no TTS avulso (synthesize_speech, gemini_sales_service.py). Com o
+                # telemóvel noutro idioma (?idioma=), a voz segue essa língua.
+                language_code=self.codigo_voz,
             ),
             system_instruction=gtypes.Content(parts=[gtypes.Part(
                 text=(GeminiSalesAgent._system_instruction_fc + INSTRUCAO_CHAMADA_DE_VOZ
+                      + self._instrucao_idioma()
                       + _catalogo_para_prompt(self.found_products))
             )]),
             tools=GeminiSalesAgent._TOOLS,

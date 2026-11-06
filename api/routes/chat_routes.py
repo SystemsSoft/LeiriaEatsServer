@@ -230,9 +230,10 @@ async def chat_voice(
     websocket: WebSocket,
     session_id: str,
     nome: Optional[str] = None,
+    idioma: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    bridge = GeminiLiveBridge(session_id=session_id, db=db, nome_usuario=nome)
+    bridge = GeminiLiveBridge(session_id=session_id, db=db, nome_usuario=nome, idioma=idioma)
     await bridge.run(websocket)
 
 

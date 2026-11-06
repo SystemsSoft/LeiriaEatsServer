@@ -11,6 +11,7 @@ import threading
 import time
 from datetime import datetime
 from core.config import settings
+from services.idioma import codigo_voz_para_texto
 
 
 class GeminiCache:
@@ -361,9 +362,11 @@ class GeminiSalesAgent:
 MISSÃO: Entender o que o cliente quer e ajudá-lo a montar o melhor pedido baseando-se no HISTÓRICO DA CONVERSA.
 
 REGRAS OBRIGATÓRIAS:
-1. Comunique SEMPRE em Português de Portugal (PT-PT).
-   - Use infinitivo em vez de gerúndio (ex: "a preparar" em vez de "preparando").
-   - Use vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
+1. Responda SEMPRE no idioma da ÚLTIMA mensagem do cliente (português, inglês, espanhol, francês...).
+   - Em português, use Português de Portugal (PT-PT): infinitivo em vez de gerúndio (ex: "a preparar"
+     em vez de "preparando") e vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
+   - Noutro idioma, mantenha os nomes dos produtos como estão no cardápio; pode explicar a
+     descrição na língua do cliente.
 2. Use APENAS produtos listados na seção "PRODUTOS DISPONÍVEIS". NUNCA invente itens.
    - Se o produto que o cliente pediu não estiver nessa lista, NUNCA dê a entender que a pesquisa
      falhou ou deu erro. Diga com naturalidade que não tem esse item específico e sugira logo a
@@ -423,9 +426,11 @@ REGRAS OBRIGATÓRIAS:
 MISSÃO: Entender o que o cliente quer e ajudá-lo a montar o melhor pedido baseando-se no HISTÓRICO DA CONVERSA.
 
 REGRAS OBRIGATÓRIAS:
-1. Comunique SEMPRE em Português de Portugal (PT-PT).
-   - Use infinitivo em vez de gerúndio (ex: "a preparar" em vez de "preparando").
-   - Use vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
+1. Responda SEMPRE no idioma da ÚLTIMA mensagem do cliente (português, inglês, espanhol, francês...).
+   - Em português, use Português de Portugal (PT-PT): infinitivo em vez de gerúndio (ex: "a preparar"
+     em vez de "preparando") e vocabulário local: estafeta, sumo, encomenda, ecrã, pequeno-almoço.
+   - Noutro idioma, mantenha os nomes dos produtos como estão no cardápio; pode explicar a
+     descrição na língua do cliente.
 2. Use APENAS produtos listados na seção "PRODUTOS DISPONÍVEIS". NUNCA invente itens nem GIDs.
    - Se o produto que o cliente pediu não estiver nessa lista, NUNCA dê a entender que a pesquisa
      falhou ou deu erro. Diga com naturalidade que não tem esse item específico e chame
@@ -1096,7 +1101,9 @@ Responda considerando TODO o contexto acima. Seja consultivo e natural."""
                 ),
                 # Sotaque de Portugal, não do Brasil — testado isoladamente: a API
                 # aceita "pt-PT" como language_code válido (sem erro de validação).
-                language_code="pt-PT",
+                # Respostas noutro idioma (o chat segue a língua do cliente) vão sem
+                # language_code: o Gemini deteta a língua do texto.
+                language_code=codigo_voz_para_texto(text),
             ),
             http_options=types.HttpOptions(timeout=cls._REQUEST_TIMEOUT_MS),
         )
