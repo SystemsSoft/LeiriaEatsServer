@@ -9,7 +9,9 @@ Execução:
 import json
 import os
 import sys
+import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,6 +44,14 @@ class _ServicoFalso(BaseHTTPRequestHandler):
             self.end_headers()
             return
         resposta = json.dumps({"vetores": [_vetor(t) for t in corpo["textos"]]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resposta)))
+        self.end_headers()
+        self.wfile.write(resposta)
+
+    def do_GET(self):
+        resposta = json.dumps({"ok": True, "dim": DIM, "modelo": "m1"}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(resposta)))
@@ -86,10 +96,36 @@ def teste_catalogo_grande_vai_em_lotes():
         pedidos_recebidos.clear()
         vetores = E5Remoto(url, token="segredo").encode([f"passage: {i}" for i in range(300)], convert_to_tensor=True)
         assert vetores.shape == (300, DIM)
-        assert [p["n"] for p in pedidos_recebidos] == [8] * 37 + [4], pedidos_recebidos
+        assert [p["n"] for p in pedidos_recebidos] == [4] * 75, pedidos_recebidos
     finally:
         srv.shutdown()
-    print("OK  - 300 textos são enviados em lotes de 8 (cada pedido fica bem abaixo do timeout)")
+    print("OK  - 300 textos são enviados em lotes de 4 (cada pedido fica bem abaixo do timeout)")
+
+
+def teste_vetores_dos_produtos_ficam_em_cache_no_disco():
+    srv, url = _servidor()
+    pasta = tempfile.mkdtemp()
+    try:
+        produtos = ["passage: Pizza Margherita", "passage: Sushi Salmão", "passage: Taco"]
+        pedidos_recebidos.clear()
+        primeiro = E5Remoto(url, token="segredo", pasta_cache=pasta).encode(produtos, convert_to_tensor=True)
+        assert sum(p["n"] for p in pedidos_recebidos) == 3
+
+        # Novo arranque da API (novo cliente): só o produto novo vai ao serviço.
+        pedidos_recebidos.clear()
+        e5 = E5Remoto(url, token="segredo", pasta_cache=pasta)
+        segundo = e5.encode(produtos + ["passage: Burrito"], convert_to_tensor=True)
+        assert [p["n"] for p in pedidos_recebidos] == [1], pedidos_recebidos
+        assert torch.equal(segundo[:3], primeiro) and segundo[3].tolist() == _vetor("passage: Burrito")
+
+        # As pesquisas dos utilizadores ("query: ...") não ficam em cache.
+        pedidos_recebidos.clear()
+        e5.encode("query: pizza")
+        e5.encode("query: pizza")
+        assert len(pedidos_recebidos) == 2, pedidos_recebidos
+    finally:
+        srv.shutdown()
+    print("OK  - vetores dos produtos ficam em cache no disco; num novo arranque só os novos vão ao serviço")
 
 
 def teste_servico_em_baixo_ou_token_errado_levanta_e5_indisponivel():
@@ -128,19 +164,14 @@ def teste_pesquisa_cai_para_lexica_sem_o_servico():
     db.commit()
 
     estado = (AIService._model, AIService._data_cache, AIService._embeddings_products,
-              AIService._ultima_tentativa_indice, AIService._index_data)
+              AIService._ESPERA_REINDEXACAO)
     AIService._model = E5Remoto(_url_fechada(), timeout=2)
     AIService._data_cache = None
     AIService._embeddings_products = None
-    tentativas = []
-    indexar_original = AIService._index_data.__func__
-
-    def _index_data_contado(cls, data):
-        tentativas.append(1)
-        return indexar_original(cls, data)
-
-    AIService._index_data = classmethod(_index_data_contado)
+    AIService._ESPERA_REINDEXACAO = 0.05
+    srv = None
     try:
+        t0 = time.monotonic()
         resposta = AIService.process_search("margherita", db)
         assert resposta.intent == "product_search", resposta.intent
         assert [p.name for p in resposta.productResults] == ["Pizza Margherita"], resposta.productResults
@@ -148,18 +179,29 @@ def teste_pesquisa_cai_para_lexica_sem_o_servico():
         assert vazia.intent == "no_match" and not vazia.productResults
         for _ in range(5):
             AIService.process_search("sushi", db)
-        # 1ª pesquisa: reload_data tenta indexar; 2ª: o retry do process_search. Depois disso,
-        # dentro do mesmo minuto, nenhuma pesquisa volta a tentar (era isso que enchia o serviço).
-        assert len(tentativas) == 2, tentativas
+        # Nenhuma pesquisa espera pela reindexação (antes, uma delas ficava ~2 min sem resposta).
+        assert time.monotonic() - t0 < 5, time.monotonic() - t0
+        reindexadoras = [t for t in threading.enumerate() if t.name == "reindexar-e5"]
+        assert len(reindexadoras) == 1, reindexadoras
+
+        # O serviço volta: a thread reconstrói o índice sozinha e a pesquisa volta a ser semântica.
+        srv, url = _servidor()
+        AIService._model = E5Remoto(url, token="segredo")
+        reindexadoras[0].join(timeout=5)
+        assert not reindexadoras[0].is_alive() and AIService._embeddings_products is not None
+        assert AIService.process_search("sushi", db).productResults
     finally:
+        if srv:
+            srv.shutdown()
         (AIService._model, AIService._data_cache, AIService._embeddings_products,
-         AIService._ultima_tentativa_indice, AIService._index_data) = estado
-    print("OK  - sem o serviço de E5 a pesquisa devolve resultados léxicos e só tenta reindexar 1x por minuto")
+         AIService._ESPERA_REINDEXACAO) = estado
+    print("OK  - sem o serviço de E5 a pesquisa responde já (léxica) e o índice volta sozinho em segundo plano")
 
 
 if __name__ == "__main__":
     teste_encode_imita_o_sentence_transformer()
     teste_catalogo_grande_vai_em_lotes()
+    teste_vetores_dos_produtos_ficam_em_cache_no_disco()
     teste_servico_em_baixo_ou_token_errado_levanta_e5_indisponivel()
     teste_pesquisa_cai_para_lexica_sem_o_servico()
     print("\nTodos os testes do cliente E5 remoto passaram.")

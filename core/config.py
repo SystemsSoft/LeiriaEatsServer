@@ -46,6 +46,8 @@ class Settings:
     E5_SERVICE_URL: str = os.getenv("E5_SERVICE_URL", "").strip()
     E5_SERVICE_TOKEN: str = os.getenv("E5_SERVICE_TOKEN", "")
     E5_SERVICE_TIMEOUT: float = float(os.getenv("E5_SERVICE_TIMEOUT", 60))
+    # Cache em disco dos vetores dos produtos (ver services/e5_remoto.py). Vazio desliga.
+    E5_CACHE_DIR: str = os.getenv("E5_CACHE_DIR", "cache_e5")
 
     # Limite de restaurantes distintos por pedido (PLANO_LIMITE_RESTAURANTES.md).
     # Único lugar de leitura tanto pelo checkout quanto pela IA — mudar aqui muda os dois.

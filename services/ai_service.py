@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 import torch
 import re
+import threading
 import time
 
 
@@ -40,7 +41,11 @@ class AIService:
     _restaurant_surprise_box_window_by_product_id: dict = {}
     # {restaurant_id: (textos, modelo, embeddings)} — ver _embeddings_do_restaurante
     _embeddings_por_restaurante: dict = {}
-    _ultima_tentativa_indice: float = 0.0  # time.monotonic() da última reindexação tentada em process_search
+    # Reindexação em segundo plano quando o serviço de E5 falha (ver _garantir_reindexacao)
+    _dados_por_indexar = None
+    _thread_reindexacao: Optional[threading.Thread] = None
+    _trava_reindexacao = threading.Lock()
+    _ESPERA_REINDEXACAO: float = 120.0  # longa: cada tentativa gasta créditos de CPU da instância do E5
 
     # Palavras-chave para detecção de intenção de restaurante
     _RESTAURANT_HINTS = {
@@ -65,7 +70,7 @@ class AIService:
         if cls._model is None:
             if settings.E5_SERVICE_URL:
                 cls._model = E5Remoto(settings.E5_SERVICE_URL, settings.E5_SERVICE_TOKEN,
-                                      settings.E5_SERVICE_TIMEOUT)
+                                      settings.E5_SERVICE_TIMEOUT, settings.E5_CACHE_DIR)
                 print(f"✅ E5 remoto: {settings.E5_SERVICE_URL}")
             elif settings.E5_INT8:
                 cls._model = cls._carregar_e5_int8()
@@ -458,15 +463,63 @@ class AIService:
         if not data:
             cls._data_cache = []
             return
+        try:
+            cls._index_data(data)
+        except E5Indisponivel as e:
+            print(f"⚠️ [E5] Serviço de embeddings indisponível ao indexar ({e}) — índice reconstruído em segundo plano")
+            if cls._embeddings_products is None:
+                cls._data_cache = data  # sem índice nenhum: o plano B léxico já usa os dados novos
+            cls._garantir_reindexacao(data)
+            return
         cls._data_cache = data
-        cls._index_data(data)
-        # Já calcula os embeddings por restaurante, para o 1º pedido de vários produtos
-        # depois de um arranque não pagar esse custo.
+        cls._aquecer_embeddings_por_restaurante(data)
+
+    @classmethod
+    def _aquecer_embeddings_por_restaurante(cls, data):
+        """Já calcula os embeddings por restaurante, para o 1º pedido de vários produtos
+        depois de um arranque não pagar esse custo. Se o E5 falhar, ficam para o 1º uso."""
         cls._embeddings_por_restaurante = {}
         model = cls.get_model()
-        for restaurant in data:
-            if restaurant.products:
-                cls._embeddings_do_restaurante(restaurant, model)
+        try:
+            for restaurant in data:
+                if restaurant.products:
+                    cls._embeddings_do_restaurante(restaurant, model)
+        except E5Indisponivel as e:
+            print(f"⚠️ [E5] Embeddings por restaurante ficam para o 1º uso ({e})")
+
+    @classmethod
+    def _garantir_reindexacao(cls, data):
+        """Arranca (no máximo uma) thread que reconstrói o índice até o serviço de E5 responder.
+
+        A reconstrução leva ~2 min com o E5 remoto. Feita dentro de uma pesquisa, deixava
+        essa pesquisa sem resposta e as outras sem semântica (05/11/2026, ao arrancar a API
+        enquanto o container do E5 era trocado); em segundo plano, as pesquisas usam o plano
+        B léxico até o índice ficar pronto."""
+        cls._dados_por_indexar = data
+        with cls._trava_reindexacao:
+            if cls._thread_reindexacao is not None and cls._thread_reindexacao.is_alive():
+                return
+            cls._thread_reindexacao = threading.Thread(
+                target=cls._reindexar_ate_conseguir, daemon=True, name="reindexar-e5")
+            cls._thread_reindexacao.start()
+
+    @classmethod
+    def _reindexar_ate_conseguir(cls):
+        while True:
+            data = cls._dados_por_indexar
+            try:
+                cls._index_data(data)
+            except E5Indisponivel as e:
+                print(f"⚠️ [E5] Reindexação falhou ({e}) — nova tentativa em {cls._ESPERA_REINDEXACAO}s")
+                time.sleep(cls._ESPERA_REINDEXACAO)
+                continue
+            cls._data_cache = data
+            if cls._dados_por_indexar is not data:
+                continue  # chegaram dados mais novos enquanto indexava
+            cls._dados_por_indexar = None
+            print("✅ [E5] Índice reconstruído em segundo plano")
+            cls._aquecer_embeddings_por_restaurante(data)
+            return
 
     @classmethod
     def reindex_single_product(cls, product_id: int, db: Session):
@@ -746,14 +799,10 @@ class AIService:
     def process_search(cls, user_query: str, db: Session, scope: Optional[str] = "auto",
                        limite_por_plano: Optional[int] = None) -> SearchResponse:
         try:
-            # Índice vazio porque o serviço de E5 estava em baixo no arranque: tenta de novo, mas
-            # no máximo uma vez por minuto — tentar a cada pesquisa enchia o serviço de
-            # reindexações e cada pesquisa esperava o timeout inteiro (05/11/2026).
-            if (cls._data_cache and cls._embeddings_products is None
-                    and time.monotonic() - cls._ultima_tentativa_indice > 60):
-                cls._ultima_tentativa_indice = time.monotonic()
-                cls._index_data(cls._data_cache)
+            # Índice vazio porque o serviço de E5 estava em baixo: é reconstruído em segundo
+            # plano (_garantir_reindexacao) e, até lá, a pesquisa usa só o sinal léxico.
             if cls._data_cache and cls._embeddings_products is None:
+                cls._garantir_reindexacao(cls._dados_por_indexar or cls._data_cache)
                 return cls._busca_so_lexical(user_query)
             return cls._process_search(user_query, db, scope, limite_por_plano)
         except E5Indisponivel as e:

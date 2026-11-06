@@ -25,8 +25,13 @@ torch.backends.quantized.engine = "qnnpack"
 # Dentro do container o torch arrancava com 1 thread; o cálculo tem os vCPU da instância.
 torch.set_num_threads(int(os.getenv("E5_THREADS", os.cpu_count() or 1)))
 print(f"E5 int8: motor {torch.backends.quantized.engine}, {torch.get_num_threads()} threads", flush=True)
-modelo = torch.load(os.getenv("E5_MODELO", "/modelo/e5_int8.pt"), weights_only=False)
+CAMINHO_MODELO = os.getenv("E5_MODELO", "/modelo/e5_int8.pt")
+modelo = torch.load(CAMINHO_MODELO, weights_only=False)
 modelo.eval()
+# Identifica o ficheiro do modelo: a API guarda em cache os vetores dos produtos por esta
+# identificação, e um modelo novo invalida-os sozinho.
+_estado = os.stat(CAMINHO_MODELO)
+ID_MODELO = f"{_estado.st_size}-{int(_estado.st_mtime)}"
 
 # Um cálculo de cada vez: dois em paralelo só disputariam os mesmos 2 vCPU.
 _trava = threading.Lock()
@@ -40,7 +45,7 @@ class PedidoEmbed(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "dim": modelo.get_sentence_embedding_dimension()}
+    return {"ok": True, "dim": modelo.get_embedding_dimension(), "modelo": ID_MODELO}
 
 
 @app.post("/embed")

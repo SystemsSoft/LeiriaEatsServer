@@ -25,6 +25,7 @@ sync_output="$(rsync --archive --compress --itemize-changes \
   --exclude='.idea/' \
   --exclude='/.claude/' \
   --exclude='/e5_service/' \
+  --exclude='/cache_e5/' \
   --exclude='__pycache__/' \
   --exclude='*.py[cod]' \
   --exclude='*.pem' \
