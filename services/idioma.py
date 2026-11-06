@@ -25,15 +25,16 @@ _PALAVRAS = {
 
 
 def e_portugues(texto: str) -> bool:
-    """True se o texto parece português, ou se não há nada que indique outra língua
-    (mensagens curtas como "sushi" ou "pizza" ficam em português, o idioma da casa)."""
+    """True se o texto tem sinais claros de português (ã, õ, ç ou palavras portuguesas mais do
+    que de inglês, espanhol ou francês). Sem sinais de português — o texto pode estar em
+    qualquer outra língua — é False, e a voz fica com a deteção automática do Gemini."""
     t = (texto or "").lower()
     if any(c in t for c in "ãõç"):
         return True
     palavras = set(re.findall(r"[a-zà-öø-ÿ']+", t))
     pontos = {lingua: len(palavras & lista) for lingua, lista in _PALAVRAS.items()}
     outras = max(pontos["en"], pontos["es"], pontos["fr"])
-    return pontos["pt"] >= outras
+    return pontos["pt"] > 0 and pontos["pt"] >= outras
 
 
 def codigo_voz_para_texto(texto: str) -> Optional[str]:

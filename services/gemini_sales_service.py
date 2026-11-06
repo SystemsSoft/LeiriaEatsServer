@@ -261,10 +261,19 @@ class GeminiSalesAgent:
         a resposta sai cortada ou vazia. MINIMAL mantém a resposta completa e rápida (medido: ~1,4s)."""
         return types.ThinkingConfig(thinking_level="MINIMAL") if modelo.startswith("gemini-3") else None
 
+    # Cliente noutro idioma que não o português: o flash-lite, com o contexto todo em português,
+    # às vezes voltava ao português a meio da conversa ("and the quatro queijos?", 06/11/2026).
+    # Depois de o Gemini identificar outro idioma (etiqueta [[IDIOMA:xx]], guardada na sessão
+    # por HybridAIService._registar_idioma), o resto do pedido usa este modelo, mais forte.
+    MODELO_OUTRO_IDIOMA = "gemini-flash-latest"
+
     @classmethod
     def _escolher_modelo(cls, context: Dict) -> str:
         """Turno com carrinho não-vazio ou intenção de busca/pergunta específica de
         produto merece o modelo com melhor aderência a instrução."""
+        idioma = (context.get("session_context") or {}).get("idioma")
+        if idioma and idioma != "pt":
+            return cls.MODELO_OUTRO_IDIOMA
         if context.get("cart"):
             return cls.MODELO_ACAO
         if context.get("intent_type") in {"product_search", "specific_question"}:
@@ -1003,13 +1012,21 @@ REGRAS OBRIGATÓRIAS:
         if context.get("order_confirmed"):
             order_note = "\n\n⚠️ ATENÇÃO: O CLIENTE ESTÁ CONFIRMANDO O PEDIDO. Use o HISTÓRICO DA CONVERSA e o CARRINHO ATUAL acima para fazer o resumo completo e informe que os detalhes serão apresentados para o pagamento."
 
+        # Regra 1 das instruções (responder no idioma do cliente) repetida junto da mensagem: com
+        # o histórico, os produtos e as instruções em português, só a regra no início não chegava
+        # e "do you have hambúrguer?" recebeu resposta em português (06/11/2026). Quem identifica
+        # a língua é o próprio Gemini — funciona para qualquer idioma, não só uma lista fixa.
         prompt = f"""{products_text}{cart_section}{history_section}{session_section}{signals_section}{restaurant_section}{surprise_box_section}{order_note}
 
 ═══════════════════════════════════════════════════════
 CLIENTE DISSE AGORA: "{user_message}"
 ═══════════════════════════════════════════════════════
 
-Responda considerando TODO o contexto acima. Seja consultivo e natural."""
+Identifique o idioma em que o cliente escreveu a mensagem acima e responda NESSE idioma (o
+contexto estar em português não muda isso; em português, use PT-PT). Os nomes dos produtos
+ficam como estão no cardápio. Responda considerando TODO o contexto acima. Seja consultivo e natural.
+No FIM da resposta acrescente a etiqueta [[IDIOMA:xx]] com o código ISO 639-1 do idioma da
+mensagem do cliente (ex.: [[IDIOMA:pt]], [[IDIOMA:en]], [[IDIOMA:de]]) — o cliente não a vê."""
 
         return prompt
 

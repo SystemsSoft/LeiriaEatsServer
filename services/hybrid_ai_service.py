@@ -10,6 +10,7 @@ from core.config import settings
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 import json
+import re
 import os
 
 
@@ -445,6 +446,27 @@ class HybridAIService:
             return "escolha entre opções"
         return "confirmação do pedido"
 
+    # Etiqueta com que o Gemini indica o idioma da mensagem do cliente (pedida no fim do prompt,
+    # GeminiSalesAgent._build_prompt). A app nunca a vê: o filtro do stream descarta tudo entre [[ ]].
+    _PADRAO_IDIOMA = re.compile(r"\[\[IDIOMA:([A-Za-z]{2,3})(?:-[A-Za-z0-9]+)?\]\]")
+
+    @classmethod
+    def _registar_idioma(cls, session: UserSession, resposta_bruta: str) -> None:
+        """Guarda na sessão o idioma que o Gemini identificou. Depois de outro idioma que não o
+        português, fica até ao fim do pedido (a sessão é limpa quando o pedido termina): o resto
+        da conversa usa GeminiSalesAgent.MODELO_OUTRO_IDIOMA, mais consistente a manter a língua."""
+        encontrado = cls._PADRAO_IDIOMA.search(resposta_bruta or "")
+        if not encontrado:
+            return
+        idioma = encontrado.group(1).lower()
+        atual = session.context.get("idioma")
+        if atual and atual != "pt":
+            return  # outro idioma já identificado: mantém-se até ao fim do pedido
+        if idioma != atual:
+            session.context["idioma"] = idioma
+            if idioma != "pt":
+                print(f"🌐 [Idioma] Cliente em '{idioma}': resto do pedido com {GeminiSalesAgent.MODELO_OUTRO_IDIOMA}")
+
     @classmethod
     def _atualizar_contexto_sessao(cls, session: UserSession, user_message: str,
                                     ai_response_limpa: str, intent_info: Dict,
@@ -677,6 +699,7 @@ class HybridAIService:
                 yield {"type": "chunk", "text": tag_buffer}
 
             print(f"⏱️  [Gemini Stream] Tempo total de geração: {time.time() - start_gen:.4f}s")
+            HybridAIService._registar_idioma(session, full_ai_response)
 
             # 3. Pós-processamento interno (tags, carrinho, mostrar sacola)
             import re
@@ -723,6 +746,7 @@ class HybridAIService:
             clean_response = full_ai_response.replace("[[SHOW_CART]]", "")
             for m in add_to_cart_matches:
                 clean_response = clean_response.replace(f"[[ADD_TO_CART:{m[0]}:{m[1]}]]", "")
+            clean_response = HybridAIService._PADRAO_IDIOMA.sub("", clean_response)
             clean_response = ' '.join(clean_response.split()).strip()
 
             # 🛠️ CAPTURA DE DADOS FINAL (Sincronizada com o carrinho atualizado)
@@ -1209,6 +1233,7 @@ class HybridAIService:
 
                 # 🔍 3. LIMPEZA GLOBAL DE TAGS DA RESPOSTA (Segurança)
                 # Remove qualquer coisa entre [[ ]] para o usuário não ver
+                HybridAIService._registar_idioma(session, ai_response)
                 ai_response = re.sub(r"\[\[.*?\]\]", "", ai_response)
 
                 # Limpeza final de espaços duplos resultantes da remoção de tags
