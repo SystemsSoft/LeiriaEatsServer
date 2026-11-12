@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.responses import FileResponse
 
@@ -16,7 +17,7 @@ import os
 
 
 from api.routes import product_routes, search_routes, chat_routes, order_routes, auth_routes, upload_routes, \
-    company_routes
+    company_routes, catalogo_routes
 from api.routes import drivers as driver_routes
 from services.courier_notification_service import courier_notification_worker
 
@@ -69,6 +70,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Respostas JSON comprimidas (listas e cardápios ficam ~5x mais pequenos). O Starlette não
+# comprime text/event-stream, por isso as respostas da IA em streaming continuam a fluir.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # Configuração de Imagens (Static)
 if not os.path.exists("static/images"):
     os.makedirs("static/images")
@@ -80,6 +85,7 @@ app.include_router(chat_routes.router)
 app.include_router(order_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(upload_routes.router)
+app.include_router(catalogo_routes.router)  # /restaurants, /restaurants/categories, /products
 app.include_router(company_routes.router)
 app.include_router(driver_routes.router)   # /drivers/*
 

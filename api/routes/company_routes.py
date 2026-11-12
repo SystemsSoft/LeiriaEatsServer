@@ -1,15 +1,14 @@
 # Arquivo: api/routes/company_routes.py
-import threading
-import time
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List
 
 # Importações do seu projeto
+from core.cache_http import resposta_com_etag
 from core.database import get_db
 from core.config import settings
 from core.sql_models import RestaurantDB, RestaurantHourDB, DeliveryZoneDB
@@ -30,29 +29,7 @@ stripe.api_key = settings.STRIPE_API_KEY
 # 🏢 ROTAS DE GERENCIAMENTO DE EMPRESA
 # ==========================================
 
-# A lista é igual para todos os clientes e a conversão para CompanyResponse faz várias
-# consultas por restaurante com uma ligação do pool presa durante o pedido inteiro: com 50
-# pedidos simultâneos o pool esgotava e os pedidos falhavam (teste de carga de 06/11/2026).
-# Guardada 5 s, um pedido calcula e os outros reutilizam sem tocar na base de dados.
-_TTL_RESTAURANTES = 5.0
-_cache_restaurantes = {"quando": 0.0, "dados": None}
-_trava_restaurantes = threading.Lock()
-
-
-@router.get("/restaurants", response_model=List[CompanyResponse])
-def get_all_restaurants(db: Session = Depends(get_db)):
-    """
-    Retorna a lista de todos os restaurantes cadastrados no sistema.
-    """
-    if time.monotonic() - _cache_restaurantes["quando"] < _TTL_RESTAURANTES:
-        return _cache_restaurantes["dados"]
-    with _trava_restaurantes:
-        # Quem esperou pela trava reutiliza o que o pedido anterior acabou de calcular.
-        if time.monotonic() - _cache_restaurantes["quando"] < _TTL_RESTAURANTES:
-            return _cache_restaurantes["dados"]
-        dados = [CompanyResponse.model_validate(r) for r in RestaurantRepository.get_all(db)]
-        _cache_restaurantes.update(quando=time.monotonic(), dados=dados)
-        return dados
+# A lista de restaurantes da app (GET /restaurants) está em api/routes/catalogo_routes.py, paginada.
 
 
 @router.post("/companies", response_model=CompanyResponse, status_code=201)
@@ -78,11 +55,12 @@ def register_company(company_data: CompanyCreateRequest, background_tasks: Backg
 
 
 @router.get("/companies/{gid}", response_model=CompanyResponse)
-def get_company(gid: str, db: Session = Depends(get_db)):
+def get_company(gid: str, request: Request, db: Session = Depends(get_db)):
     db_company = RestaurantRepository.get_by_gid(db, gid)
     if db_company is None:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
-    return db_company
+    # Cardápio que a app abre ao tocar num restaurante: com ETag, reabrir sem alterações custa um 304.
+    return resposta_com_etag(request, CompanyResponse.model_validate(db_company))
 
 
 @router.put("/companies/{gid}", response_model=CompanyResponse)
@@ -165,7 +143,6 @@ def create_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
         }
 
     except Exception as e:
-        print(f"❌ Erro Stripe: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
