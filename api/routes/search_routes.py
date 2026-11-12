@@ -1,6 +1,7 @@
 # Arquivo: api/routes/search_routes.py
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from core.auth_interna import exigir_token_interno
 from core.database import get_db
 from services.ai_service import AIService
 from schemas.models import SearchResponse
@@ -29,7 +30,9 @@ def search_restaurants(request: SearchRequest, db: Session = Depends(get_db)):
     return response
 
 # Rota opcional para forçar atualização (ex: chamar após cadastrar produto)
-@router.post("/search/reload")
+@router.post("/search/reload", dependencies=[Depends(exigir_token_interno)])
 def reload_ai_index(db: Session = Depends(get_db)):
+    """Reindexa a pesquisa. Só com X-Admin-Token (core/auth_interna.py): cada chamada gera
+    embeddings pagos para todos os produtos."""
     AIService.reload_data(db)
     return {"message": "Índice de IA atualizado com sucesso!"}

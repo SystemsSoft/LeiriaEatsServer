@@ -47,11 +47,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 def create_company(company: CompanyCreateRequest, db: Session = Depends(get_db)):
     print(f"🏭 Criando nova empresa: {company.name}")
 
-    # Verifica duplicidade (opcional, mas bom ter)
-    existing = RestaurantRepository.check_credentials(db, company.login, "dummy")
-    # Nota: O check_credentials retorna None se a senha não bater, então não serve bem para checar existência pelo login.
-    # O ideal seria um método 'find_by_login', mas vamos confiar no try/catch do banco (unique constraint)
-
+    # Login duplicado: a restrição UNIQUE da base de dados rejeita e cai no except abaixo.
     try:
         new_restaurant = RestaurantRepository.create_company(db, company)
         return {

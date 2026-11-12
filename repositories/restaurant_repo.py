@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
+from core.senhas import gerar_hash, precisa_rehash, verificar
 from typing import List
 from core.sql_models import RestaurantDB, ProductDB
 from schemas.company import CompanyCreateRequest
@@ -35,7 +36,7 @@ class RestaurantRepository:
 
             # Novos campos
             login=company.login,
-            password=company.password,
+            password=gerar_hash(company.password),
             license=company.license,
             plan=company.plan,
             gid=str(ULID()), # Gera um novo ULID para o restaurante
@@ -74,7 +75,11 @@ class RestaurantRepository:
         if not user:
             return None
 
-        if plain_password != user.password:
+        # Senhas em PBKDF2 (core/senhas.py). Contas registadas antes de 12/11/2026 guardavam a
+        # senha em texto simples: ainda entram e ficam convertidas aqui, no primeiro login.
+        if not verificar(plain_password, user.password, aceitar_texto_simples=True):
             return None
-
+        if precisa_rehash(user.password):
+            user.password = gerar_hash(plain_password)
+            db.commit()
         return user

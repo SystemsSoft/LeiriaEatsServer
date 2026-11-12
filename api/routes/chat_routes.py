@@ -1,10 +1,11 @@
 import base64
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket
+from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from pydantic import BaseModel
 
+from core.auth_interna import token_interno_valido
 from core.database import get_db
 from schemas.models import UserRequest, SearchResponse, Restaurant
 from services.ai_service import AIService
@@ -193,9 +194,12 @@ def confirm_order(session_id: str):
 
 # Rota de status dos modelos
 @router.get("/chat/status")
-def chat_status():
-    """Status dos modelos + uso Gemini + sessões ativas"""
+def chat_status(x_admin_token: Optional[str] = Header(None)):
+    """Sem token: só "ready"/"loading" (é o que a app de pedidos verifica). Com X-Admin-Token
+    (core/auth_interna.py): modelos, uso diário do Gemini e sessões ativas."""
     status = HybridAIService.get_status()
+    if not token_interno_valido(x_admin_token):
+        return {"status": "ready" if status["system_ready"] else "loading"}
     session_stats = SessionManager.get_stats()
 
     response = {

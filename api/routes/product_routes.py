@@ -115,7 +115,7 @@ def get_products_by_restaurant(gid: str, db: Session = Depends(get_db)):
         print(f"❌ Erro em get_products_by_restaurant: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Erro interno ao processar o pedido.")
 
 
 # --- ATUALIZAR ---

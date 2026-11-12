@@ -1,8 +1,5 @@
 # Arquivo: api/routes/drivers.py
-import hashlib
-import hmac
 import math
-import secrets
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -14,6 +11,7 @@ from starlette import status
 from ulid import ULID
 
 from core import config
+from core import senhas
 from core.database import get_db
 from core.sql_models import DriverDB, OrderDB, RestaurantDB, SubOrderDB, DeliveryRouteDB, RouteStopDB
 from services.courier_notification_service import (
@@ -36,28 +34,19 @@ from schemas.driver import (
 router = APIRouter(prefix="/drivers", tags=["Estafetas"])
 stripe.api_key = config.settings.STRIPE_API_KEY
 
-# PBKDF2 com salt por estafeta (só stdlib). Formato: pbkdf2_sha256$<iterações>$<salt>$<hash>.
-# Contas antigas guardavam sha256(plain) sem salt — continuam a entrar e são convertidas
-# no primeiro login (_needs_rehash).
-_PBKDF2_ITERATIONS = 310_000
-
-
+# Senhas: PBKDF2 com salt (core/senhas.py); contas antigas com sha256 sem salt são convertidas
+# no primeiro login.
 def _hash_password(plain: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", plain.encode(), salt.encode(), _PBKDF2_ITERATIONS).hex()
-    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt}${digest}"
+    return senhas.gerar_hash(plain)
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    if hashed and hashed.startswith("pbkdf2_sha256$"):
-        _, iterations, salt, digest = hashed.split("$", 3)
-        candidate = hashlib.pbkdf2_hmac("sha256", plain.encode(), salt.encode(), int(iterations)).hex()
-        return hmac.compare_digest(candidate, digest)
-    return hmac.compare_digest(hashlib.sha256(plain.encode()).hexdigest(), hashed or "")
+    return senhas.verificar(plain, hashed)
 
 
 def _needs_rehash(hashed: str) -> bool:
-    return not (hashed or "").startswith(f"pbkdf2_sha256${_PBKDF2_ITERATIONS}$")
+    return senhas.precisa_rehash(hashed)
+
 
 def _get_driver_or_404(driver_id: str, db: Session) -> DriverDB:
     """`driver_id` é o gid devolvido no login (o app KomaPartner só conhece o gid);
@@ -227,7 +216,8 @@ def create_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Erro Stripe (estafeta): {e}")
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 @router.post("/{gid}/stripe-onboarding/complete")
@@ -245,7 +235,8 @@ def complete_driver_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Erro Stripe (estafeta): {e}")
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 @router.get("/{gid}/stripe-onboarding-success", response_class=HTMLResponse)
@@ -296,7 +287,8 @@ def get_driver_stripe_dashboard(gid: str, db: Session = Depends(get_db)):
             "dashboard_url": login_link.url,
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Erro Stripe (estafeta): {e}")
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 @router.put("/{gid}/profile", response_model=DriverProfileResponse)

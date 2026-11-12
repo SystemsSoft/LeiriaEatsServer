@@ -51,7 +51,7 @@ def register_company(company_data: CompanyCreateRequest, background_tasks: Backg
         return new_company
     except Exception as e:
         print(f"❌ Erro ao criar empresa: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Erro interno ao processar o pedido.")
 
 
 @router.get("/companies/{gid}", response_model=CompanyResponse)
@@ -143,7 +143,8 @@ def create_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Erro Stripe: {e}")
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 @router.get("/connect/onboarding-success", response_class=HTMLResponse)
@@ -615,7 +616,7 @@ def check_stripe_status(gid: str, background_tasks: BackgroundTasks, db: Session
 
     except Exception as e:
         print(f"❌ Erro ao verificar status: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 @router.get("/connect/dashboard/{gid}")
@@ -671,7 +672,7 @@ def get_stripe_dashboard_url(gid: str, background_tasks: BackgroundTasks, db: Se
         print(f"❌ Erro ao gerar dashboard Stripe: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 @router.post("/checkout/create-session")
@@ -726,7 +727,8 @@ def create_checkout_session(request: PaymentIntentRequest, db: Session = Depends
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Erro Stripe: {e}")
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a operação com a Stripe.")
 
 
 # ==========================================

@@ -10,6 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.responses import FileResponse
 
+from core.config import settings
 from core.database import Base, engine, SessionLocal
 from services.ai_service import AIService
 from services.hybrid_ai_service import HybridAIService
@@ -24,7 +25,9 @@ from services.courier_notification_service import courier_notification_worker
 # Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Leria Eats - Modular Backend")
+# Documentação interativa fechada em produção (EXPOR_DOCS=true para abrir em desenvolvimento).
+_docs = {} if settings.EXPOR_DOCS else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title="Leria Eats - Modular Backend", **_docs)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -62,10 +65,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 # Configuração de CORS
+# Só as origens de CORS_ORIGINS (antes "*" com credenciais: qualquer site aberto no browser do
+# restaurante podia chamar a API como ele). Apps nativas não dependem disto.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

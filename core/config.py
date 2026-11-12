@@ -80,6 +80,16 @@ class Settings:
     # por polling, que nunca deixa de ser o mecanismo de verdade.
     FIREBASE_SERVICE_ACCOUNT_PATH: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
 
+    # Revisão de segurança de 12/11/2026 ─────────────────────────────────────────────
+    # Token das rotas de operação (X-Admin-Token): /search/reload e o detalhe de /chat/status.
+    # Vazio = essas rotas fechadas (core/auth_interna.py).
+    ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "").strip()
+    # Origens com acesso por browser (CORS). As apps nativas não enviam Origin e não precisam;
+    # a gestão web é servida em /static/ do próprio domínio. Várias separadas por vírgula.
+    CORS_ORIGINS: list[str] = [o.strip() for o in os.getenv("CORS_ORIGINS", "https://api.leiriaeats.com").split(",") if o.strip()]
+    # /docs, /redoc e /openapi.json só quando pedido (desenvolvimento): em produção ficam fechados.
+    EXPOR_DOCS: bool = os.getenv("EXPOR_DOCS", "false").lower() == "true"
+
     def __init__(self):
         # Aviso de segurança no terminal se a chave não for achada
         if not self.STRIPE_API_KEY:

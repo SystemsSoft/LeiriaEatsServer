@@ -582,7 +582,7 @@ def initiate_order_and_create_checkout_session(order_data: OrderRequest, db: Ses
 
     except Exception as e:
         print(f"❌ [Stripe SDK Error] ({order_data.user_id}, amount_cents={amount_cents}): {_descrever_erro_stripe(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Não foi possível iniciar o pagamento. Tente novamente.")
 
 
 @router.get("/orders/customer/{user_id}", response_model=List[OrderResponse])
@@ -649,7 +649,7 @@ def get_customer_orders(user_id: str, db: Session = Depends(get_db)):
         print(f"❌ Erro em get_customer_orders: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Erro interno ao processar o pedido.")
 
 
 @router.get("/orders/{gid}", response_model=List[SubOrderResponse])
@@ -701,7 +701,7 @@ def get_restaurant_orders(gid: str, db: Session = Depends(get_db)):
         print(f"❌ Erro em get_restaurant_orders: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Erro interno ao processar o pedido.")
 
 
 def _reverter_repasses_do_pedido(master: OrderDB, db: Session) -> list:
@@ -1518,11 +1518,11 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks, st
     except ValueError as e:
         # Payload inválido
         print(f"❌ Erro - Payload inválido: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Payload inválido")
     except stripe.error.SignatureVerificationError as e:
         # Assinatura inválida
         print(f"❌ Erro - Assinatura inválida: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Assinatura inválida")
 
     # --- Processa o evento que nos interessa ---
     if event['type'] == 'checkout.session.completed':
@@ -1944,7 +1944,8 @@ def get_restaurant_finance_summary(gid: str, db: Session = Depends(get_db)):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"❌ Erro ao consultar o pagamento: {e}")
+        raise HTTPException(status_code=400, detail="Não foi possível consultar o estado do pagamento.")
 
 
 @router.post("/orders/{order_id}/check-payment-status")
