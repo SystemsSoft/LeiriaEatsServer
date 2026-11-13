@@ -92,7 +92,16 @@ def teste_token_interno():
 
 
 def teste_cors_e_docs_fechados():
+    # main.py faz create_all na base de dados real ao ser importado; o teste não deve depender dela
+    # (a base está fechada à internet desde a revisão de segurança de 12/11/2026).
+    Base.metadata.create_all = lambda *a, **k: None
     import main
+
+    def _db():
+        with Sessao() as db:
+            yield db
+
+    main.app.dependency_overrides[get_db] = _db  # SQLite em memória, nunca a base de dados real
     c = TestClient(main.app)
     r = c.get("/restaurants/categories", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in r.headers, dict(r.headers)

@@ -24,6 +24,19 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     if user.license is None or user.license.upper() != "ATIVO":
         print(f"🚫 Acesso negado para {user.name}: Licença '{user.license}'")
 
+        # Cadastro na Stripe por concluir (o dono fechou o separador a meio): a senha está certa,
+        # por isso devolve o gid para a gestão oferecer retomar o cadastro em vez de um beco sem
+        # saída. Restaurantes desativados (INACTIVE) não recebem esta oferta.
+        if (user.status or "PENDING") in ("PENDING", "STRIPE_PENDING") and not user.stripe_onboarding_completed:
+            return {
+                "authenticated": False,
+                "restaurant_id": 0,
+                "gid": user.gid or "",
+                "name": user.name,
+                "message": "Falta concluir o cadastro na Stripe para ativar o restaurante.",
+                "stripe_pending": True
+            }
+
         return {
             "authenticated": False,
             "restaurant_id": 0,

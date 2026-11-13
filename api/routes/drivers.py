@@ -20,6 +20,7 @@ from services.courier_notification_service import (
     is_sub_order_cancelled,
 )
 from services.driver_payout_service import pay_driver_for_route
+from services.stripe_prefill import criar_conta_express, dados_estafeta
 from schemas.driver import (
     DriverRegisterRequest,
     DriverLoginRequest,
@@ -122,15 +123,9 @@ def _stripe_account_for(driver: DriverDB) -> str:
         return driver.stripe_account_id
 
     stripe_email = driver.email or (driver.login if "@" in driver.login else f"{driver.login}@leiriaeats.com")
-    account = stripe.Account.create(
-        type="express",
-        country="PT",
-        email=stripe_email,
-        capabilities={
-            "card_payments": {"requested": True},
-            "transfers": {"requested": True},
-        },
-    )
+    # Pessoa singular: nome, telefone e morada que o estafeta já deu no registo vão pré-preenchidos
+    # (services/stripe_prefill.py); a Stripe pede só o que falta e a verificação de identidade.
+    account = criar_conta_express(stripe_email, dados_estafeta(driver, stripe_email))
     driver.stripe_account_id = account.id
     driver.status = "STRIPE_PENDING"
     return driver.stripe_account_id

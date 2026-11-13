@@ -16,6 +16,7 @@ from repositories.restaurant_repo import RestaurantRepository
 from schemas.company import CompanyResponse, CompanyCreateRequest, CompanyUpdateRequest, RestaurantHourRequest, RestaurantHourResponse, UsesPlatformCourierRequest, DeliveryZoneRequest, DeliveryZoneResponse
 from schemas.payment import PaymentIntentRequest
 from services.ai_service import AIService
+from services.stripe_prefill import criar_conta_express, dados_restaurante
 
 # --- CONFIGURAÇÃO INICIAL ---
 # 1. Cria o Router UMA VEZ SÓ
@@ -112,15 +113,9 @@ def create_stripe_onboarding(gid: str, db: Session = Depends(get_db)):
                 stripe_email = f"{restaurant.login}@leiriaeats.com"
             # ------------------------
 
-            account = stripe.Account.create(
-                type="express",
-                country="PT",
-                email=stripe_email,  # Usamos o e-mail corrigido aqui
-                capabilities={
-                    "card_payments": {"requested": True},
-                    "transfers": {"requested": True},
-                },
-            )
+            # Conta criada com o que já sabemos do restaurante (services/stripe_prefill.py): o
+            # formulário da Stripe abre com nome, telefone e atividade preenchidos.
+            account = criar_conta_express(stripe_email, dados_restaurante(restaurant))
 
             restaurant.stripe_account_id = account.id
             restaurant.status = "STRIPE_PENDING"  # Conta Stripe criada, aguarda onboarding
